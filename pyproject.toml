@@ -1,0 +1,29 @@
+[build-system]
+requires = ["setuptools>=64", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "betapy"
+version = "0.2.0"
+description = "Projected force constant analysis for phonopy supercells"
+requires-python = ">=3.8"
+dependencies = [
+    "numpy",
+    "pandas",
+    "matplotlib",
+    "pyqt5",
+    "pyvista",
+    "pyvistaqt",
+    "pyyaml",
+    "scipy",
+]
+
+[project.scripts]
+# These become terminal commands after `pip install -e .`
+# `betapy` runs the CLI, `betapy-gui` opens the GUI directly
+betapy     = "betapy.cli:main"
+betapy-gui = "betapy.gui.app:main"
+
+[tool.setuptools.packages.find]
+# Tells setuptools to find all packages inside the betapy/ directory
+where = ["."]

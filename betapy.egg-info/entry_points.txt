@@ -1,0 +1,3 @@
+[console_scripts]
+betapy = betapy.cli:main
+betapy-gui = betapy.gui.app:main

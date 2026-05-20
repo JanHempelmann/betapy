@@ -1,0 +1,383 @@
+"""
+pFC Viewer — Tool 1.
+
+Split panel:
+  Left  — scatter plot of pFC value vs interatomic distance,
+           coloured by atom-pair species type.
+  Right — 3D structure view (StructureView).
+
+Clicking a point in the scatter plot highlights the corresponding
+bond in the 3D view and shows atom details in the status bar.
+
+Data can arrive two ways:
+  1. From MainWindow after a fresh analysis (load_data).
+  2. Directly from a CSV file (load_from_csv), so users can
+     inspect previous results without re-running the analysis.
+"""
+
+import numpy as np
+import pandas as pd
+
+from PyQt5.QtWidgets import (
+    QWidget, QHBoxLayout, QVBoxLayout, QSplitter,
+    QCheckBox, QPushButton, QLabel, QFileDialog,
+    QGroupBox, QScrollArea, QFrame,
+)
+from PyQt5.QtCore import Qt, pyqtSignal
+
+from matplotlib.backends.backend_qt5agg import (
+    FigureCanvasQTAgg as FigureCanvas,
+    NavigationToolbar2QT as NavigationToolbar,
+)
+from matplotlib.figure import Figure
+
+from betapy.gui.structure_view import StructureView
+
+
+PAIR_COLOURS = {
+    ('Li', 'Li'): '#4878CF',
+    ('V',  'V' ): '#D65F5F',
+    ('O',  'O' ): '#6ACC65',
+    ('Li', 'V' ): '#B47CC7',
+    ('V',  'Li'): '#B47CC7',
+    ('Li', 'O' ): '#C4AD66',
+    ('O',  'Li'): '#C4AD66',
+    ('V',  'O' ): '#77BEDB',
+    ('O',  'V' ): '#77BEDB',
+}
+DEFAULT_COLOUR = '#888888'
+
+# How close (in data units) a click must be to count as a point selection
+PICK_TOLERANCE = 0.02    # fraction of axis range
+
+
+class PFCViewerWidget(QWidget):
+    """
+    Self-contained pFC viewer tab.
+
+    Signals
+    -------
+    pair_selected(int, int) : emitted when a scatter point is clicked,
+        carrying the 1-based atom indices of the selected pair.
+    """
+
+    pair_selected = pyqtSignal(int, int)
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._results   = []    # list of dicts from compute_bulk_pfcs
+        self._pair_types = []
+        self._checkboxes = {}
+        self._scatter_collections = {}  # pair_type -> PathCollection
+        self._supercell = None
+
+        self._build_ui()
+
+    def _build_ui(self):
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(4, 4, 4, 4)
+
+        # Top toolbar: load CSV button + status label
+        toolbar_row = QHBoxLayout()
+        btn_load_csv = QPushButton('Open existing pFCs CSV…')
+        btn_load_csv.clicked.connect(self.load_from_csv)
+        self._status_label = QLabel('No data loaded.')
+        self._status_label.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+        btn_export = QPushButton('Export plot…')
+        btn_export.clicked.connect(self._export_plot)
+        toolbar_row.addWidget(btn_load_csv)
+        toolbar_row.addWidget(btn_export)
+        toolbar_row.addStretch()
+        toolbar_row.addWidget(self._status_label)
+        outer.addLayout(toolbar_row)
+
+        # Main splitter: left = scatter + controls, right = 3D view
+        splitter = QSplitter(Qt.Horizontal)
+        outer.addWidget(splitter)
+
+        # --- Left panel: scatter plot + filter checkboxes ---
+        left = QWidget()
+        left_layout = QVBoxLayout(left)
+        left_layout.setContentsMargins(0, 0, 0, 0)
+
+        self.figure = Figure(figsize=(6, 5), tight_layout=True)
+        self.canvas = FigureCanvas(self.figure)
+        self.mpl_toolbar = NavigationToolbar(self.canvas, self)
+        self.canvas.mpl_connect('button_press_event', self._on_scatter_click)
+
+        left_layout.addWidget(self.mpl_toolbar)
+        left_layout.addWidget(self.canvas, stretch=1)
+
+        # Filter checkboxes in a scrollable area
+        filter_group = QGroupBox('Atom pair types')
+        self._filter_layout = QVBoxLayout()
+        filter_group.setLayout(self._filter_layout)
+        scroll = QScrollArea()
+        scroll.setWidget(filter_group)
+        scroll.setWidgetResizable(True)
+        scroll.setFixedHeight(140)
+        left_layout.addWidget(scroll)
+
+        self.chk_unique = QCheckBox('Show unique pFCs only')
+        self.chk_unique.stateChanged.connect(self._refresh_plot)
+        left_layout.addWidget(self.chk_unique)
+
+        splitter.addWidget(left)
+
+        # --- Right panel: 3D structure view ---
+        self.structure_view = StructureView(self)
+        splitter.addWidget(self.structure_view)
+
+        splitter.setSizes([550, 550])
+
+        # Selection info bar at the bottom
+        self._selection_bar = QLabel('')
+        self._selection_bar.setFrameStyle(QFrame.StyledPanel)
+        self._selection_bar.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+        self._selection_bar.setFixedHeight(28)
+        outer.addWidget(self._selection_bar)
+
+        self._draw_empty_plot()
+
+    # ------------------------------------------------------------------
+    # Data loading
+    # ------------------------------------------------------------------
+
+    def set_supercell(self, supercell):
+        """
+        Push a supercell to the 3D structure view without touching pFC data.
+        Called by MainWindow as soon as SPOSCAR is loaded, independently
+        of whether any analysis has been run.
+        """
+        self._supercell = supercell
+        self.structure_view.load_supercell(supercell)
+
+    def load_data(self, df_unique, all_results, supercell=None):
+        """
+        Called by MainWindow after a fresh analysis.
+
+        Parameters
+        ----------
+        df_unique   : DataFrame from unique_pfcs()
+        all_results : list of dicts from compute_bulk_pfcs()
+        supercell   : Supercell instance (optional, enables 3D view)
+        """
+        self._results  = all_results
+        if supercell is not None:
+            self.set_supercell(supercell)
+        self._rebuild_checkboxes()
+        self._refresh_plot()
+        self._status_label.setText(
+            f'{len(all_results)} off-site pairs loaded from analysis.'
+        )
+
+    def load_from_csv(self, path=None):
+        """
+        Load pFC data from a CSV file (unique_pFCs.csv format).
+        Populates the scatter plot without needing a full analysis run.
+        """
+        if not path:
+            path, _ = QFileDialog.getOpenFileName(
+                self, 'Open pFCs CSV', '',
+                'CSV files (*.csv);;All files (*)',
+            )
+        if not path:
+            return
+
+        try:
+            # Support both space-separated (unique_pFCs) and comma-separated
+            try:
+                df = pd.read_csv(path, sep=' ')
+                if df.shape[1] < 4:
+                    df = pd.read_csv(path, sep=',')
+            except Exception:
+                df = pd.read_csv(path)
+
+            # Normalise column names to what we expect
+            col_map = {
+                'Index 1': 'atom1_idx', 'Atom 1': 'species1',
+                'Index 2': 'atom2_idx', 'Atom 2': 'species2',
+                'Distance (Angstr.)': 'distance',
+                'pFC value': 'mean_pfc',
+                # Also accept the full-results format
+                'Atom1 Index': 'atom1_idx', 'Atom1 Type': 'species1',
+                'Atom2 Index': 'atom2_idx', 'Atom2 Type': 'species2',
+                'Atom-Atom Distance (Angstr.)': 'distance',
+                'Mean pFC value': 'mean_pfc',
+            }
+            df = df.rename(columns=col_map)
+            required = {'atom1_idx', 'species1', 'atom2_idx',
+                        'species2', 'distance', 'mean_pfc'}
+            if not required.issubset(df.columns):
+                raise ValueError(
+                    f'CSV missing columns. Found: {list(df.columns)}'
+                )
+
+            self._results = df.to_dict('records')
+            self._rebuild_checkboxes()
+            self._refresh_plot()
+            struct_note = (
+                '' if self._supercell is not None
+                else ' (open SPOSCAR to enable 3D view)'
+            )
+            self._status_label.setText(
+                f'{len(self._results)} pairs loaded from {path}{struct_note}'
+            )
+        except Exception as e:
+            from PyQt5.QtWidgets import QMessageBox
+            QMessageBox.critical(self, 'Error loading CSV', str(e))
+
+    # ------------------------------------------------------------------
+    # Plot
+    # ------------------------------------------------------------------
+
+    def _draw_empty_plot(self):
+        self.figure.clear()
+        ax = self.figure.add_subplot(111)
+        ax.text(0.5, 0.5, 'No data — load a CSV or run analysis',
+                transform=ax.transAxes, ha='center', va='center',
+                color='grey', fontsize=13)
+        ax.set_axis_off()
+        self.canvas.draw()
+
+    def _rebuild_checkboxes(self):
+        """Recreate the species-pair filter checkboxes from current data."""
+        for cb in self._checkboxes.values():
+            self._filter_layout.removeWidget(cb)
+            cb.deleteLater()
+        self._checkboxes = {}
+
+        self._pair_types = sorted(set(
+            (r['species1'], r['species2']) for r in self._results
+        ))
+        for pt in self._pair_types:
+            cb = QCheckBox(f'{pt[0]}–{pt[1]}')
+            cb.setChecked(True)
+            colour = PAIR_COLOURS.get(pt, DEFAULT_COLOUR)
+            cb.setStyleSheet(
+                f'QCheckBox {{ color: {colour}; font-weight: bold; }}'
+            )
+            cb.stateChanged.connect(self._refresh_plot)
+            self._filter_layout.addWidget(cb)
+            self._checkboxes[pt] = cb
+
+    def _refresh_plot(self):
+        if not self._results:
+            self._draw_empty_plot()
+            return
+
+        use_unique   = self.chk_unique.isChecked()
+        active_pairs = {pt for pt, cb in self._checkboxes.items()
+                        if cb.isChecked()}
+
+        self.figure.clear()
+        ax = self.figure.add_subplot(111)
+        self._scatter_collections = {}
+        self._ax = ax
+
+        # Determine data to plot
+        if use_unique:
+            # Deduplicate by rounding pfc value
+            seen = set()
+            deduped = []
+            for r in self._results:
+                key = round(r['mean_pfc'], 5)
+                if key not in seen:
+                    seen.add(key)
+                    deduped.append(r)
+            data = deduped
+        else:
+            data = self._results
+
+        for pt in self._pair_types:
+            if pt not in active_pairs:
+                continue
+            sub = [r for r in data
+                   if (r['species1'], r['species2']) == pt]
+            if not sub:
+                continue
+            xs = [r['distance'] for r in sub]
+            ys = [r['mean_pfc'] for r in sub]
+            colour = PAIR_COLOURS.get(pt, DEFAULT_COLOUR)
+            sc = ax.scatter(
+                xs, ys,
+                label=f'{pt[0]}–{pt[1]}',
+                color=colour, s=30,
+                alpha=0.75, edgecolors='none',
+                picker=True, pickradius=6,
+            )
+            self._scatter_collections[pt] = (sc, sub)
+
+        ax.set_xlabel('Interatomic distance (Å)', fontsize=12)
+        ax.set_ylabel('Projected force constant (eV/Å²)', fontsize=12)
+        ax.set_title('Projected force constants vs bond length', fontsize=13)
+        if self._scatter_collections:
+            ax.legend(loc='upper right', framealpha=0.9)
+        ax.grid(True, linestyle='--', alpha=0.4)
+
+        self.canvas.draw()
+
+    # ------------------------------------------------------------------
+    # Interaction: scatter click → 3D highlight
+    # ------------------------------------------------------------------
+
+    def _on_scatter_click(self, event):
+        if event.inaxes is None or not self._scatter_collections:
+            return
+        if event.button != 1:
+            return
+
+        click_x, click_y = event.xdata, event.ydata
+        if click_x is None:
+            return
+
+        # Find the closest data point across all visible collections
+        best_dist  = float('inf')
+        best_record = None
+
+        ax = self._ax
+        x_range = ax.get_xlim()
+        y_range = ax.get_ylim()
+        x_scale = x_range[1] - x_range[0] or 1
+        y_scale = y_range[1] - y_range[0] or 1
+
+        for pt, (sc_obj, records) in self._scatter_collections.items():
+            for r in records:
+                # Normalise distances to [0,1] so axes have equal weight
+                dx = (r['distance'] - click_x) / x_scale
+                dy = (r['mean_pfc']  - click_y) / y_scale
+                d  = (dx**2 + dy**2) ** 0.5
+                if d < best_dist:
+                    best_dist   = d
+                    best_record = r
+
+        if best_record is None or best_dist > PICK_TOLERANCE:
+            return
+
+        a1 = int(best_record['atom1_idx'])
+        a2 = int(best_record['atom2_idx'])
+
+        # Update 3D view
+        if self._supercell is not None:
+            self.structure_view.highlight_bond(a1, a2)
+
+        # Update selection bar
+        sp1 = best_record['species1']
+        sp2 = best_record['species2']
+        d   = best_record['distance']
+        pfc = best_record['mean_pfc']
+        self._selection_bar.setText(
+            f'Selected:  atom {a1} ({sp1}) — atom {a2} ({sp2})   '
+            f'distance = {d:.4f} Å   pFC = {pfc:.6f} eV/Å²'
+        )
+
+        # Emit signal for any external listener
+        self.pair_selected.emit(a1, a2)
+
+    def _export_plot(self):
+        path, _ = QFileDialog.getSaveFileName(
+            self, 'Save plot', 'pfc_plot.png',
+            'PNG image (*.png);;PDF document (*.pdf);;SVG vector (*.svg)',
+        )
+        if path:
+            self.figure.savefig(path, dpi=150, bbox_inches='tight')
