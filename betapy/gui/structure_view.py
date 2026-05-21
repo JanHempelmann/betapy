@@ -402,14 +402,23 @@ class StructureView(QWidget):
         highlight     = self._highlight_pair
         selected_idxs = set(highlight) if highlight else set()
 
+        # Pre-compute refsite neighbours once — used for both dimming and
+        # bond drawing so atoms_within is only called once per redraw.
+        refsite_nearby: list = []
+        if (self._refsite_frac is not None
+                and self._refsite_bonds_cutoff is not None
+                and not selected_idxs):
+            refsite_nearby = sc.atoms_within(self._refsite_frac,
+                                             self._refsite_bonds_cutoff)
+        active_refsite_idxs = {idx for idx, _ in refsite_nearby}
+
+        # Any dimming at all?
+        dimming = bool(selected_idxs or active_refsite_idxs)
+
         # Cartesian positions from current display fractional coords
         cart = self._display_frac @ sc.lattice
 
         # --- Background bonds (batched, per-bond minimum-image endpoints) ---
-        # Bond endpoints are computed from display coords of atom i, then
-        # the minimum-image vector from i to j is added to get atom j's
-        # display position. This ensures no bond crosses the cell regardless
-        # of where atoms were shifted by the centering transform.
         active_bonds = [
             (i_1, j_1) for i_1, j_1, sp_i, sp_j in self._bond_pairs
             if frozenset({sp_i, sp_j}) in self._enabled_bond_types
@@ -417,13 +426,12 @@ class StructureView(QWidget):
         if active_bonds:
             bond_points, bond_lines, pt_idx = [], [], 0
             for i_1, j_1 in active_bonds:
-                p1       = cart[i_1 - 1]
-                # Minimum-image vector from display position of i to j
-                frac_i   = self._display_frac[i_1 - 1]
-                frac_j   = self._display_frac[j_1 - 1]
-                diff     = frac_j - frac_i
-                diff    -= np.floor(diff + 0.5)   # minimum image
-                p2       = p1 + diff @ sc.lattice
+                p1     = cart[i_1 - 1]
+                frac_i = self._display_frac[i_1 - 1]
+                frac_j = self._display_frac[j_1 - 1]
+                diff   = frac_j - frac_i
+                diff  -= np.floor(diff + 0.5)
+                p2     = p1 + diff @ sc.lattice
                 bond_points.extend([p1, p2])
                 bond_lines.extend([2, pt_idx, pt_idx + 1])
                 pt_idx += 2
@@ -435,20 +443,36 @@ class StructureView(QWidget):
                 bond_tubed,
                 color=BOND_COLOUR,
                 name='all_bonds',
-                opacity=DIM_OPACITY if selected_idxs else BOND_OPACITY,
+                opacity=DIM_OPACITY if dimming else BOND_OPACITY,
                 render=False,
             )
 
-        # --- Background atoms ---
-        bg_groups  = {}
-        opacity_bg = DIM_OPACITY if selected_idxs else FULL_OPACITY
-        for i in range(sc.n_atoms):
-            if (i + 1) in selected_idxs:
-                continue
-            sp = sc.species(i + 1)
-            bg_groups.setdefault(sp, []).append(cart[i])
+        # --- Atoms — split into full-opacity and dim groups ---
+        # Pair-highlight mode : selected_idxs drawn separately (gold);
+        #                       everything else dimmed.
+        # Refsite-bonds mode  : atoms within cutoff at full opacity;
+        #                       everything else dimmed.
+        # Default             : all atoms full opacity.
+        full_groups = {}   # sp -> [cart_pos, ...]  full opacity, species colour
+        dim_groups  = {}   # sp -> [cart_pos, ...]  DIM_OPACITY, species colour
 
-        for sp, positions in bg_groups.items():
+        for i in range(sc.n_atoms):
+            idx = i + 1
+            if idx in selected_idxs:
+                continue   # drawn separately as gold below
+            sp  = sc.species(idx)
+            pos = cart[i]
+            if active_refsite_idxs:
+                if idx in active_refsite_idxs:
+                    full_groups.setdefault(sp, []).append(pos)
+                else:
+                    dim_groups.setdefault(sp, []).append(pos)
+            elif selected_idxs:
+                dim_groups.setdefault(sp, []).append(pos)
+            else:
+                full_groups.setdefault(sp, []).append(pos)
+
+        for sp, positions in full_groups.items():
             colour = self._colours.get(sp, (0.5, 0.5, 0.5))
             radius = display_radius(sp)
             cloud  = pv.PolyData(np.array(positions))
@@ -457,11 +481,24 @@ class StructureView(QWidget):
             glyphs = cloud.glyph(geom=proto, scale=False, orient=False)
             self.plotter.add_mesh(
                 glyphs, color=colour,
-                name=f'atoms_{sp}',
-                opacity=opacity_bg, render=False,
+                name=f'atoms_{sp}_full',
+                opacity=FULL_OPACITY, render=False,
             )
 
-        # --- Selected atoms (gold, larger) ---
+        for sp, positions in dim_groups.items():
+            colour = self._colours.get(sp, (0.5, 0.5, 0.5))
+            radius = display_radius(sp)
+            cloud  = pv.PolyData(np.array(positions))
+            proto  = pv.Sphere(radius=radius,
+                               theta_resolution=8, phi_resolution=8)
+            glyphs = cloud.glyph(geom=proto, scale=False, orient=False)
+            self.plotter.add_mesh(
+                glyphs, color=colour,
+                name=f'atoms_{sp}_dim',
+                opacity=DIM_OPACITY, render=False,
+            )
+
+        # --- Selected atoms (gold, larger) — pair-highlight mode only ---
         for idx_1 in selected_idxs:
             sp     = sc.species(idx_1)
             r      = display_radius(sp) * HIGHLIGHT_ATOM_FACTOR
@@ -488,8 +525,6 @@ class StructureView(QWidget):
 
         # --- Refsite cube marker ---
         if self._refsite_frac is not None:
-            # When bonds are shown, _display_frac is centered on the refsite
-            # so it sits at (0.5, 0.5, 0.5); otherwise use its real position.
             if self._refsite_bonds_cutoff is not None:
                 cart_ref = np.array([0.5, 0.5, 0.5]) @ sc.lattice
             else:
@@ -501,29 +536,23 @@ class StructureView(QWidget):
                 name='refsite_cube', render=False,
             )
 
-            # --- Refsite bonds ---
-            if self._refsite_bonds_cutoff is not None:
-                nearby = sc.atoms_within(self._refsite_frac,
-                                         self._refsite_bonds_cutoff)
-                if nearby:
-                    bond_points, bond_lines, pt_idx = [], [], 0
-                    for atom_idx, _ in nearby:
-                        # _display_frac is centered on the refsite, so
-                        # cart[atom_idx-1] is already the correct PBC image —
-                        # no separate min-image step needed.
-                        bond_points.extend([cart_ref, cart[atom_idx - 1]])
-                        bond_lines.extend([2, pt_idx, pt_idx + 1])
-                        pt_idx += 2
-                    ref_bond_mesh        = pv.PolyData()
-                    ref_bond_mesh.points = np.array(bond_points)
-                    ref_bond_mesh.lines  = np.array(bond_lines)
-                    ref_bond_tubed = ref_bond_mesh.tube(
-                        radius=REFSITE_BOND_RADIUS, n_sides=8
-                    )
-                    self.plotter.add_mesh(
-                        ref_bond_tubed,
-                        color=REFSITE_BOND_COLOUR, opacity=REFSITE_BOND_OPACITY,
-                        name='refsite_bonds', render=False,
-                    )
+            # --- Refsite bonds (use precomputed nearby list) ---
+            if refsite_nearby:
+                bond_points, bond_lines, pt_idx = [], [], 0
+                for atom_idx, _ in refsite_nearby:
+                    bond_points.extend([cart_ref, cart[atom_idx - 1]])
+                    bond_lines.extend([2, pt_idx, pt_idx + 1])
+                    pt_idx += 2
+                ref_bond_mesh        = pv.PolyData()
+                ref_bond_mesh.points = np.array(bond_points)
+                ref_bond_mesh.lines  = np.array(bond_lines)
+                ref_bond_tubed = ref_bond_mesh.tube(
+                    radius=REFSITE_BOND_RADIUS, n_sides=8
+                )
+                self.plotter.add_mesh(
+                    ref_bond_tubed,
+                    color=REFSITE_BOND_COLOUR, opacity=REFSITE_BOND_OPACITY,
+                    name='refsite_bonds', render=False,
+                )
 
         self.plotter.render()
