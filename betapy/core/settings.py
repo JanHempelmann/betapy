@@ -27,7 +27,7 @@ from __future__ import annotations
 import copy
 from dataclasses import dataclass, field, fields, asdict
 from pathlib import Path
-from typing import Optional, List, Dict
+from typing import Optional
 import argparse
 import textwrap
 
@@ -41,27 +41,6 @@ except ImportError:
 # ---------------------------------------------------------------------------
 # Nested settings sections
 # ---------------------------------------------------------------------------
-
-@dataclass
-class ShellSettings:
-    """Parameters controlling automatic coordination-shell detection."""
-    gap_factor:   float = 4.0
-    min_gap_abs:  float = 0.15   # Angstrom
-    # Manual overrides per species pair, e.g. {'V-O': [0.0, 2.2, 2.9]}
-    manual_edges: Dict[str, List[float]] = field(default_factory=dict)
-
-    def to_manual_edges_dict(self):
-        """
-        Convert 'V-O' string keys to ('V','O') tuple keys expected by
-        identify_shells().
-        """
-        result = {}
-        for key, edges in self.manual_edges.items():
-            parts = key.replace(' ', '').split('-')
-            if len(parts) == 2:
-                result[tuple(parts)] = edges
-        return result
-
 
 @dataclass
 class RefsiteSettings:
@@ -91,19 +70,15 @@ class StiffnessShiftSettings:
     )
     # Shared fallback REFPOS used when a structure does not specify its own.
     refpos:         str            = 'REFPOS'
-    # Number of shells to include per species pair.
-    # None = auto-balance to the smaller of the two structures.
-    cutoff_shells:  Optional[int]  = None
     # Angstrom cutoff radius around the reference site.
-    cutoff:         float          = 6.0
+    cutoff:          float = 6.0
     # Minimum distance from ref site for atom inclusion.
     # Excludes the site-occupying atom in the intercalated structure.
-    min_site_dist:   float          = 0.1
+    min_site_dist:   float = 0.1
     # Maximum fractional-coordinate distance for atom position matching.
     # Atoms further apart than this are considered unmatched and trigger
     # the equal-count fallback for their species pair.
-    match_tolerance: float          = 0.05
-    shells:         ShellSettings  = field(default_factory=ShellSettings)
+    match_tolerance: float = 0.05
 
 
 # ---------------------------------------------------------------------------
@@ -128,9 +103,6 @@ class Settings:
     refsite:         Optional[RefsiteSettings]       = None
     # Stiffness-shift comparison
     stiffness_shift: Optional[StiffnessShiftSettings] = None
-
-    # --- Shell detection (used for bulk analysis and refsite) ---
-    shells: ShellSettings = field(default_factory=ShellSettings)
 
     # ----------------------------------------------------------------
     # Constructors
@@ -181,10 +153,6 @@ class Settings:
             if key in data:
                 setattr(s, key, data[key])
 
-        # Shell settings
-        if 'shells' in data:
-            s.shells = _dict_to_shell_settings(data['shells'])
-
         # Refsite section
         if 'refsite' in data:
             rd = data['refsite']
@@ -200,11 +168,9 @@ class Settings:
                 structure_a   = _dict_to_structure(sd.get('structure_a', {})),
                 structure_b   = _dict_to_structure(sd.get('structure_b', {})),
                 refpos        = sd.get('refpos', StiffnessShiftSettings.refpos),
-                cutoff_shells = sd.get('cutoff_shells', None),
-                cutoff        = sd.get('cutoff',        6.0),
-                min_site_dist    = sd.get('min_site_dist',    0.1),
-                match_tolerance  = sd.get('match_tolerance', 0.05),
-                shells        = _dict_to_shell_settings(sd.get('shells', {})),
+                cutoff          = sd.get('cutoff',          6.0),
+                min_site_dist   = sd.get('min_site_dist',   0.1),
+                match_tolerance = sd.get('match_tolerance', 0.05),
             )
 
         return s
@@ -219,11 +185,6 @@ class Settings:
             'sposcar':         self.sposcar,
             'force_constants': self.force_constants,
             'store':           self.store,
-            'shells': {
-                'gap_factor':    self.shells.gap_factor,
-                'min_gap_abs':   self.shells.min_gap_abs,
-                'manual_edges':  dict(self.shells.manual_edges),
-            },
         }
         if self.refsite is not None:
             d['refsite'] = {
@@ -243,16 +204,10 @@ class Settings:
                     'force_constants': ss.structure_b.force_constants,
                     'refpos':          ss.structure_b.refpos,
                 },
-                'refpos':         ss.refpos,
-                'cutoff_shells':  ss.cutoff_shells,
-                'cutoff':         ss.cutoff,
+                'refpos':          ss.refpos,
+                'cutoff':          ss.cutoff,
                 'min_site_dist':   ss.min_site_dist,
                 'match_tolerance': ss.match_tolerance,
-                'shells': {
-                    'gap_factor':   ss.shells.gap_factor,
-                    'min_gap_abs':  ss.shells.min_gap_abs,
-                    'manual_edges': dict(ss.shells.manual_edges),
-                },
             }
         return d
 
@@ -282,14 +237,6 @@ class Settings:
             # --- Output ---
             store: false          # write CSV result files
 
-            # --- Coordination shell detection ---
-            shells:
-              gap_factor: 4.0     # relative gap sensitivity
-              min_gap_abs: 0.15   # minimum gap (Angstrom) to count as shell boundary
-              manual_edges:       # optional per-pair overrides
-                # V-O: [0.0, 2.2, 2.9]
-                # V-V: [0.0, 3.5, 4.5]
-
             # --- Reference-site projection (uncomment to enable) ---
             # refsite:
             #   file: REFPOS
@@ -306,15 +253,9 @@ class Settings:
             #     force_constants: path/to/intercalated/FORCE_CONSTANTS
             #     refpos:           # optional per-structure override
             #   refpos: REFPOS      # shared fallback if per-structure not set
-            #   cutoff_shells:      # integer, or omit for auto-balancing
             #   cutoff: 6.0         # Angstrom radius around reference site
             #   min_site_dist: 0.1    # exclude atoms closer than this to ref site
             #   match_tolerance: 0.05 # fractional coord tolerance for atom matching
-            #   shells:           # override shell detection for this comparison
-            #     gap_factor: 4.0
-            #     min_gap_abs: 0.15
-            #     manual_edges:
-            #       # V-O: [0.0, 2.2, 2.9]
         """)
         with open(path, 'w') as f:
             f.write(template)
@@ -337,14 +278,6 @@ def _dict_to_structure(d: dict) -> StructureSettings:
         sposcar         = d.get('sposcar',         StructureSettings.sposcar),
         force_constants = d.get('force_constants', StructureSettings.force_constants),
         refpos          = d.get('refpos',          None),
-    )
-
-
-def _dict_to_shell_settings(d: dict) -> ShellSettings:
-    return ShellSettings(
-        gap_factor   = d.get('gap_factor',   ShellSettings.gap_factor),
-        min_gap_abs  = d.get('min_gap_abs',  ShellSettings.min_gap_abs),
-        manual_edges = d.get('manual_edges', {}),
     )
 
 
@@ -431,12 +364,6 @@ def _build_parser() -> argparse.ArgumentParser:
             'Structure B for stiffness-shift comparison. Accept either: (1) a directory path containing SPOSCAR and FORCE_CONSTANTS, or (2) two explicit paths: SPOSCAR_B FC_B.'
         ),
     )
-    ss_group.add_argument(
-        '--cutoff-shells', type=int, metavar='N',
-        help='Number of shells to include per species pair in stiffness shift. '
-             'Default: auto-balance.',
-    )
-
     return parser
 
 
@@ -505,7 +432,3 @@ def _apply_cli_overrides(settings: Settings, args: argparse.Namespace):
         settings.stiffness_shift.structure_b = _structure_settings_from_arg(
             args.structure_b
         )
-    if args.cutoff_shells is not None:
-        if settings.stiffness_shift is None:
-            settings.stiffness_shift = StiffnessShiftSettings()
-        settings.stiffness_shift.cutoff_shells = args.cutoff_shells
