@@ -220,9 +220,10 @@ class RefsitePFCWidget(QWidget):
     # ------------------------------------------------------------------
 
     def _rebuild_checkboxes(self):
-        for cb in self._checkboxes.values():
-            self._filter_layout.removeWidget(cb.parent())
-            cb.parent().deleteLater()
+        while self._filter_layout.count():
+            item = self._filter_layout.takeAt(0)
+            if item.widget():
+                item.widget().deleteLater()
         self._checkboxes = {}
 
         self._pair_types = sorted(set(
@@ -259,7 +260,7 @@ class RefsitePFCWidget(QWidget):
                 transform=ax.transAxes, ha='center', va='center',
                 color='grey', fontsize=11)
         ax.set_axis_off()
-        self.canvas.draw()
+        self.canvas.draw_idle()
 
     def _refresh_plot(self):
         if not self._results:
@@ -327,7 +328,7 @@ class RefsitePFCWidget(QWidget):
         if self._scatter_data:
             ax.legend(loc='upper right', framealpha=0.9, fontsize=9)
         ax.grid(True, linestyle='--', alpha=0.35)
-        self.canvas.draw()
+        self.canvas.draw_idle()
 
     # ------------------------------------------------------------------
     # Table

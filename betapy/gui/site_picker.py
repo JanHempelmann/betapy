@@ -292,6 +292,12 @@ class SitePickerWidget(QWidget):
         if self.supercell is None or self.fc_data is None:
             QMessageBox.warning(self, 'No data', 'Load a structure first.')
             return
+        try:
+            self._do_analysis()
+        except Exception as e:
+            QMessageBox.critical(self, 'Analysis error', str(e))
+
+    def _do_analysis(self):
         sc     = self.supercell
         cutoff = self.cutoff_spin.value()
 
