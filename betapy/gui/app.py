@@ -20,8 +20,9 @@ from betapy.core.structure import Supercell
 
 class MainWindow(QMainWindow):
 
-    def __init__(self):
+    def __init__(self, splash=None):
         super().__init__()
+        self._splash = splash
         self.setWindowTitle('betapy — Projected Force Constant Analysis')
         self.resize(1200, 800)
 
@@ -29,6 +30,8 @@ class MainWindow(QMainWindow):
         self.supercell = None
         self.fc_data   = None
 
+        if self._splash:
+            self._splash.set_status('Initializing interface…')
         self._build_ui()
         self._autoload_cwd()
 
@@ -104,6 +107,8 @@ class MainWindow(QMainWindow):
 
         sposcar_path = cwd / 'SPOSCAR'
         if sposcar_path.exists():
+            if self._splash:
+                self._splash.set_status('Loading SPOSCAR…')
             try:
                 self._do_load_sposcar(sposcar_path)
                 loaded.append('SPOSCAR')
@@ -112,6 +117,8 @@ class MainWindow(QMainWindow):
 
         csv_path = cwd / 'unique_pFCs.csv'
         if csv_path.exists():
+            if self._splash:
+                self._splash.set_status('Loading pFCs CSV…')
             try:
                 self.pfc_viewer.load_from_csv(str(csv_path))
                 loaded.append('unique_pFCs.csv')
@@ -120,6 +127,8 @@ class MainWindow(QMainWindow):
 
         fc_path = cwd / 'FORCE_CONSTANTS'
         if fc_path.exists():
+            if self._splash:
+                self._splash.set_status('Loading FORCE_CONSTANTS…')
             try:
                 self._do_load_fc(fc_path)
                 loaded.append('FORCE_CONSTANTS')
@@ -128,6 +137,8 @@ class MainWindow(QMainWindow):
 
         refpos_path = cwd / 'REFPOS'
         if refpos_path.exists():
+            if self._splash:
+                self._splash.set_status('Loading REFPOS…')
             self.site_picker.load_refpos(str(refpos_path))
             loaded.append('REFPOS')
 
@@ -285,8 +296,16 @@ class MainWindow(QMainWindow):
 def main():
     app = QApplication(sys.argv)
     app.setStyle('Fusion')
-    window = MainWindow()
+
+    from betapy.gui.splash import BetapySplashScreen
+    splash = BetapySplashScreen()
+    splash.show()
+    app.processEvents()
+
+    window = MainWindow(splash=splash)
     window.show()
+    splash.finish(window)
+
     sys.exit(app.exec_())
 
 
