@@ -317,6 +317,7 @@ class SitePickerWidget(QWidget):
             self._ref_frac,
             cutoff,
             exclude_species=exclude_sp,
+            show_progress=False,
         )
 
         self._last_offsite = offsite

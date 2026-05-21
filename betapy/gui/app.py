@@ -287,6 +287,7 @@ class MainWindow(QMainWindow):
                 self.supercell,
                 self.fc_data['atomic_pairs'],
                 self.fc_data['force_matrices'],
+                show_progress=False,
             )
             df_unique = unique_pfcs(results)
         except Exception as e:

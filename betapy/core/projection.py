@@ -7,6 +7,7 @@ No file I/O, no UI concerns live here.
 
 import numpy as np
 import pandas as pd
+from tqdm import tqdm
 
 
 # ---------------------------------------------------------------------------
@@ -51,7 +52,8 @@ def _onsite_norm(fc_matrix):
 # Bulk pFC: project along interatomic bond vectors
 # ---------------------------------------------------------------------------
 
-def compute_bulk_pfcs(supercell, atomic_pairs, force_matrices):
+def compute_bulk_pfcs(supercell, atomic_pairs, force_matrices,
+                      show_progress=True):
     """
     Separate on-site and off-site pairs, project off-site FCs along bond vectors.
 
@@ -60,6 +62,7 @@ def compute_bulk_pfcs(supercell, atomic_pairs, force_matrices):
     supercell      : Supercell instance
     atomic_pairs   : list of [i, j] 1-based index pairs
     force_matrices : list of (3,3) arrays, one per pair
+    show_progress  : bool, show tqdm progress bar (default True)
 
     Returns
     -------
@@ -74,7 +77,11 @@ def compute_bulk_pfcs(supercell, atomic_pairs, force_matrices):
     onsite  = []
     distances = []
 
-    for pair, fc_mat in zip(atomic_pairs, force_matrices):
+    for pair, fc_mat in tqdm(zip(atomic_pairs, force_matrices),
+                              total=len(atomic_pairs),
+                              desc='bulk pFCs',
+                              unit='pair',
+                              disable=not show_progress):
         i, j = pair
         if i == j:
             # On-site term
@@ -143,7 +150,7 @@ def unique_pfcs(bulk_results):
 
 def find_refsite_pairs(supercell, atomic_pairs, force_matrices,
                        refsite_frac, cutoff, min_distance=0.0,
-                       exclude_species=None):
+                       exclude_species=None, show_progress=True):
     """
     Find all pairs where both atoms are within `cutoff` Angstrom of
     `refsite_frac` (a fractional coordinate), and project their FCs
@@ -176,7 +183,11 @@ def find_refsite_pairs(supercell, atomic_pairs, force_matrices,
     offsite_results = []
     onsite_results  = []
 
-    for pair_idx, (pair, fc_mat) in enumerate(zip(atomic_pairs, force_matrices)):
+    for pair, fc_mat in tqdm(zip(atomic_pairs, force_matrices),
+                              total=len(atomic_pairs),
+                              desc='refsite pFCs',
+                              unit='pair',
+                              disable=not show_progress):
         i, j = pair
         dist_i = supercell.distance_to_point(i, refsite_frac)
         dist_j = supercell.distance_to_point(j, refsite_frac)

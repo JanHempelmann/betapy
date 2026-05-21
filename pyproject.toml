@@ -16,6 +16,7 @@ dependencies = [
     "pyvistaqt",
     "pyyaml",
     "scipy",
+    "tqdm",
 ]
 
 [project.scripts]
