@@ -18,11 +18,11 @@ from PyQt5.QtWidgets import (
     QWidget, QHBoxLayout, QVBoxLayout, QSplitter,
     QPushButton, QLabel, QDoubleSpinBox, QLineEdit,
     QGroupBox, QFileDialog, QMessageBox, QComboBox,
-    QGridLayout,
+    QGridLayout, QSizePolicy,
 )
 from PyQt5.QtCore import Qt
 
-from betapy.core.io import write_refpos
+from betapy.core.io import read_refpos, write_refpos
 from betapy.core.projection import find_refsite_pairs, refsite_results_to_dataframes
 from betapy.gui.structure_view import StructureView
 
@@ -113,6 +113,25 @@ class SitePickerWidget(QWidget):
         cutoff_box.setLayout(cutoff_layout)
         ctrl_layout.addWidget(cutoff_box)
 
+        # Refsite connections
+        conn_box = QGroupBox('Refsite connections')
+        conn_layout = QVBoxLayout()
+        conn_cutoff_row = QHBoxLayout()
+        conn_cutoff_row.addWidget(QLabel('Cutoff (Å)'))
+        self.conn_cutoff_spin = QDoubleSpinBox()
+        self.conn_cutoff_spin.setRange(0.1, 30.0)
+        self.conn_cutoff_spin.setSingleStep(0.5)
+        self.conn_cutoff_spin.setDecimals(2)
+        self.conn_cutoff_spin.setValue(6.0)
+        conn_cutoff_row.addWidget(self.conn_cutoff_spin)
+        conn_layout.addLayout(conn_cutoff_row)
+        self.btn_connections = QPushButton('Show connections')
+        self.btn_connections.setCheckable(True)
+        self.btn_connections.clicked.connect(self._toggle_connections)
+        conn_layout.addWidget(self.btn_connections)
+        conn_box.setLayout(conn_layout)
+        ctrl_layout.addWidget(conn_box)
+
         # Actions
         btn_analyse = QPushButton('Run refsite analysis')
         btn_analyse.clicked.connect(self._run_analysis)
@@ -176,6 +195,9 @@ class SitePickerWidget(QWidget):
         for spin in self._spin.values():
             spin.blockSignals(False)
         self.structure_view.set_ref_site(self._ref_frac)
+        # Keep connection lines in sync when the site moves
+        if self.btn_connections.isChecked():
+            self.structure_view.set_refsite_bonds(self.conn_cutoff_spin.value())
 
     def _on_spin_changed(self):
         self._ref_frac = np.array([
@@ -209,6 +231,37 @@ class SitePickerWidget(QWidget):
         self.snap_combo.blockSignals(True)
         self.snap_combo.setCurrentIndex(nearest)
         self.snap_combo.blockSignals(False)
+
+    # ------------------------------------------------------------------
+    # REFPOS loading
+    # ------------------------------------------------------------------
+
+    def load_refpos(self, path):
+        """
+        Read a REFPOS file and update the reference site position.
+        Uses the first site if multiple are present. Silently ignores errors.
+        """
+        try:
+            data = read_refpos(path)
+        except Exception:
+            return
+        if not data['positions']:
+            return
+        self._last_label = data['label']
+        self.label_edit.setText(data['label'])
+        self._set_ref_frac(data['positions'][0])
+
+    # ------------------------------------------------------------------
+    # Connection toggle
+    # ------------------------------------------------------------------
+
+    def _toggle_connections(self, checked):
+        if checked:
+            self.btn_connections.setText('Hide connections')
+            self.structure_view.set_refsite_bonds(self.conn_cutoff_spin.value())
+        else:
+            self.btn_connections.setText('Show connections')
+            self.structure_view.set_refsite_bonds(None)
 
     # ------------------------------------------------------------------
     # Analysis and export

@@ -126,6 +126,11 @@ class MainWindow(QMainWindow):
             except Exception as e:
                 messages.append(f'FORCE_CONSTANTS auto-load failed: {e}')
 
+        refpos_path = cwd / 'REFPOS'
+        if refpos_path.exists():
+            self.site_picker.load_refpos(str(refpos_path))
+            loaded.append('REFPOS')
+
         if loaded:
             self.status.showMessage(
                 f'Auto-loaded from {cwd}: {", ".join(loaded)}'
@@ -191,6 +196,12 @@ class MainWindow(QMainWindow):
             self.supercell,
             self.fc_data,   # may be None if FC not loaded yet, that's fine
         )
+
+        # Auto-load REFPOS from the same directory as the SPOSCAR
+        refpos_path = path.parent / 'REFPOS'
+        if refpos_path.exists():
+            self.site_picker.load_refpos(str(refpos_path))
+
         self._check_ready()
 
     def _do_load_fc(self, path):

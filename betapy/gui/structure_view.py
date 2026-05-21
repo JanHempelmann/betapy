@@ -39,7 +39,11 @@ HIGHLIGHT_ATOM_FACTOR = 1.4
 HIGHLIGHT_BOND_RADIUS = 0.10
 
 REFSITE_COLOUR        = (1.0, 0.2, 0.2)
-REFSITE_RADIUS        = 0.30
+REFSITE_CUBE_SIZE     = 1.0     # Å per side — larger than any display-radius atom
+REFSITE_CUBE_OPACITY  = 0.40
+REFSITE_BOND_COLOUR   = (0.85, 0.30, 0.10)
+REFSITE_BOND_RADIUS   = 0.04
+REFSITE_BOND_OPACITY  = 0.80
 
 DIM_OPACITY           = 0.12
 FULL_OPACITY          = 1.0
@@ -70,6 +74,9 @@ class StructureView(QWidget):
         # enabled bond types: set of frozenset({sp_i, sp_j})
         self._enabled_bond_types = set()
         self._bond_checkboxes    = {}   # frozenset -> QCheckBox
+        # Reference site state (None = not set)
+        self._refsite_frac        = None
+        self._refsite_bonds_cutoff = None  # Å, or None to hide
 
         self._build_ui(show_color_picker)
 
@@ -205,9 +212,11 @@ class StructureView(QWidget):
 
     def load_supercell(self, supercell):
         """Render all atoms and compute bonds. Call once per structure load."""
-        self.supercell       = supercell
-        self._highlight_pair = None
-        self._display_frac   = supercell.positions.copy()
+        self.supercell            = supercell
+        self._highlight_pair      = None
+        self._display_frac        = supercell.positions.copy()
+        self._refsite_frac        = None
+        self._refsite_bonds_cutoff = None
         self._colours        = {
             sp: element_colour(sp) for sp in supercell.chem_symbols
         }
@@ -249,17 +258,31 @@ class StructureView(QWidget):
         self._redraw()
 
     def set_ref_site(self, frac_coords):
-        """Place or move the reference site marker."""
-        self.plotter.remove_actor('refsite_marker', render=False)
+        """Place or move the reference site cube marker."""
+        self._refsite_frac = np.asarray(frac_coords, dtype=float)
         if self.supercell is None:
             return
-        cart   = np.asarray(frac_coords) @ self.supercell.lattice
-        sphere = pv.Sphere(radius=REFSITE_RADIUS, center=cart,
-                           theta_resolution=20, phi_resolution=20)
+        if self._refsite_bonds_cutoff is not None:
+            # Bonds need recomputing — full redraw is necessary
+            self._redraw()
+            return
+        # Fast path: just swap the cube actor without a full redraw
+        self.plotter.remove_actor('refsite_cube', render=False)
+        cart = self._refsite_frac @ self.supercell.lattice
+        s    = REFSITE_CUBE_SIZE
+        cube = pv.Cube(center=cart, x_length=s, y_length=s, z_length=s)
         self.plotter.add_mesh(
-            sphere, color=REFSITE_COLOUR,
-            name='refsite_marker', opacity=0.85, render=True,
+            cube, color=REFSITE_COLOUR, opacity=REFSITE_CUBE_OPACITY,
+            name='refsite_cube', render=True,
         )
+
+    def set_refsite_bonds(self, cutoff):
+        """
+        Draw tubes from the refsite to all atoms within cutoff Å.
+        Pass None to clear the bonds.
+        """
+        self._refsite_bonds_cutoff = cutoff
+        self._redraw()
 
     def _toggle_projection(self, checked):
         """Switch between perspective and parallel projection."""
@@ -440,5 +463,38 @@ class StructureView(QWidget):
                 name='highlight_bond',
                 opacity=FULL_OPACITY, render=False,
             )
+
+        # --- Refsite cube marker ---
+        if self._refsite_frac is not None:
+            cart_ref = self._refsite_frac @ sc.lattice
+            s    = REFSITE_CUBE_SIZE
+            cube = pv.Cube(center=cart_ref, x_length=s, y_length=s, z_length=s)
+            self.plotter.add_mesh(
+                cube, color=REFSITE_COLOUR, opacity=REFSITE_CUBE_OPACITY,
+                name='refsite_cube', render=False,
+            )
+
+            # --- Refsite bonds ---
+            if self._refsite_bonds_cutoff is not None:
+                nearby = sc.atoms_within(self._refsite_frac,
+                                         self._refsite_bonds_cutoff)
+                if nearby:
+                    orig_cart = sc.positions @ sc.lattice
+                    bond_points, bond_lines, pt_idx = [], [], 0
+                    for atom_idx, _ in nearby:
+                        bond_points.extend([cart_ref, orig_cart[atom_idx - 1]])
+                        bond_lines.extend([2, pt_idx, pt_idx + 1])
+                        pt_idx += 2
+                    ref_bond_mesh        = pv.PolyData()
+                    ref_bond_mesh.points = np.array(bond_points)
+                    ref_bond_mesh.lines  = np.array(bond_lines)
+                    ref_bond_tubed = ref_bond_mesh.tube(
+                        radius=REFSITE_BOND_RADIUS, n_sides=8
+                    )
+                    self.plotter.add_mesh(
+                        ref_bond_tubed,
+                        color=REFSITE_BOND_COLOUR, opacity=REFSITE_BOND_OPACITY,
+                        name='refsite_bonds', render=False,
+                    )
 
         self.plotter.render()
