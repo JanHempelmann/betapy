@@ -34,19 +34,6 @@ from matplotlib.figure import Figure
 from betapy.gui.structure_view import StructureView
 
 
-PAIR_COLOURS = {
-    ('Li', 'Li'): '#4878CF',
-    ('V',  'V' ): '#D65F5F',
-    ('O',  'O' ): '#6ACC65',
-    ('Li', 'V' ): '#B47CC7',
-    ('V',  'Li'): '#B47CC7',
-    ('Li', 'O' ): '#C4AD66',
-    ('O',  'Li'): '#C4AD66',
-    ('V',  'O' ): '#77BEDB',
-    ('O',  'V' ): '#77BEDB',
-}
-DEFAULT_COLOUR = '#888888'
-
 # How close (in data units) a click must be to count as a point selection
 PICK_TOLERANCE = 0.02    # fraction of axis range
 
@@ -126,6 +113,9 @@ class PFCViewerWidget(QWidget):
 
         # --- Right panel: 3D structure view ---
         self.structure_view = StructureView(self)
+        # When the user changes a colour in the structure view picker,
+        # refresh the scatter plot so it stays in sync
+        self.structure_view.colours_changed.connect(self._on_colours_changed)
         splitter.addWidget(self.structure_view)
 
         splitter.setSizes([550, 550])
@@ -151,6 +141,11 @@ class PFCViewerWidget(QWidget):
         """
         self._supercell = supercell
         self.structure_view.load_supercell(supercell)
+
+    def _on_colours_changed(self):
+        """Called when the structure view colour picker changes a species colour."""
+        self._rebuild_checkboxes()
+        self._refresh_plot()
 
     def load_data(self, df_unique, all_results, supercell=None):
         """
@@ -251,14 +246,31 @@ class PFCViewerWidget(QWidget):
             (r['species1'], r['species2']) for r in self._results
         ))
         for pt in self._pair_types:
-            cb = QCheckBox(f'{pt[0]}–{pt[1]}')
+            if self._supercell is not None:
+                c1, c2 = self.structure_view.pair_colours_hex(pt[0], pt[1])
+            else:
+                c1 = c2 = '#555555'
+
+            # Use a QLabel for rich coloured text + a QCheckBox for the tick
+            row = QWidget()
+            row_layout = QHBoxLayout(row)
+            row_layout.setContentsMargins(0, 0, 0, 0)
+            row_layout.setSpacing(4)
+
+            cb = QCheckBox()
             cb.setChecked(True)
-            colour = PAIR_COLOURS.get(pt, DEFAULT_COLOUR)
-            cb.setStyleSheet(
-                f'QCheckBox {{ color: {colour}; font-weight: bold; }}'
-            )
             cb.stateChanged.connect(self._refresh_plot)
-            self._filter_layout.addWidget(cb)
+
+            lbl = QLabel(
+                f'<b><span style="color:{c1}">{pt[0]}</span></b>'
+                f'<span style="color:#888888"> – </span>'
+                f'<b><span style="color:{c2}">{pt[1]}</span></b>'
+            )
+
+            row_layout.addWidget(cb)
+            row_layout.addWidget(lbl)
+            row_layout.addStretch()
+            self._filter_layout.addWidget(row)
             self._checkboxes[pt] = cb
 
     def _refresh_plot(self):
@@ -297,22 +309,64 @@ class PFCViewerWidget(QWidget):
             if not sub:
                 continue
             xs = [r['distance'] for r in sub]
-            ys = [r['mean_pfc'] for r in sub]
-            colour = PAIR_COLOURS.get(pt, DEFAULT_COLOUR)
-            sc = ax.scatter(
-                xs, ys,
-                label=f'{pt[0]}–{pt[1]}',
-                color=colour, s=30,
-                alpha=0.75, edgecolors='none',
-                picker=True, pickradius=6,
-            )
+            ys = [r['mean_pfc']  for r in sub]
+
+            # Get colours from structure view if loaded, else fallback grey
+            if self._supercell is not None:
+                c1, c2 = self.structure_view.pair_colours_hex(pt[0], pt[1])
+            else:
+                c1 = c2 = '#888888'
+
+            if c1 == c2:
+                # Same species — solid circle, plain label
+                sc = ax.scatter(
+                    xs, ys, label=f'{pt[0]}–{pt[1]}',
+                    color=c1, s=35,
+                    alpha=0.80, edgecolors='none',
+                    picker=True, pickradius=6,
+                )
+            else:
+                # Mixed species — split half-circle markers
+                # Upper half = species1 colour, lower half = species2 colour
+                theta = np.linspace(0, np.pi, 60)
+                top_verts = np.column_stack([
+                    np.concatenate([[0], np.cos(theta),  [0]]),
+                    np.concatenate([[0], np.sin(theta),  [0]]),
+                ])
+                bot_verts = np.column_stack([
+                    np.concatenate([[0], np.cos(theta + np.pi), [0]]),
+                    np.concatenate([[0], np.sin(theta + np.pi), [0]]),
+                ])
+                ax.scatter(xs, ys, marker=top_verts, s=35,
+                           color=c1, alpha=0.80, edgecolors='none')
+                sc = ax.scatter(xs, ys, marker=bot_verts, s=35,
+                                color=c2, alpha=0.80, edgecolors='none',
+                                label=f'{pt[0]}–{pt[1]}',
+                                picker=True, pickradius=6)
+
             self._scatter_collections[pt] = (sc, sub)
 
         ax.set_xlabel('Interatomic distance (Å)', fontsize=12)
         ax.set_ylabel('Projected force constant (eV/Å²)', fontsize=12)
         ax.set_title('Projected force constants vs bond length', fontsize=13)
         if self._scatter_collections:
-            ax.legend(loc='upper right', framealpha=0.9)
+            legend = ax.legend(loc='upper right', framealpha=0.9)
+            # Colour each legend label: "V–O" → V in its colour, – grey, O in its colour
+            for legend_text, pt in zip(legend.get_texts(),
+                                        [p for p in self._pair_types
+                                         if p in active_pairs]):
+                if self._supercell is not None:
+                    lc1, lc2 = self.structure_view.pair_colours_hex(pt[0], pt[1])
+                else:
+                    lc1 = lc2 = '#555555'
+                # matplotlib legend text doesn't support HTML, so we set
+                # colour to c1 for same-species, or a blend for mixed
+                if lc1 == lc2:
+                    legend_text.set_color(lc1)
+                else:
+                    # For mixed pairs set to c1 (species1) — the split marker
+                    # already shows both colours visually
+                    legend_text.set_color(lc1)
         ax.grid(True, linestyle='--', alpha=0.4)
 
         self.canvas.draw()

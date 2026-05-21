@@ -30,7 +30,6 @@ class MainWindow(QMainWindow):
         self.fc_data   = None
 
         self._build_ui()
-        # After UI is built, attempt to auto-load files from cwd
         self._autoload_cwd()
 
     def _build_ui(self):
@@ -96,12 +95,6 @@ class MainWindow(QMainWindow):
         """
         On startup, check the current working directory for standard
         Phonopy/betapy output files and load whatever is present.
-
-        Loading order matters:
-          1. SPOSCAR first — gives us the supercell for 3D rendering
-          2. unique_pFCs.csv — populates the scatter plot immediately
-          3. FORCE_CONSTANTS — enables the Analyse button
-
         Any combination of these three can be present; missing files are
         silently skipped.
         """
@@ -109,7 +102,6 @@ class MainWindow(QMainWindow):
         loaded   = []
         messages = []
 
-        # 1. SPOSCAR
         sposcar_path = cwd / 'SPOSCAR'
         if sposcar_path.exists():
             try:
@@ -118,7 +110,6 @@ class MainWindow(QMainWindow):
             except Exception as e:
                 messages.append(f'SPOSCAR auto-load failed: {e}')
 
-        # 2. unique_pFCs.csv — load before FC so user sees plot immediately
         csv_path = cwd / 'unique_pFCs.csv'
         if csv_path.exists():
             try:
@@ -127,7 +118,6 @@ class MainWindow(QMainWindow):
             except Exception as e:
                 messages.append(f'unique_pFCs.csv auto-load failed: {e}')
 
-        # 3. FORCE_CONSTANTS
         fc_path = cwd / 'FORCE_CONSTANTS'
         if fc_path.exists():
             try:
@@ -141,7 +131,6 @@ class MainWindow(QMainWindow):
                 f'Auto-loaded from {cwd}: {", ".join(loaded)}'
             )
         if messages:
-            # Non-fatal — show in status bar, don't block startup
             self.status.showMessage(' | '.join(messages))
 
     # ------------------------------------------------------------------

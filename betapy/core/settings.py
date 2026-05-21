@@ -418,14 +418,18 @@ def _build_parser() -> argparse.ArgumentParser:
              '--structure-a / --structure-b).',
     )
     ss_group.add_argument(
-        '--structure-a', nargs=2,
-        metavar=('SPOSCAR_A', 'FC_A'),
-        help='SPOSCAR and FORCE_CONSTANTS for structure A.',
+        '--structure-a', nargs='+',
+        metavar='PATH',
+        help=(
+            'Structure A for stiffness-shift comparison. Accept either: (1) a directory path containing SPOSCAR and FORCE_CONSTANTS, or (2) two explicit paths: SPOSCAR_A FC_A. Tab-completion works on directory paths.'
+        ),
     )
     ss_group.add_argument(
-        '--structure-b', nargs=2,
-        metavar=('SPOSCAR_B', 'FC_B'),
-        help='SPOSCAR and FORCE_CONSTANTS for structure B.',
+        '--structure-b', nargs='+',
+        metavar='PATH',
+        help=(
+            'Structure B for stiffness-shift comparison. Accept either: (1) a directory path containing SPOSCAR and FORCE_CONSTANTS, or (2) two explicit paths: SPOSCAR_B FC_B.'
+        ),
     )
     ss_group.add_argument(
         '--cutoff-shells', type=int, metavar='N',
@@ -434,6 +438,35 @@ def _build_parser() -> argparse.ArgumentParser:
     )
 
     return parser
+
+
+def _structure_settings_from_arg(arg_list):
+    """
+    Resolve --structure-a / --structure-b CLI argument to a StructureSettings.
+
+    Accepts either:
+      - A single directory path: looks for SPOSCAR and FORCE_CONSTANTS inside
+      - Two explicit file paths: [sposcar_path, fc_path]
+
+    The directory form is the ergonomic default for interactive use since
+    tab-completion works naturally on directory paths.
+    """
+    from pathlib import Path as _Path
+    if len(arg_list) == 1:
+        d = _Path(arg_list[0])
+        return StructureSettings(
+            sposcar         = str(d / 'SPOSCAR'),
+            force_constants = str(d / 'FORCE_CONSTANTS'),
+        )
+    elif len(arg_list) == 2:
+        return StructureSettings(
+            sposcar         = arg_list[0],
+            force_constants = arg_list[1],
+        )
+    else:
+        raise ValueError(
+            f'--structure-a/b accepts 1 (directory) or 2 (SPOSCAR FC) arguments, got {len(arg_list)}: {arg_list}'
+        )
 
 
 def _apply_cli_overrides(settings: Settings, args: argparse.Namespace):
@@ -463,16 +496,14 @@ def _apply_cli_overrides(settings: Settings, args: argparse.Namespace):
     if args.structure_a:
         if settings.stiffness_shift is None:
             settings.stiffness_shift = StiffnessShiftSettings()
-        settings.stiffness_shift.structure_a = StructureSettings(
-            sposcar=args.structure_a[0],
-            force_constants=args.structure_a[1],
+        settings.stiffness_shift.structure_a = _structure_settings_from_arg(
+            args.structure_a
         )
     if args.structure_b:
         if settings.stiffness_shift is None:
             settings.stiffness_shift = StiffnessShiftSettings()
-        settings.stiffness_shift.structure_b = StructureSettings(
-            sposcar=args.structure_b[0],
-            force_constants=args.structure_b[1],
+        settings.stiffness_shift.structure_b = _structure_settings_from_arg(
+            args.structure_b
         )
     if args.cutoff_shells is not None:
         if settings.stiffness_shift is None:

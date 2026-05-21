@@ -21,7 +21,7 @@ from PyQt5.QtWidgets import (
     QGroupBox, QScrollArea, QCheckBox,
 )
 from PyQt5.QtGui import QColor
-from PyQt5.QtCore import Qt
+from PyQt5.QtCore import Qt, pyqtSignal
 
 from betapy.data.elements import covalent_radius, element_colour, display_radius
 
@@ -54,6 +54,10 @@ class StructureView(QWidget):
     parent            : QWidget or None
     show_color_picker : bool — show per-species colour picker panel
     """
+
+    # Emitted when any species colour changes — listeners (e.g. pFC scatter
+    # plot) can connect to this to stay in sync with the colour picker.
+    colours_changed = pyqtSignal()
 
     def __init__(self, parent=None, show_color_picker=True):
         super().__init__(parent)
@@ -91,6 +95,14 @@ class StructureView(QWidget):
             self._bond_group    = self._build_bond_toggle_panel()
             right_panel.addWidget(self._colour_group)
             right_panel.addWidget(self._bond_group)
+
+            # Projection toggle
+            self._proj_btn = QPushButton('Parallel projection')
+            self._proj_btn.setCheckable(True)
+            self._proj_btn.setChecked(False)
+            self._proj_btn.clicked.connect(self._toggle_projection)
+            right_panel.addWidget(self._proj_btn)
+
             right_panel.addStretch()
             outer.addWidget(right_widget)
         else:
@@ -185,6 +197,7 @@ class StructureView(QWidget):
             self._colours[species] = new_rgb
             self._update_swatch(btn, new_rgb)
             self._redraw()
+            self.colours_changed.emit()
 
     # ------------------------------------------------------------------
     # Public API
@@ -247,6 +260,38 @@ class StructureView(QWidget):
             sphere, color=REFSITE_COLOUR,
             name='refsite_marker', opacity=0.85, render=True,
         )
+
+    def _toggle_projection(self, checked):
+        """Switch between perspective and parallel projection."""
+        if checked:
+            self.plotter.enable_parallel_projection()
+            self._proj_btn.setText('Perspective projection')
+        else:
+            self.plotter.disable_parallel_projection()
+            self._proj_btn.setText('Parallel projection')
+        self.plotter.render()
+
+    def get_species_colours(self):
+        """
+        Return current per-species colour dict as {species: (R,G,B) float tuple}.
+        Called by PFCViewerWidget to sync scatter plot colours with structure view.
+        """
+        return dict(self._colours)
+
+    def pair_colours_hex(self, sp1, sp2):
+        """
+        Return (hex1, hex2) for a species pair.
+        Same species → (colour, colour).
+        Mixed → (colour_sp1, colour_sp2) for split-circle rendering.
+        """
+        def to_hex(rgb):
+            if isinstance(rgb, str):
+                return rgb
+            r, g, b = [int(c * 255) for c in rgb]
+            return f'#{r:02x}{g:02x}{b:02x}'
+        c1 = to_hex(self._colours.get(sp1, (0.5, 0.5, 0.5)))
+        c2 = to_hex(self._colours.get(sp2, (0.5, 0.5, 0.5)))
+        return c1, c2
 
     # ------------------------------------------------------------------
     # Bond computation (once on load)
