@@ -142,6 +142,16 @@ class MainWindow(QMainWindow):
             self.site_picker.load_refpos(str(refpos_path))
             loaded.append('REFPOS')
 
+        refsite_csv_path = cwd / 'refsite_pFCs.csv'
+        if refsite_csv_path.exists():
+            if self._splash:
+                self._splash.set_status('Loading refsite pFCs CSV…')
+            try:
+                self.site_picker.load_refsite_csv(str(refsite_csv_path))
+                loaded.append('refsite_pFCs.csv')
+            except Exception as e:
+                messages.append(f'refsite_pFCs.csv auto-load failed: {e}')
+
         if loaded:
             self.status.showMessage(
                 f'Auto-loaded from {cwd}: {", ".join(loaded)}'

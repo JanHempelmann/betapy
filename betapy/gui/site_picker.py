@@ -18,13 +18,14 @@ from PyQt5.QtWidgets import (
     QWidget, QHBoxLayout, QVBoxLayout, QSplitter,
     QPushButton, QLabel, QDoubleSpinBox, QLineEdit,
     QGroupBox, QFileDialog, QMessageBox, QComboBox,
-    QGridLayout, QSizePolicy,
+    QGridLayout,
 )
 from PyQt5.QtCore import Qt
 
 from betapy.core.io import read_refpos, write_refpos
 from betapy.core.projection import find_refsite_pairs, refsite_results_to_dataframes
 from betapy.gui.structure_view import StructureView
+from betapy.gui.refsite_viewer import RefsitePFCWidget
 
 
 class SitePickerWidget(QWidget):
@@ -48,7 +49,9 @@ class SitePickerWidget(QWidget):
         splitter = QSplitter(Qt.Horizontal)
         outer.addWidget(splitter)
 
-        # --- Left: 3D view ---
+        # --- Left: vertical splitter — 3D view on top, pFC viewer below ---
+        left_splitter = QSplitter(Qt.Vertical)
+
         self.structure_view = StructureView(self)
         # Connect PyVista's point picker so clicking an atom snaps the site
         self.structure_view.plotter.enable_point_picking(
@@ -56,7 +59,15 @@ class SitePickerWidget(QWidget):
             show_message=False,
             show_point=False,
         )
-        splitter.addWidget(self.structure_view)
+        left_splitter.addWidget(self.structure_view)
+
+        self.pfc_viewer = RefsitePFCWidget()
+        self.pfc_viewer.set_structure_view(self.structure_view)
+        self.structure_view.colours_changed.connect(self.pfc_viewer._refresh_plot)
+        left_splitter.addWidget(self.pfc_viewer)
+        left_splitter.setSizes([520, 280])
+
+        splitter.addWidget(left_splitter)
 
         # --- Right: controls ---
         ctrl_widget = QWidget()
@@ -282,12 +293,19 @@ class SitePickerWidget(QWidget):
         self._last_offsite = offsite
         self._last_onsite  = onsite
         self._last_label   = self.label_edit.text() or 'custom_site'
+
+        self.pfc_viewer.load_data(offsite, self.supercell)
+
         self.result_label.setText(
             f'Found:\n'
             f'  {len(offsite)} off-site pairs\n'
             f'  {len(onsite)} on-site terms\n'
             f'cutoff: {cutoff:.2f} Å'
         )
+
+    def load_refsite_csv(self, path):
+        """Load a refsite pFCs CSV into the pFC viewer panel."""
+        self.pfc_viewer.load_from_csv(path)
 
     def _export_refpos(self):
         label = self.label_edit.text() or 'custom_site'

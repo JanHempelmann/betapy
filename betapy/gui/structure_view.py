@@ -247,7 +247,8 @@ class StructureView(QWidget):
     def highlight_bond(self, atom1_idx_1based, atom2_idx_1based):
         """Select a pair: center atom1, dim background, highlight bond."""
         self._highlight_pair = (atom1_idx_1based, atom2_idx_1based)
-        self._update_display_frac(atom1_idx_1based)
+        if self._refsite_bonds_cutoff is None:
+            self._update_display_frac(atom1_idx_1based)
         self._redraw()
 
     def clear_highlight(self):
@@ -406,8 +407,7 @@ class StructureView(QWidget):
         # bond drawing so atoms_within is only called once per redraw.
         refsite_nearby: list = []
         if (self._refsite_frac is not None
-                and self._refsite_bonds_cutoff is not None
-                and not selected_idxs):
+                and self._refsite_bonds_cutoff is not None):
             refsite_nearby = sc.atoms_within(self._refsite_frac,
                                              self._refsite_bonds_cutoff)
         active_refsite_idxs = {idx for idx, _ in refsite_nearby}
