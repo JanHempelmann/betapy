@@ -244,15 +244,19 @@ class Settings:
 
             # --- Stiffness-shift comparison (uncomment to enable) ---
             # stiffness_shift:
-            #   structure_a:
-            #     sposcar: path/to/deintercalated/SPOSCAR
-            #     force_constants: path/to/deintercalated/FORCE_CONSTANTS
-            #     refpos:           # optional per-structure override
-            #   structure_b:
-            #     sposcar: path/to/intercalated/SPOSCAR
-            #     force_constants: path/to/intercalated/FORCE_CONSTANTS
-            #     refpos:           # optional per-structure override
-            #   refpos: REFPOS      # shared fallback if per-structure not set
+            #   # Directory form: looks for SPOSCAR and FORCE_CONSTANTS inside
+            #   structure_a: path/to/deintercalated/
+            #   structure_b: path/to/intercalated/
+            #   # Explicit-file form (use when filenames differ from defaults):
+            #   # structure_a:
+            #   #   sposcar: path/to/deintercalated/SPOSCAR
+            #   #   force_constants: path/to/deintercalated/FORCE_CONSTANTS
+            #   #   refpos:           # optional per-structure REFPOS override
+            #   # structure_b:
+            #   #   sposcar: path/to/intercalated/SPOSCAR
+            #   #   force_constants: path/to/intercalated/FORCE_CONSTANTS
+            #   #   refpos:           # optional per-structure REFPOS override
+            #   refpos: REFPOS      # shared fallback if per-structure refpos not set
             #   cutoff: 6.0         # Angstrom radius around reference site
             #   min_site_dist: 0.1    # exclude atoms closer than this to ref site
             #   match_tolerance: 0.05 # fractional coord tolerance for atom matching
@@ -273,7 +277,13 @@ class Settings:
 # Internal helpers
 # ---------------------------------------------------------------------------
 
-def _dict_to_structure(d: dict) -> StructureSettings:
+def _dict_to_structure(d) -> StructureSettings:
+    if isinstance(d, str):
+        p = Path(d)
+        return StructureSettings(
+            sposcar         = str(p / 'SPOSCAR'),
+            force_constants = str(p / 'FORCE_CONSTANTS'),
+        )
     return StructureSettings(
         sposcar         = d.get('sposcar',         StructureSettings.sposcar),
         force_constants = d.get('force_constants', StructureSettings.force_constants),
