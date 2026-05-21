@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="assets/logo.png" width="300" alt="betapy logo">
+</p>
+
 # betapy
 
 **betapy — phonon-based bonding analysis for crystalline materials**
