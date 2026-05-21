@@ -44,14 +44,17 @@ class MainWindow(QMainWindow):
         self.tabs = QTabWidget()
         layout.addWidget(self.tabs)
 
-        from betapy.gui.pfc_viewer  import PFCViewerWidget
-        from betapy.gui.site_picker import SitePickerWidget
+        from betapy.gui.pfc_viewer            import PFCViewerWidget
+        from betapy.gui.site_picker           import SitePickerWidget
+        from betapy.gui.stiffness_shift_widget import StiffnessShiftWidget
 
-        self.pfc_viewer  = PFCViewerWidget()
-        self.site_picker = SitePickerWidget()
+        self.pfc_viewer       = PFCViewerWidget()
+        self.site_picker      = SitePickerWidget()
+        self.stiffness_shift  = StiffnessShiftWidget()
 
-        self.tabs.addTab(self.pfc_viewer,  'pFC Viewer')
-        self.tabs.addTab(self.site_picker, 'Reference Site Picker')
+        self.tabs.addTab(self.pfc_viewer,      'pFC Viewer')
+        self.tabs.addTab(self.site_picker,     'Reference Site Picker')
+        self.tabs.addTab(self.stiffness_shift, 'Stiffness Shift')
 
         self.status = QStatusBar()
         self.setStatusBar(self.status)

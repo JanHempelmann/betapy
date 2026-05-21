@@ -183,7 +183,7 @@ def run_stiffness_shift(settings):
         atom_matches.update(matches)
         if unmatched:
             print(f'    WARNING: {sp}: {len(unmatched)} atoms unmatched '
-                  f'(tolerance {ss.match_tolerance} frac. coords) — '
+                  f'(tolerance {ss.match_tolerance} Å) — '
                   f'falling back to equal-count for this species')
             matching_failed.append(sp)
         else:
@@ -193,7 +193,7 @@ def run_stiffness_shift(settings):
     if not matching_failed:
         # Primary path: explicit pair matching
         print('  Matching force-constant pairs ...')
-        matched, unmatched_pairs = match_fc_pairs(offsite_a, offsite_b, atom_matches, sc_a)
+        matched, unmatched_pairs, _ = match_fc_pairs(offsite_a, offsite_b, atom_matches, sc_a)
         print(f'    {len(matched)} pairs matched, '
               f'{len(unmatched_pairs)} unmatched (species absent in B or missing FC)')
 

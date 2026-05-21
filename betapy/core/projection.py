@@ -289,18 +289,18 @@ def refsite_results_to_dataframes(offsite_results, onsite_results, ref_label):
 # Atom matching across structures for stiffness-shift comparison
 # ---------------------------------------------------------------------------
 
-def match_atoms_across_structures(sc_a, sc_b, species, tolerance=0.05):
+def match_atoms_across_structures(sc_a, sc_b, species, tolerance=0.3):
     """
     For each atom of `species` in sc_a, find the closest atom of the
-    same species in sc_b by fractional coordinate distance (PBC-aware).
+    same species in sc_b by Cartesian distance (PBC-aware).
     Each atom in sc_b can only be matched once (greedy nearest-neighbour).
 
     Parameters
     ----------
     sc_a, sc_b  : Supercell instances
     species     : str, chemical symbol to match (e.g. 'V', 'O')
-    tolerance   : float, maximum fractional-coordinate distance to accept
-                  as a valid match (default 0.05, i.e. 5% of lattice vector)
+    tolerance   : float, maximum Angstrom distance to accept as a valid
+                  match (default 0.3 Å)
 
     Returns
     -------
@@ -331,7 +331,8 @@ def match_atoms_across_structures(sc_a, sc_b, species, tolerance=0.05):
                 continue
             diff = np.asarray(pos_b) - np.asarray(pos_a)
             diff -= np.floor(diff + 0.5)   # minimum image
-            dist = float(np.linalg.norm(diff))
+            cart_diff = diff @ sc_a.lattice  # fractional → Cartesian (Å)
+            dist = float(np.linalg.norm(cart_diff))
             if dist < best_dist:
                 best_dist  = dist
                 best_idx_b = idx_b
@@ -369,8 +370,10 @@ def match_fc_pairs(results_a, results_b, atom_matches, sc_a):
     matched_pairs : list of dicts, each with keys:
         atom1_idx_a, atom2_idx_a, atom1_idx_b, atom2_idx_b,
         species1, species2, distance_a, distance_b,
+        atom1_ref_dist_a, atom1_ref_dist_b,
         mean_pfc_a, mean_pfc_b, delta_pfc
     unmatched_a   : list of dicts from results_a with no counterpart in B
+    unmatched_b   : list of dicts from results_b with no counterpart in A
     """
     # Build a fast lookup for results_b: (idx1, idx2) -> result dict
     lookup_b = {}
@@ -401,20 +404,26 @@ def match_fc_pairs(results_a, results_b, atom_matches, sc_a):
         pfc_b  = counterpart['mean_pfc']
 
         matched_pairs.append({
-            'atom1_idx_a': i,
-            'atom2_idx_a': j,
-            'atom1_idx_b': i_b,
-            'atom2_idx_b': j_b,
-            'species1':    r['species1'],
-            'species2':    r['species2'],
-            'distance_a':  dist_a,
-            'distance_b':  dist_b,
-            'mean_pfc_a':  pfc_a,
-            'mean_pfc_b':  pfc_b,
-            'delta_pfc':   pfc_b - pfc_a,
+            'atom1_idx_a':      i,
+            'atom2_idx_a':      j,
+            'atom1_idx_b':      i_b,
+            'atom2_idx_b':      j_b,
+            'species1':         r['species1'],
+            'species2':         r['species2'],
+            'distance_a':       dist_a,
+            'distance_b':       dist_b,
+            'atom1_ref_dist_a': r.get('atom1_ref_dist', 0.0),
+            'atom1_ref_dist_b': counterpart.get('atom1_ref_dist', 0.0),
+            'mean_pfc_a':       pfc_a,
+            'mean_pfc_b':       pfc_b,
+            'delta_pfc':        pfc_b - pfc_a,
         })
 
-    return matched_pairs, unmatched_a
+    matched_b_keys = {(m['atom1_idx_b'], m['atom2_idx_b']) for m in matched_pairs}
+    unmatched_b = [r for r in results_b
+                   if (r['atom1_idx'], r['atom2_idx']) not in matched_b_keys]
+
+    return matched_pairs, unmatched_a, unmatched_b
 
 
 def stiffness_shift_from_pairs(matched_pairs):

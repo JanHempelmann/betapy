@@ -80,10 +80,10 @@ class StiffnessShiftSettings:
     # Species is inferred from the nearest atom in structure B (intercalated)
     # and applied consistently to both structures.
     exclude_refsite_species: bool  = True
-    # Maximum fractional-coordinate distance for atom position matching.
+    # Maximum Cartesian distance (Å) for atom position matching.
     # Atoms further apart than this are considered unmatched and trigger
     # the equal-count fallback for their species pair.
-    match_tolerance: float = 0.05
+    match_tolerance: float = 0.3
 
 
 # ---------------------------------------------------------------------------
@@ -177,7 +177,7 @@ class Settings:
                 cutoff                  = sd.get('cutoff',                  6.0),
                 min_site_dist           = sd.get('min_site_dist',           0.1),
                 exclude_refsite_species = sd.get('exclude_refsite_species', True),
-                match_tolerance         = sd.get('match_tolerance',         0.05),
+                match_tolerance         = sd.get('match_tolerance',         0.3),
             )
 
         return s
@@ -267,7 +267,7 @@ class Settings:
             #   #   refpos:           # optional per-structure REFPOS override
             #   cutoff: 6.0         # Angstrom radius around reference site
             #   min_site_dist: 0.1    # exclude atoms closer than this to ref site
-            #   match_tolerance: 0.05 # fractional coord tolerance for atom matching
+            #   match_tolerance: 0.3  # Angstrom tolerance for atom position matching
         """)
         with open(path, 'w') as f:
             f.write(template)

@@ -12,7 +12,7 @@ betapy post-processes the force constants calculated by [Phonopy](https://phonop
 
 ## Features
 
-- **Bulk pFC analysis** — project force constants along all interatomic bond vectors; identify and tabulate unique pFC values per bond type
+- **Bulk pFC analysis** - project force constants along all interatomic bond vectors; identify and tabulate unique pFC values per bond type
 - **Reference-site projection** — project force constants around any fractional coordinate in the cell (vacancy, interstitial, or arbitrary point); does not need to coincide with an atom
 - **Stiffness-shift parameter** — compare pFC sums between two structures (e.g. intercalated vs deintercalated) using position-based atom matching across structures; falls back to distance-ordered equal-count comparison if matching fails
 - **Interactive GUI** — scatter plot of pFC vs bond length with click-to-highlight; 3D structure viewer with CPK colours, automatic bond drawing, and per-species-pair bond toggles
@@ -31,7 +31,7 @@ betapy post-processes the force constants calculated by [Phonopy](https://phonop
 ## Installation
 
 ```bash
-git clone https://github.com/YOUR_USERNAME/betapy.git
+git clone https://github.com/JanHempelmann/betapy.git
 cd betapy
 pip install -e .
 ```
