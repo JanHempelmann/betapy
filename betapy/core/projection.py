@@ -142,7 +142,8 @@ def unique_pfcs(bulk_results):
 # ---------------------------------------------------------------------------
 
 def find_refsite_pairs(supercell, atomic_pairs, force_matrices,
-                       refsite_frac, cutoff, min_distance=0.0):
+                       refsite_frac, cutoff, min_distance=0.0,
+                       exclude_species=None):
     """
     Find all pairs where both atoms are within `cutoff` Angstrom of
     `refsite_frac` (a fractional coordinate), and project their FCs
@@ -150,15 +151,20 @@ def find_refsite_pairs(supercell, atomic_pairs, force_matrices,
 
     Parameters
     ----------
-    supercell     : Supercell instance
-    atomic_pairs  : list of [i, j] 1-based pairs
-    force_matrices: list of (3,3) arrays
-    refsite_frac  : array-like (3,), fractional coordinates of reference site
-    cutoff        : float, Angstrom
-    min_distance  : float, Angstrom (default 0.0)
+    supercell        : Supercell instance
+    atomic_pairs     : list of [i, j] 1-based pairs
+    force_matrices   : list of (3,3) arrays
+    refsite_frac     : array-like (3,), fractional coordinates of reference site
+    cutoff           : float, Angstrom
+    min_distance     : float, Angstrom (default 0.0)
         Atoms closer than this to the reference site are excluded entirely.
         Use 0.1 Å for the stiffness-shift intercalated structure to exclude
         the site-occupying Li atom without affecting any real neighbours.
+    exclude_species  : iterable of str or None (default None)
+        Off-site pairs where either atom belongs to one of these species are
+        dropped.  Typically set to the species that occupies the reference site
+        so that the host-framework projection is not polluted by self-species
+        contributions.
 
     Returns
     -------
@@ -166,6 +172,7 @@ def find_refsite_pairs(supercell, atomic_pairs, force_matrices,
     onsite_results  : list of dicts
     """
     refsite_frac = np.asarray(refsite_frac)
+    _excl = set(exclude_species) if exclude_species else set()
     offsite_results = []
     onsite_results  = []
 
@@ -192,18 +199,21 @@ def find_refsite_pairs(supercell, atomic_pairs, force_matrices,
             })
         else:
             # Off-site term: project along atom1 → refsite
+            sp_i = supercell.species(i)
+            sp_j = supercell.species(j)
+            if _excl and (sp_i in _excl or sp_j in _excl):
+                continue
+
             vec_to_ref = supercell.cart_vector_to_point(i, refsite_frac)
             direction  = _unit_vector(vec_to_ref)
 
-            # Atom-atom distance
             atom_dist = supercell.atom_distance(i, j)
-
             mean_pfc, rms_pfc = _project_fc_matrix(fc_mat, direction)
             offsite_results.append({
                 'atom1_idx':      i,
                 'atom2_idx':      j,
-                'species1':       supercell.species(i),
-                'species2':       supercell.species(j),
+                'species1':       sp_i,
+                'species2':       sp_j,
                 'atom1_ref_dist': dist_i,
                 'atom_distance':  atom_dist,
                 'mean_pfc':       mean_pfc,

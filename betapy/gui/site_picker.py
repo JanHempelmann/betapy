@@ -292,30 +292,32 @@ class SitePickerWidget(QWidget):
         if self.supercell is None or self.fc_data is None:
             QMessageBox.warning(self, 'No data', 'Load a structure first.')
             return
+        sc     = self.supercell
         cutoff = self.cutoff_spin.value()
+
+        exclude_sp = None
+        ref_sp     = None
+        if self.chk_exclude_refsite_species.isChecked():
+            dists    = [sc.distance_to_point(i + 1, self._ref_frac)
+                        for i in range(sc.n_atoms)]
+            near_idx = min(range(sc.n_atoms), key=lambda i: dists[i])
+            ref_sp   = sc.species(near_idx + 1)
+            exclude_sp = {ref_sp}
+
         offsite, onsite = find_refsite_pairs(
-            self.supercell,
+            sc,
             self.fc_data['atomic_pairs'],
             self.fc_data['force_matrices'],
             self._ref_frac,
             cutoff,
+            exclude_species=exclude_sp,
         )
-
-        # Optionally remove pairs involving the species that occupies the refsite
-        ref_sp = None
-        if self.chk_exclude_refsite_species.isChecked():
-            sc    = self.supercell
-            dists = [sc.distance_to_point(i + 1, self._ref_frac)
-                     for i in range(sc.n_atoms)]
-            ref_sp  = sc.species(int(np.argmin(dists)) + 1)
-            offsite = [r for r in offsite
-                       if r['species1'] != ref_sp and r['species2'] != ref_sp]
 
         self._last_offsite = offsite
         self._last_onsite  = onsite
         self._last_label   = self.label_edit.text() or 'custom_site'
 
-        self.pfc_viewer.load_data(offsite, self.supercell)
+        self.pfc_viewer.load_data(offsite, sc)
 
         note = f'  (excl. {ref_sp} pairs)\n' if ref_sp else ''
         self.result_label.setText(

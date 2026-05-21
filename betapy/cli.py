@@ -57,16 +57,24 @@ def run_refsite_analysis(supercell, fc_data, settings):
 
     all_offsite, all_onsite = [], []
     for idx, frac_pos in enumerate(refpos_data['positions']):
+        exclude_sp = None
+        if rs.exclude_refsite_species:
+            dists     = [supercell.distance_to_point(k + 1, frac_pos)
+                         for k in range(supercell.n_atoms)]
+            near_idx  = min(range(supercell.n_atoms), key=lambda k: dists[k])
+            exclude_sp = {supercell.species(near_idx + 1)}
         offsite, onsite = find_refsite_pairs(
             supercell,
             fc_data['atomic_pairs'],
             fc_data['force_matrices'],
             frac_pos,
             rs.cutoff,
+            exclude_species=exclude_sp,
         )
         all_offsite.extend(offsite)
         all_onsite.extend(onsite)
-        print(f'  Site {idx}: {len(offsite)} off-site, {len(onsite)} on-site')
+        excl_note = f', excl. {next(iter(exclude_sp))} pairs' if exclude_sp else ''
+        print(f'  Site {idx}: {len(offsite)} off-site, {len(onsite)} on-site{excl_note}')
 
     df_off, df_on = refsite_results_to_dataframes(
         all_offsite, all_onsite, refpos_data['label']
@@ -121,6 +129,20 @@ def run_stiffness_shift(settings):
         print(f'  Error: REFPOS for structure B not found at {refpos_path_b}')
         return None
 
+    # --- Determine intercalated species from structure B (for exclusion filter) ---
+    # Find the atom in B that sits within min_site_dist of each refsite position.
+    # That species is then excluded from both A and B so the analysis reflects
+    # only the host-framework contributions.
+    intercalated_species = set()
+    if ss.exclude_refsite_species:
+        for frac_pos in refpos_b['positions']:
+            dists    = [sc_b.distance_to_point(k + 1, frac_pos)
+                        for k in range(sc_b.n_atoms)]
+            near_idx = min(range(sc_b.n_atoms), key=lambda k: dists[k])
+            if dists[near_idx] < ss.min_site_dist:
+                intercalated_species.add(sc_b.species(near_idx + 1))
+    excl_arg = intercalated_species if intercalated_species else None
+
     # --- Refsite projection ---
     print(f'  Projecting in structure A (cutoff {ss.cutoff} Å) ...')
     offsite_a = []
@@ -128,9 +150,11 @@ def run_stiffness_shift(settings):
         offsite, _ = find_refsite_pairs(
             sc_a, fc_a['atomic_pairs'], fc_a['force_matrices'],
             frac_pos, cutoff=ss.cutoff, min_distance=0.0,
+            exclude_species=excl_arg,
         )
         offsite_a.extend(offsite)
-    print(f'    {len(offsite_a)} off-site pairs')
+    excl_note = f', excl. {"/".join(sorted(intercalated_species))} pairs' if excl_arg else ''
+    print(f'    {len(offsite_a)} off-site pairs{excl_note}')
 
     print(f'  Projecting in structure B (cutoff {ss.cutoff} Å) ...')
     offsite_b = []
@@ -138,9 +162,10 @@ def run_stiffness_shift(settings):
         offsite, _ = find_refsite_pairs(
             sc_b, fc_b['atomic_pairs'], fc_b['force_matrices'],
             frac_pos, cutoff=ss.cutoff, min_distance=ss.min_site_dist,
+            exclude_species=excl_arg,
         )
         offsite_b.extend(offsite)
-    print(f'    {len(offsite_b)} off-site pairs (site-occupying atom excluded)')
+    print(f'    {len(offsite_b)} off-site pairs (site-occupying atom + {"/".join(sorted(intercalated_species or {"none"}))} pairs excluded)')
 
     # --- Atom position matching ---
     print('  Matching atoms across structures by fractional position ...')

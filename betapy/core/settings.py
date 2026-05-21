@@ -45,8 +45,9 @@ except ImportError:
 @dataclass
 class RefsiteSettings:
     """Settings for reference-site pFC projection."""
-    file:   str   = 'REFPOS'
-    cutoff: float = 5.0
+    file:                    str   = 'REFPOS'
+    cutoff:                  float = 5.0
+    exclude_refsite_species: bool  = True
 
 
 @dataclass
@@ -74,7 +75,11 @@ class StiffnessShiftSettings:
     cutoff:          float = 6.0
     # Minimum distance from ref site for atom inclusion.
     # Excludes the site-occupying atom in the intercalated structure.
-    min_site_dist:   float = 0.1
+    min_site_dist:           float = 0.1
+    # Exclude off-site pairs involving the intercalated species.
+    # Species is inferred from the nearest atom in structure B (intercalated)
+    # and applied consistently to both structures.
+    exclude_refsite_species: bool  = True
     # Maximum fractional-coordinate distance for atom position matching.
     # Atoms further apart than this are considered unmatched and trigger
     # the equal-count fallback for their species pair.
@@ -157,20 +162,22 @@ class Settings:
         if 'refsite' in data:
             rd = data['refsite']
             s.refsite = RefsiteSettings(
-                file   = rd.get('file',   RefsiteSettings.file),
-                cutoff = rd.get('cutoff', RefsiteSettings.cutoff),
+                file                    = rd.get('file',                    RefsiteSettings.file),
+                cutoff                  = rd.get('cutoff',                  RefsiteSettings.cutoff),
+                exclude_refsite_species = rd.get('exclude_refsite_species', RefsiteSettings.exclude_refsite_species),
             )
 
         # Stiffness-shift section
         if 'stiffness_shift' in data:
             sd = data['stiffness_shift']
             s.stiffness_shift = StiffnessShiftSettings(
-                structure_a   = _dict_to_structure(sd.get('structure_a', {})),
-                structure_b   = _dict_to_structure(sd.get('structure_b', {})),
-                refpos        = sd.get('refpos', StiffnessShiftSettings.refpos),
-                cutoff          = sd.get('cutoff',          6.0),
-                min_site_dist   = sd.get('min_site_dist',   0.1),
-                match_tolerance = sd.get('match_tolerance', 0.05),
+                structure_a             = _dict_to_structure(sd.get('structure_a', {})),
+                structure_b             = _dict_to_structure(sd.get('structure_b', {})),
+                refpos                  = sd.get('refpos',                  StiffnessShiftSettings.refpos),
+                cutoff                  = sd.get('cutoff',                  6.0),
+                min_site_dist           = sd.get('min_site_dist',           0.1),
+                exclude_refsite_species = sd.get('exclude_refsite_species', True),
+                match_tolerance         = sd.get('match_tolerance',         0.05),
             )
 
         return s
@@ -188,8 +195,9 @@ class Settings:
         }
         if self.refsite is not None:
             d['refsite'] = {
-                'file':   self.refsite.file,
-                'cutoff': self.refsite.cutoff,
+                'file':                    self.refsite.file,
+                'cutoff':                  self.refsite.cutoff,
+                'exclude_refsite_species': self.refsite.exclude_refsite_species,
             }
         if self.stiffness_shift is not None:
             ss = self.stiffness_shift
@@ -204,10 +212,11 @@ class Settings:
                     'force_constants': ss.structure_b.force_constants,
                     'refpos':          ss.structure_b.refpos,
                 },
-                'refpos':          ss.refpos,
-                'cutoff':          ss.cutoff,
-                'min_site_dist':   ss.min_site_dist,
-                'match_tolerance': ss.match_tolerance,
+                'refpos':                  ss.refpos,
+                'cutoff':                  ss.cutoff,
+                'min_site_dist':           ss.min_site_dist,
+                'exclude_refsite_species': ss.exclude_refsite_species,
+                'match_tolerance':         ss.match_tolerance,
             }
         return d
 
