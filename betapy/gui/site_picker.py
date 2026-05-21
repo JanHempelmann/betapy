@@ -18,7 +18,7 @@ from PyQt5.QtWidgets import (
     QWidget, QHBoxLayout, QVBoxLayout, QSplitter,
     QPushButton, QLabel, QDoubleSpinBox, QLineEdit,
     QGroupBox, QFileDialog, QMessageBox, QComboBox,
-    QGridLayout,
+    QGridLayout, QCheckBox,
 )
 from PyQt5.QtCore import Qt
 
@@ -46,11 +46,12 @@ class SitePickerWidget(QWidget):
         outer = QVBoxLayout(self)
         outer.setContentsMargins(4, 4, 4, 4)
 
-        splitter = QSplitter(Qt.Horizontal)
-        outer.addWidget(splitter)
+        # Outer vertical splitter: 3D+controls on top, pFC viewer full-width below
+        v_splitter = QSplitter(Qt.Vertical)
+        outer.addWidget(v_splitter)
 
-        # --- Left: vertical splitter — 3D view on top, pFC viewer below ---
-        left_splitter = QSplitter(Qt.Vertical)
+        # Top row: horizontal splitter — 3D view left, controls right
+        splitter = QSplitter(Qt.Horizontal)
 
         self.structure_view = StructureView(self)
         # Connect PyVista's point picker so clicking an atom snaps the site
@@ -59,15 +60,7 @@ class SitePickerWidget(QWidget):
             show_message=False,
             show_point=False,
         )
-        left_splitter.addWidget(self.structure_view)
-
-        self.pfc_viewer = RefsitePFCWidget()
-        self.pfc_viewer.set_structure_view(self.structure_view)
-        self.structure_view.colours_changed.connect(self.pfc_viewer._refresh_plot)
-        left_splitter.addWidget(self.pfc_viewer)
-        left_splitter.setSizes([520, 280])
-
-        splitter.addWidget(left_splitter)
+        splitter.addWidget(self.structure_view)
 
         # --- Right: controls ---
         ctrl_widget = QWidget()
@@ -143,6 +136,15 @@ class SitePickerWidget(QWidget):
         conn_box.setLayout(conn_layout)
         ctrl_layout.addWidget(conn_box)
 
+        # Analysis options
+        self.chk_exclude_refsite_species = QCheckBox('Exclude refsite-species pairs')
+        self.chk_exclude_refsite_species.setChecked(True)
+        self.chk_exclude_refsite_species.setToolTip(
+            'Exclude off-site pairs where either atom is of the same\n'
+            'species as the nearest atom to the reference site.'
+        )
+        ctrl_layout.addWidget(self.chk_exclude_refsite_species)
+
         # Actions
         btn_analyse = QPushButton('Run refsite analysis')
         btn_analyse.clicked.connect(self._run_analysis)
@@ -163,6 +165,14 @@ class SitePickerWidget(QWidget):
         ctrl_layout.addStretch()
         splitter.addWidget(ctrl_widget)
         splitter.setSizes([800, 270])
+        v_splitter.addWidget(splitter)
+
+        # Bottom: pFC viewer spans full width of the tab
+        self.pfc_viewer = RefsitePFCWidget()
+        self.pfc_viewer.set_structure_view(self.structure_view)
+        self.structure_view.colours_changed.connect(self.pfc_viewer._refresh_plot)
+        v_splitter.addWidget(self.pfc_viewer)
+        v_splitter.setSizes([560, 370])
 
     # ------------------------------------------------------------------
     # Data loading
@@ -290,15 +300,28 @@ class SitePickerWidget(QWidget):
             self._ref_frac,
             cutoff,
         )
+
+        # Optionally remove pairs involving the species that occupies the refsite
+        ref_sp = None
+        if self.chk_exclude_refsite_species.isChecked():
+            sc    = self.supercell
+            dists = [sc.distance_to_point(i + 1, self._ref_frac)
+                     for i in range(sc.n_atoms)]
+            ref_sp  = sc.species(int(np.argmin(dists)) + 1)
+            offsite = [r for r in offsite
+                       if r['species1'] != ref_sp and r['species2'] != ref_sp]
+
         self._last_offsite = offsite
         self._last_onsite  = onsite
         self._last_label   = self.label_edit.text() or 'custom_site'
 
         self.pfc_viewer.load_data(offsite, self.supercell)
 
+        note = f'  (excl. {ref_sp} pairs)\n' if ref_sp else ''
         self.result_label.setText(
             f'Found:\n'
             f'  {len(offsite)} off-site pairs\n'
+            f'{note}'
             f'  {len(onsite)} on-site terms\n'
             f'cutoff: {cutoff:.2f} Å'
         )
