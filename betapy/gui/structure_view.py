@@ -263,7 +263,8 @@ class StructureView(QWidget):
         if self.supercell is None:
             return
         if self._refsite_bonds_cutoff is not None:
-            # Bonds need recomputing — full redraw is necessary
+            # Bonds shown: re-center display on the new position and full redraw
+            self._center_display_on_refsite()
             self._redraw()
             return
         # Fast path: just swap the cube actor without a full redraw
@@ -279,9 +280,16 @@ class StructureView(QWidget):
     def set_refsite_bonds(self, cutoff):
         """
         Draw tubes from the refsite to all atoms within cutoff Å.
-        Pass None to clear the bonds.
+        Centers the display on the refsite (same convention as pair highlight).
+        Pass None to clear bonds and restore the original atom positions.
         """
         self._refsite_bonds_cutoff = cutoff
+        if self.supercell is None:
+            return
+        if cutoff is not None:
+            self._center_display_on_refsite()
+        else:
+            self._display_frac = self.supercell.positions.copy()
         self._redraw()
 
     def _toggle_projection(self, checked):
@@ -362,6 +370,20 @@ class StructureView(QWidget):
         display    = np.empty_like(sc.positions)
         for k in range(sc.n_atoms):
             diff       = sc.positions[k] - pos_center
+            diff      -= np.floor(diff + 0.5)
+            display[k] = 0.5 + diff
+        self._display_frac = display
+
+    def _center_display_on_refsite(self):
+        """
+        Same as _update_display_frac but centered on _refsite_frac instead of
+        an atom. After this call, the refsite sits at (0.5, 0.5, 0.5) and all
+        atoms are at their nearest periodic images around it.
+        """
+        sc      = self.supercell
+        display = np.empty_like(sc.positions)
+        for k in range(sc.n_atoms):
+            diff       = sc.positions[k] - self._refsite_frac
             diff      -= np.floor(diff + 0.5)
             display[k] = 0.5 + diff
         self._display_frac = display
@@ -466,7 +488,12 @@ class StructureView(QWidget):
 
         # --- Refsite cube marker ---
         if self._refsite_frac is not None:
-            cart_ref = self._refsite_frac @ sc.lattice
+            # When bonds are shown, _display_frac is centered on the refsite
+            # so it sits at (0.5, 0.5, 0.5); otherwise use its real position.
+            if self._refsite_bonds_cutoff is not None:
+                cart_ref = np.array([0.5, 0.5, 0.5]) @ sc.lattice
+            else:
+                cart_ref = self._refsite_frac @ sc.lattice
             s    = REFSITE_CUBE_SIZE
             cube = pv.Cube(center=cart_ref, x_length=s, y_length=s, z_length=s)
             self.plotter.add_mesh(
@@ -481,13 +508,10 @@ class StructureView(QWidget):
                 if nearby:
                     bond_points, bond_lines, pt_idx = [], [], 0
                     for atom_idx, _ in nearby:
-                        # Minimum-image vector from refsite to atom — same
-                        # convention as regular bond drawing, prevents bonds
-                        # from snapping across the cell boundary.
-                        diff  = sc.positions[atom_idx - 1] - self._refsite_frac
-                        diff -= np.floor(diff + 0.5)
-                        p2    = cart_ref + diff @ sc.lattice
-                        bond_points.extend([cart_ref, p2])
+                        # _display_frac is centered on the refsite, so
+                        # cart[atom_idx-1] is already the correct PBC image —
+                        # no separate min-image step needed.
+                        bond_points.extend([cart_ref, cart[atom_idx - 1]])
                         bond_lines.extend([2, pt_idx, pt_idx + 1])
                         pt_idx += 2
                     ref_bond_mesh        = pv.PolyData()
