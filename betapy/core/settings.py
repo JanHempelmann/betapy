@@ -244,7 +244,7 @@ class Settings:
 
             # --- Stiffness-shift comparison (uncomment to enable) ---
             # stiffness_shift:
-            #   # Directory form: looks for SPOSCAR and FORCE_CONSTANTS inside
+            #   # Directory form: looks for SPOSCAR, FORCE_CONSTANTS, and REFPOS inside each directory
             #   structure_a: path/to/deintercalated/
             #   structure_b: path/to/intercalated/
             #   # Explicit-file form (use when filenames differ from defaults):
@@ -256,7 +256,6 @@ class Settings:
             #   #   sposcar: path/to/intercalated/SPOSCAR
             #   #   force_constants: path/to/intercalated/FORCE_CONSTANTS
             #   #   refpos:           # optional per-structure REFPOS override
-            #   refpos: REFPOS      # shared fallback if per-structure refpos not set
             #   cutoff: 6.0         # Angstrom radius around reference site
             #   min_site_dist: 0.1    # exclude atoms closer than this to ref site
             #   match_tolerance: 0.05 # fractional coord tolerance for atom matching
@@ -283,6 +282,7 @@ def _dict_to_structure(d) -> StructureSettings:
         return StructureSettings(
             sposcar         = str(p / 'SPOSCAR'),
             force_constants = str(p / 'FORCE_CONSTANTS'),
+            refpos          = str(p / 'REFPOS'),
         )
     return StructureSettings(
         sposcar         = d.get('sposcar',         StructureSettings.sposcar),
