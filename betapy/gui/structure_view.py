@@ -479,10 +479,15 @@ class StructureView(QWidget):
                 nearby = sc.atoms_within(self._refsite_frac,
                                          self._refsite_bonds_cutoff)
                 if nearby:
-                    orig_cart = sc.positions @ sc.lattice
                     bond_points, bond_lines, pt_idx = [], [], 0
                     for atom_idx, _ in nearby:
-                        bond_points.extend([cart_ref, orig_cart[atom_idx - 1]])
+                        # Minimum-image vector from refsite to atom — same
+                        # convention as regular bond drawing, prevents bonds
+                        # from snapping across the cell boundary.
+                        diff  = sc.positions[atom_idx - 1] - self._refsite_frac
+                        diff -= np.floor(diff + 0.5)
+                        p2    = cart_ref + diff @ sc.lattice
+                        bond_points.extend([cart_ref, p2])
                         bond_lines.extend([2, pt_idx, pt_idx + 1])
                         pt_idx += 2
                     ref_bond_mesh        = pv.PolyData()
