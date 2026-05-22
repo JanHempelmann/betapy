@@ -225,6 +225,6 @@ MIT License — see [LICENSE](LICENSE) file.
 ## Authors
 
 Jan Hempelmann  
-Original Python 2.7 script: J. Hempelmann (2019) based on a bash script by R. Stoffel
+Original Python 2.7 script: J. Hempelmann (2019) based on a bash script by R. Stoffel  
 Python 3 conversion and extension (and generally making the code less embarrassing): M. Fecik  
 Package restructuring, GUI, and stiffness-shift analysis: J. Hempelmann (2025)
