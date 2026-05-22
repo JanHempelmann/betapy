@@ -53,7 +53,7 @@ class MainWindow(QMainWindow):
         self.stiffness_shift  = StiffnessShiftWidget()
 
         self.tabs.addTab(self.pfc_viewer,      'pFC Viewer')
-        self.tabs.addTab(self.site_picker,     'Reference Site Picker')
+        self.tabs.addTab(self.site_picker,     'Ref. Site Projection')
         self.tabs.addTab(self.stiffness_shift, 'Stiffness Shift')
 
         self.status = QStatusBar()

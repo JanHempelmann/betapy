@@ -52,11 +52,12 @@ class PFCViewerWidget(QWidget):
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self._results   = []    # list of dicts from compute_bulk_pfcs
-        self._pair_types = []
-        self._checkboxes = {}
-        self._scatter_collections = {}  # pair_type -> PathCollection
-        self._supercell = None
+        self._results              = []   # list of dicts from compute_bulk_pfcs
+        self._pair_types           = []
+        self._checkboxes           = {}
+        self._scatter_collections  = {}  # pair_type -> (PathCollection, records)
+        self._supercell            = None
+        self._selected_record      = None  # record dict for highlighted point
 
         self._build_ui()
 
@@ -237,9 +238,10 @@ class PFCViewerWidget(QWidget):
 
     def _rebuild_checkboxes(self):
         """Recreate the species-pair filter checkboxes from current data."""
-        for cb in self._checkboxes.values():
-            self._filter_layout.removeWidget(cb)
-            cb.deleteLater()
+        while self._filter_layout.count():
+            item = self._filter_layout.takeAt(0)
+            if item.widget():
+                item.widget().deleteLater()
         self._checkboxes = {}
 
         self._pair_types = sorted(set(
@@ -346,30 +348,30 @@ class PFCViewerWidget(QWidget):
 
             self._scatter_collections[pt] = (sc, sub)
 
+        # Gold ring on selected point
+        if self._selected_record is not None:
+            sr = self._selected_record
+            if (sr['species1'], sr['species2']) in active_pairs:
+                ax.scatter(
+                    [sr['distance']], [sr['mean_pfc']],
+                    s=140, facecolors='none', edgecolors='#c8a000',
+                    linewidths=2.5, zorder=5,
+                )
+
         ax.set_xlabel('Interatomic distance (Å)', fontsize=12)
         ax.set_ylabel('Projected force constant (eV/Å²)', fontsize=12)
         ax.set_title('Projected force constants vs bond length', fontsize=13)
         if self._scatter_collections:
             legend = ax.legend(loc='upper right', framealpha=0.9)
-            # Colour each legend label: "V–O" → V in its colour, – grey, O in its colour
             for legend_text, pt in zip(legend.get_texts(),
-                                        [p for p in self._pair_types
-                                         if p in active_pairs]):
-                if self._supercell is not None:
-                    lc1, lc2 = self.structure_view.pair_colours_hex(pt[0], pt[1])
-                else:
-                    lc1 = lc2 = '#555555'
-                # matplotlib legend text doesn't support HTML, so we set
-                # colour to c1 for same-species, or a blend for mixed
-                if lc1 == lc2:
-                    legend_text.set_color(lc1)
-                else:
-                    # For mixed pairs set to c1 (species1) — the split marker
-                    # already shows both colours visually
-                    legend_text.set_color(lc1)
+                                       [p for p in self._pair_types
+                                        if p in active_pairs]):
+                lc1 = (self.structure_view.pair_colours_hex(pt[0], pt[1])[0]
+                       if self._supercell is not None else '#555555')
+                legend_text.set_color(lc1)
         ax.grid(True, linestyle='--', alpha=0.4)
 
-        self.canvas.draw()
+        self.canvas.draw_idle()
 
     # ------------------------------------------------------------------
     # Interaction: scatter click → 3D highlight
@@ -408,25 +410,23 @@ class PFCViewerWidget(QWidget):
         if best_record is None or best_dist > PICK_TOLERANCE:
             return
 
-        a1 = int(best_record['atom1_idx'])
-        a2 = int(best_record['atom2_idx'])
-
-        # Update 3D view
-        if self._supercell is not None:
-            self.structure_view.highlight_bond(a1, a2)
-
-        # Update selection bar
+        self._selected_record = best_record
+        a1  = int(best_record['atom1_idx'])
+        a2  = int(best_record['atom2_idx'])
         sp1 = best_record['species1']
         sp2 = best_record['species2']
         d   = best_record['distance']
         pfc = best_record['mean_pfc']
+
+        if self._supercell is not None:
+            self.structure_view.highlight_bond(a1, a2)
+
         self._selection_bar.setText(
             f'Selected:  atom {a1} ({sp1}) — atom {a2} ({sp2})   '
             f'distance = {d:.4f} Å   pFC = {pfc:.6f} eV/Å²'
         )
-
-        # Emit signal for any external listener
         self.pair_selected.emit(a1, a2)
+        self._refresh_plot()   # redraw with gold ring
 
     def _export_plot(self):
         path, _ = QFileDialog.getSaveFileName(
