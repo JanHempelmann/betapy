@@ -18,12 +18,14 @@ from scipy.spatial import cKDTree
 from PyQt5.QtWidgets import (
     QWidget, QHBoxLayout, QVBoxLayout,
     QPushButton, QLabel, QColorDialog,
-    QGroupBox, QScrollArea, QCheckBox,
+    QGroupBox, QScrollArea, QCheckBox, QComboBox,
 )
 from PyQt5.QtGui import QColor
 from PyQt5.QtCore import Qt, pyqtSignal
 
-from betapy.data.elements import covalent_radius, element_colour, display_radius
+from betapy.data.elements import (
+    covalent_radius, element_colour, display_radius, COLOUR_PRESETS,
+)
 from betapy.core.constants import SAME_SPECIES_METALS
 
 # -----------------------------------------------------------------------
@@ -99,6 +101,16 @@ class StructureView(QWidget):
             right_widget.setFixedWidth(155)
             right_widget.setLayout(right_panel)
 
+            # Colour preset switcher
+            preset_row = QHBoxLayout()
+            preset_row.addWidget(QLabel('Preset:'))
+            self._preset_combo = QComboBox()
+            for name in COLOUR_PRESETS:
+                self._preset_combo.addItem(name)
+            self._preset_combo.currentTextChanged.connect(self._apply_preset)
+            preset_row.addWidget(self._preset_combo)
+            right_panel.addLayout(preset_row)
+
             self._colour_group  = self._build_colour_panel()
             self._bond_group    = self._build_bond_toggle_panel()
             right_panel.addWidget(self._colour_group)
@@ -116,6 +128,7 @@ class StructureView(QWidget):
         else:
             self._colour_layout = None
             self._bond_layout   = None
+            self._preset_combo  = None
 
     def _build_colour_panel(self):
         group = QGroupBox('Atom colours')
@@ -300,6 +313,19 @@ class StructureView(QWidget):
             self.plotter.disable_parallel_projection()
             self._proj_btn.setText('Parallel projection')
         self.plotter.render()
+
+    def _apply_preset(self, preset_name):
+        """Reset all species colours from the named preset and redraw."""
+        if self.supercell is None:
+            return
+        palette = COLOUR_PRESETS.get(preset_name, COLOUR_PRESETS['Jmol'])
+        self._colours = {
+            sp: palette.get(sp, (0.50, 0.50, 0.50))
+            for sp in self.supercell.chem_symbols
+        }
+        self._rebuild_colour_buttons()
+        self._redraw()
+        self.colours_changed.emit()
 
     def get_species_colours(self):
         """
