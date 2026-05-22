@@ -135,7 +135,7 @@ def write_refpos(label, positions, path='REFPOS'):
 
 def write_unique_pfcs(df, path='unique_pFCs.csv'):
     """Write the unique projected force constants dataframe to CSV."""
-    df.to_csv(path, sep=' ', header=True, index=False, encoding='utf-8')
+    df.to_csv(path, sep=',', header=True, index=False, encoding='utf-8')
 
 
 def write_refsite_pfcs(df, path='refsite_pFCs.csv'):

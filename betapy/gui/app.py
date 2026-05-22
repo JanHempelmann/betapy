@@ -160,7 +160,11 @@ class MainWindow(QMainWindow):
                 f'Auto-loaded from {cwd}: {", ".join(loaded)}'
             )
         if messages:
-            self.status.showMessage(' | '.join(messages))
+            QMessageBox.warning(
+                self, 'Auto-load error',
+                'Some files could not be loaded automatically:\n\n'
+                + '\n'.join(messages),
+            )
 
     # ------------------------------------------------------------------
     # Settings file
@@ -184,19 +188,29 @@ class MainWindow(QMainWindow):
     def _try_autoload_from_settings(self):
         sp = Path(self.settings.sposcar)
         fc = Path(self.settings.force_constants)
+        loaded  = []
+        errors  = []
         if sp.exists():
             try:
                 self._do_load_sposcar(sp)
-            except Exception:
-                pass
+                loaded.append(sp.name)
+            except Exception as e:
+                errors.append(f'{sp.name}: {e}')
         if fc.exists():
             try:
                 self._do_load_fc(fc)
-            except Exception:
-                pass
-        if sp.exists() and fc.exists():
+                loaded.append(fc.name)
+            except Exception as e:
+                errors.append(f'{fc.name}: {e}')
+        if errors:
+            QMessageBox.warning(
+                self, 'Auto-load error',
+                'Could not load the following files from settings:\n\n'
+                + '\n'.join(errors),
+            )
+        elif loaded:
             self.status.showMessage(
-                f'Auto-loaded {sp.name} and {fc.name} from settings.'
+                f'Auto-loaded {" and ".join(loaded)} from settings.'
             )
 
     # ------------------------------------------------------------------

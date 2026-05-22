@@ -176,13 +176,13 @@ class RefsitePFCWidget(QWidget):
                 'Atom2 Index':                 'atom2_idx',
                 'Atom2 Type':                  'species2',
                 'Atom1-Ref Distance (Angstr.)': 'atom1_ref_dist',
-                'Atom-Atom Distance (Angstr.)': 'atom_distance',
+                'Atom-Atom Distance (Angstr.)': 'distance',
                 'Mean pFC value':              'mean_pfc',
                 'RMS pFC value':               'rms_pfc',
             }
             df = df.rename(columns=col_map)
             required = {'atom1_idx', 'species1', 'atom2_idx', 'species2',
-                        'atom1_ref_dist', 'atom_distance', 'mean_pfc'}
+                        'atom1_ref_dist', 'distance', 'mean_pfc'}
             if not required.issubset(df.columns):
                 raise ValueError(
                     f'Missing columns. Found: {list(df.columns)}'
@@ -363,7 +363,7 @@ class RefsitePFCWidget(QWidget):
 
             for col, val in enumerate([
                 r['atom1_ref_dist'],
-                r['atom_distance'],
+                r['distance'],
                 r['mean_pfc'],
             ], start=2):
                 it = _NumericItem(f'{val:+.4f}' if col == 4 else f'{val:.4f}')

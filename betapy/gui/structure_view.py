@@ -24,6 +24,7 @@ from PyQt5.QtGui import QColor
 from PyQt5.QtCore import Qt, pyqtSignal
 
 from betapy.data.elements import covalent_radius, element_colour, display_radius
+from betapy.core.constants import SAME_SPECIES_METALS
 
 # -----------------------------------------------------------------------
 # Visual constants
@@ -230,12 +231,9 @@ class StructureView(QWidget):
             frozenset({sp_i, sp_j})
             for _, _, sp_i, sp_j in self._bond_pairs
         )
-        metals = {'V', 'Ti', 'Cr', 'Mn', 'Fe', 'Co', 'Ni', 'Cu', 'Zn',
-                  'Nb', 'Mo', 'Ru', 'Rh', 'Pd', 'Ag', 'W', 'Re', 'Os',
-                  'Ir', 'Pt', 'Au'}
         self._enabled_bond_types = {
             bt for bt in all_types
-            if not (len(bt) == 1 and next(iter(bt)) in metals)
+            if not (len(bt) == 1 and next(iter(bt)) in SAME_SPECIES_METALS)
         }
 
         self._rebuild_colour_buttons()

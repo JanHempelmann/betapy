@@ -32,6 +32,7 @@ from matplotlib.backends.backend_qt5agg import (
 from matplotlib.figure import Figure
 
 from betapy.gui.structure_view import StructureView
+from betapy.core.constants import PFC_ROUNDING_DECIMALS
 
 
 # How close (in data units) a click must be to count as a point selection
@@ -181,13 +182,7 @@ class PFCViewerWidget(QWidget):
             return
 
         try:
-            # Support both space-separated (unique_pFCs) and comma-separated
-            try:
-                df = pd.read_csv(path, sep=' ')
-                if df.shape[1] < 4:
-                    df = pd.read_csv(path, sep=',')
-            except Exception:
-                df = pd.read_csv(path)
+            df = pd.read_csv(path)
 
             # Normalise column names to what we expect
             col_map = {
@@ -295,7 +290,7 @@ class PFCViewerWidget(QWidget):
             seen = set()
             deduped = []
             for r in self._results:
-                key = round(r['mean_pfc'], 5)
+                key = round(r['mean_pfc'], PFC_ROUNDING_DECIMALS)
                 if key not in seen:
                     seen.add(key)
                     deduped.append(r)

@@ -182,9 +182,11 @@ def run_stiffness_shift(settings):
         )
         atom_matches.update(matches)
         if unmatched:
-            print(f'    WARNING: {sp}: {len(unmatched)} atoms unmatched '
-                  f'(tolerance {ss.match_tolerance} Å) — '
-                  f'falling back to equal-count for this species')
+            print(f'    WARNING: {sp}: {len(unmatched)} atom(s) unmatched '
+                  f'within {ss.match_tolerance} Å.')
+            print(f'    → Try increasing match_tolerance (current: {ss.match_tolerance} Å)')
+            print(f'      or verify both structures share the same cell origin.')
+            print(f'      Falling back to equal-count truncation for {sp}.')
             matching_failed.append(sp)
         else:
             print(f'    {sp}: {len(matches)} atoms matched')
@@ -204,8 +206,9 @@ def run_stiffness_shift(settings):
         # Fallback: equal-count truncation by distance
         print()
         print('  WARNING: Atom matching failed for one or more species.')
-        print('  WARNING: Falling back to equal-count truncation ordered by distance.')
-        print('  WARNING: Results may be less reliable — check your structures.')
+        print('  WARNING: Falling back to equal-count truncation ordered by atom-atom distance.')
+        print('  WARNING: This pairs atoms by sorted distance rank, not by position —')
+        print('  WARNING: results are approximate. Fix matching for reliable shifts.')
         print()
         df, total, n = fallback_equal_count_shift(offsite_a, offsite_b)
         method = f'equal-count fallback ({n} pairs)'

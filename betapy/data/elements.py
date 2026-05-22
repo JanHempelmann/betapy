@@ -85,6 +85,7 @@ DEFAULT_COLOUR = (0.50, 0.50, 0.50)
 # Display radii for sphere rendering (not covalent radii — tuned for aesthetics)
 # These are smaller than covalent radii to avoid overlap in dense structures.
 DISPLAY_RADII = {
+    # Non-metals / main group
     'H':  0.25,
     'C':  0.35,
     'N':  0.33,
@@ -93,13 +94,63 @@ DISPLAY_RADII = {
     'S':  0.38,
     'P':  0.38,
     'Cl': 0.38,
+    'Br': 0.42,
+    'I':  0.48,
+    # Alkali / alkaline earth
     'Li': 0.45,
     'Na': 0.50,
     'K':  0.55,
     'Mg': 0.45,
     'Ca': 0.50,
+    'Sr': 0.52,
+    'Ba': 0.55,
+    # 3d transition metals
+    'Sc': 0.46,
+    'Ti': 0.44,
+    'V':  0.42,
+    'Cr': 0.40,
+    'Mn': 0.44,
+    'Fe': 0.42,
+    'Co': 0.41,
+    'Ni': 0.40,
+    'Cu': 0.40,
+    'Zn': 0.40,
+    # 4d transition metals
+    'Y':  0.50,
+    'Zr': 0.46,
+    'Nb': 0.44,
+    'Mo': 0.42,
+    'Tc': 0.41,
+    'Ru': 0.41,
+    'Rh': 0.41,
+    'Pd': 0.41,
+    'Ag': 0.46,
+    'Cd': 0.45,
+    # 5d transition metals
+    'Hf': 0.46,
+    'Ta': 0.44,
+    'W':  0.43,
+    'Re': 0.42,
+    'Os': 0.41,
+    'Ir': 0.41,
+    'Pt': 0.41,
+    'Au': 0.41,
+    'Hg': 0.40,
+    # Lanthanides (representative)
+    'La': 0.52,
+    'Ce': 0.52,
+    'Nd': 0.51,
+    'Sm': 0.51,
+    'Eu': 0.51,
+    'Gd': 0.50,
+    'Tb': 0.50,
+    'Dy': 0.50,
+    'Ho': 0.50,
+    'Er': 0.49,
+    'Yb': 0.49,
+    'Lu': 0.49,
 }
-DEFAULT_DISPLAY_RADIUS = 0.40   # used for all transition metals and unknowns
+DEFAULT_DISPLAY_RADIUS = 0.42   # fallback for elements not listed above
 
 
 def covalent_radius(symbol):

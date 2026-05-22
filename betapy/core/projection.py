@@ -9,6 +9,8 @@ import numpy as np
 import pandas as pd
 from tqdm import tqdm
 
+from betapy.core.constants import PFC_ROUNDING_DECIMALS
+
 
 # ---------------------------------------------------------------------------
 # Low-level helpers
@@ -126,7 +128,7 @@ def unique_pfcs(bulk_results):
         return pd.DataFrame()
 
     pfc_vals = np.array([r['mean_pfc'] for r in bulk_results])
-    rounded  = np.around(pfc_vals, 5)
+    rounded  = np.around(pfc_vals, PFC_ROUNDING_DECIMALS)
     _, indices, _ = np.unique(rounded, return_index=True, return_counts=True)
 
     rows = []
@@ -226,7 +228,7 @@ def find_refsite_pairs(supercell, atomic_pairs, force_matrices,
                 'species1':       sp_i,
                 'species2':       sp_j,
                 'atom1_ref_dist': dist_i,
-                'atom_distance':  atom_dist,
+                'distance':       atom_dist,
                 'mean_pfc':       mean_pfc,
                 'rms_pfc':        rms_pfc,
             })
@@ -255,7 +257,7 @@ def refsite_results_to_dataframes(offsite_results, onsite_results, ref_label):
             r['atom1_idx'], r['species1'],
             r['atom2_idx'], r['species2'],
             r['atom1_ref_dist'],
-            r['atom_distance'],
+            r['distance'],
             r['mean_pfc'], r['rms_pfc'],
         ])
     df_offsite = pd.DataFrame(offsite_rows, columns=[
@@ -398,8 +400,8 @@ def match_fc_pairs(results_a, results_b, atom_matches, sc_a):
             unmatched_a.append(r)
             continue
 
-        dist_a = r.get('atom_distance', r.get('distance', 0.0))
-        dist_b = counterpart.get('atom_distance', counterpart.get('distance', 0.0))
+        dist_a = r['distance']
+        dist_b = counterpart['distance']
         pfc_a  = r['mean_pfc']
         pfc_b  = counterpart['mean_pfc']
 
@@ -456,8 +458,7 @@ def fallback_equal_count_shift(results_a, results_b):
     fails and the program warns the user.
     """
     def sorted_pfcs(results):
-        dist_key = lambda r: r.get('atom_distance', r.get('distance', 0.0))
-        return sorted(results, key=dist_key)
+        return sorted(results, key=lambda r: r['distance'])
 
     sorted_a = sorted_pfcs(results_a)
     sorted_b = sorted_pfcs(results_b)
@@ -470,8 +471,8 @@ def fallback_equal_count_shift(results_a, results_b):
         rows.append({
             'species1':   ra['species1'],
             'species2':   ra['species2'],
-            'distance_a': ra.get('atom_distance', ra.get('distance', 0.0)),
-            'distance_b': rb.get('atom_distance', rb.get('distance', 0.0)),
+            'distance_a': ra['distance'],
+            'distance_b': rb['distance'],
             'mean_pfc_a': pfc_a,
             'mean_pfc_b': pfc_b,
             'delta_pfc':  pfc_b - pfc_a,

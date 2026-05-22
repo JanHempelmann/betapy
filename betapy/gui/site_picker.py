@@ -18,14 +18,45 @@ from PyQt5.QtWidgets import (
     QWidget, QHBoxLayout, QVBoxLayout, QSplitter,
     QPushButton, QLabel, QDoubleSpinBox, QLineEdit,
     QGroupBox, QFileDialog, QMessageBox, QComboBox,
-    QGridLayout, QCheckBox,
+    QGridLayout, QCheckBox, QProgressDialog,
 )
-from PyQt5.QtCore import Qt
+from PyQt5.QtCore import Qt, QThread, pyqtSignal
 
 from betapy.core.io import read_refpos, write_refpos
 from betapy.core.projection import find_refsite_pairs, refsite_results_to_dataframes
 from betapy.gui.structure_view import StructureView
 from betapy.gui.refsite_viewer import RefsitePFCWidget
+
+
+class _RefsiteWorker(QThread):
+    """Runs find_refsite_pairs off the main thread."""
+
+    finished = pyqtSignal(list, list)   # offsite_results, onsite_results
+    error    = pyqtSignal(str)
+
+    def __init__(self, supercell, fc_data, ref_frac,
+                 cutoff, exclude_species, parent=None):
+        super().__init__(parent)
+        self._supercell       = supercell
+        self._fc_data         = fc_data
+        self._ref_frac        = ref_frac
+        self._cutoff          = cutoff
+        self._exclude_species = exclude_species
+
+    def run(self):
+        try:
+            offsite, onsite = find_refsite_pairs(
+                self._supercell,
+                self._fc_data['atomic_pairs'],
+                self._fc_data['force_matrices'],
+                self._ref_frac,
+                self._cutoff,
+                exclude_species=self._exclude_species,
+                show_progress=False,
+            )
+            self.finished.emit(offsite, onsite)
+        except Exception as e:
+            self.error.emit(str(e))
 
 
 class SitePickerWidget(QWidget):
@@ -97,7 +128,12 @@ class SitePickerWidget(QWidget):
         snap_box = QGroupBox('Snap to atom')
         snap_layout = QVBoxLayout()
         self.snap_combo = QComboBox()
+        self.snap_combo.setEditable(True)
+        self.snap_combo.setInsertPolicy(QComboBox.NoInsert)
         self.snap_combo.addItem('(load structure first)')
+        # Contains-based filtering so typing "V" matches "12  V  (0.1234, …)"
+        self.snap_combo.completer().setFilterMode(Qt.MatchContains)
+        self.snap_combo.completer().setCaseSensitivity(Qt.CaseInsensitive)
         btn_snap = QPushButton('Snap to selected atom')
         btn_snap.clicked.connect(self._snap_to_atom)
         snap_layout.addWidget(self.snap_combo)
@@ -292,48 +328,58 @@ class SitePickerWidget(QWidget):
         if self.supercell is None or self.fc_data is None:
             QMessageBox.warning(self, 'No data', 'Load a structure first.')
             return
-        try:
-            self._do_analysis()
-        except Exception as e:
-            QMessageBox.critical(self, 'Analysis error', str(e))
 
-    def _do_analysis(self):
         sc     = self.supercell
         cutoff = self.cutoff_spin.value()
 
         exclude_sp = None
-        ref_sp     = None
+        self._analysis_ref_sp = None
         if self.chk_exclude_refsite_species.isChecked():
             dists    = [sc.distance_to_point(i + 1, self._ref_frac)
                         for i in range(sc.n_atoms)]
             near_idx = min(range(sc.n_atoms), key=lambda i: dists[i])
-            ref_sp   = sc.species(near_idx + 1)
-            exclude_sp = {ref_sp}
+            self._analysis_ref_sp = sc.species(near_idx + 1)
+            exclude_sp = {self._analysis_ref_sp}
 
-        offsite, onsite = find_refsite_pairs(
-            sc,
-            self.fc_data['atomic_pairs'],
-            self.fc_data['force_matrices'],
-            self._ref_frac,
-            cutoff,
-            exclude_species=exclude_sp,
-            show_progress=False,
+        self._worker = _RefsiteWorker(
+            sc, self.fc_data, self._ref_frac.copy(),
+            cutoff, exclude_sp, parent=self,
         )
+        self._worker.finished.connect(self._on_analysis_done)
+        self._worker.error.connect(self._on_analysis_error)
+
+        self._progress = QProgressDialog(
+            'Running refsite analysis…', None, 0, 0, self,
+        )
+        self._progress.setWindowTitle('betapy')
+        self._progress.setWindowModality(Qt.WindowModal)
+        self._progress.setMinimumDuration(0)
+        self._progress.show()
+
+        self._worker.start()
+
+    def _on_analysis_done(self, offsite, onsite):
+        self._progress.close()
 
         self._last_offsite = offsite
         self._last_onsite  = onsite
         self._last_label   = self.label_edit.text() or 'custom_site'
 
-        self.pfc_viewer.load_data(offsite, sc)
+        self.pfc_viewer.load_data(offsite, self.supercell)
 
-        note = f'  (excl. {ref_sp} pairs)\n' if ref_sp else ''
+        ref_sp = self._analysis_ref_sp
+        note   = f'  (excl. {ref_sp} pairs)\n' if ref_sp else ''
         self.result_label.setText(
             f'Found:\n'
             f'  {len(offsite)} off-site pairs\n'
             f'{note}'
             f'  {len(onsite)} on-site terms\n'
-            f'cutoff: {cutoff:.2f} Å'
+            f'cutoff: {self.cutoff_spin.value():.2f} Å'
         )
+
+    def _on_analysis_error(self, msg):
+        self._progress.close()
+        QMessageBox.critical(self, 'Analysis error', msg)
 
     def load_refsite_csv(self, path):
         """Load a refsite pFCs CSV into the pFC viewer panel."""
