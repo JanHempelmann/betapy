@@ -6,7 +6,14 @@ Layout
 Top bar   : directory paths for A and B, REFPOS, analysis settings
 3D views  : side-by-side StructureView with refsite cube + connection toggles
 Bottom    : overlay scatter (A ○, B △, matched connected, unmatched grey)
-            + sortable matched-pair table
+            + tabbed tables: "Matched" and "Unmatched"
+
+Scatter interaction
+-------------------
+• Clicking a matched A/B point  → gold ring on both points, bond highlighted
+  in both 3D views, Matched tab focused.
+• Clicking an unmatched A/B point → gold ring on that point, bond highlighted
+  in the relevant 3D view only, Unmatched tab focused.
 """
 
 import numpy as np
@@ -18,6 +25,7 @@ from PyQt5.QtWidgets import (
     QGroupBox, QFileDialog, QMessageBox, QCheckBox,
     QTableWidget, QTableWidgetItem, QHeaderView,
     QAbstractItemView, QFrame, QScrollArea, QGridLayout,
+    QTabWidget,
 )
 from PyQt5.QtCore import Qt
 from PyQt5.QtGui import QColor
@@ -56,19 +64,30 @@ class StiffnessShiftWidget(QWidget):
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self._sc_a          = None
-        self._sc_b          = None
-        self._refsite_frac  = None   # first refsite (for 3D view)
-        self._offsite_a     = []
-        self._offsite_b     = []
-        self._matched       = []
-        self._unmatched_a   = []
-        self._unmatched_b   = []
-        self._selected_midx = None   # index into _matched, or None
-        self._pair_types    = []
-        self._checkboxes    = {}
-        self._scatter_pts   = {}     # (sp1,sp2) -> [{xa,ya,xb,yb,midx}, ...]
-        self._ax            = None
+        self._sc_a         = None
+        self._sc_b         = None
+        self._refsite_frac = None
+        self._offsite_a    = []
+        self._offsite_b    = []
+        self._matched      = []
+        self._unmatched_a  = []
+        self._unmatched_b  = []
+
+        # Selection state — at most one of these is non-None at a time.
+        # Unmatched selections are (ridx, record) where ridx is the index
+        # into _unmatched_a / _unmatched_b.
+        self._selected_midx = None
+        self._selected_ua   = None   # (ridx, record) or None
+        self._selected_ub   = None   # (ridx, record) or None
+
+        # Scatter click-detection lists (rebuilt every _refresh_plot)
+        self._scatter_pts = {}   # (sp1,sp2) -> [{xa,ya,xb,yb,midx}, ...]
+        self._um_a_pts    = []   # [{x,y,ridx}, ...] visible unmatched A
+        self._um_b_pts    = []   # [{x,y,ridx}, ...] visible unmatched B
+
+        self._pair_types  = []
+        self._checkboxes  = {}
+        self._ax          = None
         self._build_ui()
 
     # ------------------------------------------------------------------
@@ -215,13 +234,13 @@ class StiffnessShiftWidget(QWidget):
         col.addLayout(conn_row)
 
         if is_a:
-            self._view_a       = view
-            self._conn_spin_a  = spin
-            self._btn_conn_a   = btn
+            self._view_a      = view
+            self._conn_spin_a = spin
+            self._btn_conn_a  = btn
         else:
-            self._view_b       = view
-            self._conn_spin_b  = spin
-            self._btn_conn_b   = btn
+            self._view_b      = view
+            self._conn_spin_b = spin
+            self._btn_conn_b  = btn
 
         return w
 
@@ -251,15 +270,17 @@ class StiffnessShiftWidget(QWidget):
 
         h.addWidget(scatter_w)
 
-        # Right: matched-pair table
-        table_w = QWidget()
-        tl = QVBoxLayout(table_w)
-        tl.setContentsMargins(0, 0, 0, 0)
+        # Right: tabbed tables + shared selection bar
+        right_w = QWidget()
+        rl = QVBoxLayout(right_w)
+        rl.setContentsMargins(0, 0, 0, 0)
 
-        hdr = QLabel('Matched pairs — sorted by |ΔpFC|')
-        hdr.setStyleSheet('font-weight: bold; padding: 3px 0;')
-        tl.addWidget(hdr)
+        self._bottom_tabs = QTabWidget()
 
+        # Tab 0 — Matched pairs
+        matched_w = QWidget()
+        ml = QVBoxLayout(matched_w)
+        ml.setContentsMargins(4, 4, 4, 4)
         self._table = QTableWidget()
         self._table.setColumnCount(6)
         self._table.setHorizontalHeaderLabels([
@@ -271,20 +292,41 @@ class StiffnessShiftWidget(QWidget):
         self._table.setSortingEnabled(True)
         self._table.setEditTriggers(QAbstractItemView.NoEditTriggers)
         self._table.verticalHeader().setVisible(False)
-        self._table.horizontalHeader().setSectionResizeMode(
-            QHeaderView.ResizeToContents
-        )
+        self._table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeToContents)
         self._table.horizontalHeader().setStretchLastSection(True)
         self._table.itemSelectionChanged.connect(self._on_table_select)
-        tl.addWidget(self._table)
+        ml.addWidget(self._table)
+        self._bottom_tabs.addTab(matched_w, 'Matched (0)')
+
+        # Tab 1 — Unmatched pairs
+        um_w = QWidget()
+        ul = QVBoxLayout(um_w)
+        ul.setContentsMargins(4, 4, 4, 4)
+        self._table_um = QTableWidget()
+        self._table_um.setColumnCount(6)
+        self._table_um.setHorizontalHeaderLabels([
+            'Struct.', 'Species', 'Atom 1', 'Atom 2', 'Ref dist (Å)', 'pFC',
+        ])
+        self._table_um.setSelectionBehavior(QAbstractItemView.SelectRows)
+        self._table_um.setSelectionMode(QAbstractItemView.SingleSelection)
+        self._table_um.setSortingEnabled(True)
+        self._table_um.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        self._table_um.verticalHeader().setVisible(False)
+        self._table_um.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeToContents)
+        self._table_um.horizontalHeader().setStretchLastSection(True)
+        self._table_um.itemSelectionChanged.connect(self._on_unmatched_table_select)
+        ul.addWidget(self._table_um)
+        self._bottom_tabs.addTab(um_w, 'Unmatched (0)')
+
+        rl.addWidget(self._bottom_tabs)
 
         self._sel_bar = QLabel('')
         self._sel_bar.setFrameStyle(QFrame.StyledPanel)
         self._sel_bar.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
         self._sel_bar.setFixedHeight(24)
-        tl.addWidget(self._sel_bar)
+        rl.addWidget(self._sel_bar)
 
-        h.addWidget(table_w)
+        h.addWidget(right_w)
         h.setSizes([560, 380])
         return h
 
@@ -340,7 +382,6 @@ class StiffnessShiftWidget(QWidget):
         fc_a = read_FORCE_CONSTANTS(dir_a / 'FORCE_CONSTANTS')
         fc_b = read_FORCE_CONSTANTS(dir_b / 'FORCE_CONSTANTS')
 
-        # REFPOS resolution
         if refpos_str:
             refpos_path = Path(refpos_str)
         else:
@@ -357,7 +398,6 @@ class StiffnessShiftWidget(QWidget):
         tol    = self._spin_tol.value()
         excl   = self._chk_excl.isChecked()
 
-        # Determine species to exclude (look for occupying atom in B, first site)
         excl_sp = None
         if excl:
             frac_0 = np.asarray(all_refsites[0])
@@ -366,7 +406,6 @@ class StiffnessShiftWidget(QWidget):
             if dists[ni] < msd:
                 excl_sp = {sc_b.species(ni + 1)}
 
-        # Refsite projections (all sites)
         offsite_a = []
         for frac in all_refsites:
             res, _ = find_refsite_pairs(
@@ -385,8 +424,7 @@ class StiffnessShiftWidget(QWidget):
             )
             offsite_b.extend(res)
 
-        # Atom position matching
-        all_species = sorted(set(sc_a.chem_symbols) & set(sc_b.chem_symbols))
+        all_species  = sorted(set(sc_a.chem_symbols) & set(sc_b.chem_symbols))
         atom_matches = {}
         for sp in all_species:
             m, _ = match_atoms_across_structures(sc_a, sc_b, sp, tolerance=tol)
@@ -406,26 +444,32 @@ class StiffnessShiftWidget(QWidget):
         self._unmatched_a   = unmatched_a
         self._unmatched_b   = unmatched_b
         self._selected_midx = None
+        self._selected_ua   = None
+        self._selected_ub   = None
 
-        # Update 3D views
+        # 3D views
         self._view_a.load_supercell(sc_a)
         self._view_a.set_ref_site(self._refsite_frac)
         self._view_b.load_supercell(sc_b)
         self._view_b.set_ref_site(self._refsite_frac)
 
-        # Reset connection buttons
         for btn, view in [(self._btn_conn_a, self._view_a),
                           (self._btn_conn_b, self._view_b)]:
             btn.setChecked(False)
             btn.setText('Show connections')
             view.set_refsite_bonds(None)
 
-        # Scatter + table
+        # Update tab titles with counts
+        self._bottom_tabs.setTabText(0, f'Matched ({len(matched)})')
+        self._bottom_tabs.setTabText(
+            1, f'Unmatched ({len(unmatched_a) + len(unmatched_b)})'
+        )
+
         self._rebuild_checkboxes()
         self._refresh_plot()
         self._refresh_table()
+        self._refresh_unmatched_table()
 
-        # Result summary
         _, total = stiffness_shift_from_pairs(matched)
         excl_note = f'  excl. {next(iter(excl_sp))} pairs\n' if excl_sp else ''
         self._result_lbl.setText(
@@ -498,8 +542,10 @@ class StiffnessShiftWidget(QWidget):
         ax = self._figure.add_subplot(111)
         self._ax = ax
         self._scatter_pts = {}
+        self._um_a_pts    = []
+        self._um_b_pts    = []
 
-        seen_species = set()   # track which species pairs appear in matched
+        seen_species = set()
 
         for pt in self._pair_types:
             if pt not in active:
@@ -516,7 +562,6 @@ class StiffnessShiftWidget(QWidget):
                 xb = np.array([m['atom1_ref_dist_b'] for m in ms])
                 yb = np.array([m['mean_pfc_b']       for m in ms])
 
-                # Connecting lines (behind points)
                 for k in range(len(ms)):
                     ax.plot([xa[k], xb[k]], [ya[k], yb[k]],
                             color='#999999', linewidth=0.6, alpha=0.45, zorder=1)
@@ -534,38 +579,54 @@ class StiffnessShiftWidget(QWidget):
                 ]
                 seen_species.add(pt)
 
-        # Unmatched A (grey x)
-        um_a = [r for r in self._unmatched_a
-                if (r['species1'], r['species2']) in active]
-        if um_a:
+        # Unmatched A — store per-record ridx for click detection
+        um_a_indexed = [(i, r) for i, r in enumerate(self._unmatched_a)
+                        if (r['species1'], r['species2']) in active]
+        if um_a_indexed:
             ax.scatter(
-                [r.get('atom1_ref_dist', 0.0) for r in um_a],
-                [r['mean_pfc'] for r in um_a],
-                s=28, color='#aaaaaa', marker='x',
-                linewidths=1.2, zorder=2,
+                [r.get('atom1_ref_dist', 0.0) for _, r in um_a_indexed],
+                [r['mean_pfc'] for _, r in um_a_indexed],
+                s=28, color='#aaaaaa', marker='x', linewidths=1.2, zorder=2,
             )
+            self._um_a_pts = [
+                {'x': r.get('atom1_ref_dist', 0.0), 'y': r['mean_pfc'], 'ridx': i}
+                for i, r in um_a_indexed
+            ]
 
-        # Unmatched B (grey squares)
-        um_b = [r for r in self._unmatched_b
-                if (r['species1'], r['species2']) in active]
-        if um_b:
+        # Unmatched B
+        um_b_indexed = [(i, r) for i, r in enumerate(self._unmatched_b)
+                        if (r['species1'], r['species2']) in active]
+        if um_b_indexed:
             ax.scatter(
-                [r.get('atom1_ref_dist', 0.0) for r in um_b],
-                [r['mean_pfc'] for r in um_b],
-                s=22, color='#aaaaaa', marker='s',
-                edgecolors='none', zorder=2,
+                [r.get('atom1_ref_dist', 0.0) for _, r in um_b_indexed],
+                [r['mean_pfc'] for _, r in um_b_indexed],
+                s=22, color='#aaaaaa', marker='s', edgecolors='none', zorder=2,
             )
+            self._um_b_pts = [
+                {'x': r.get('atom1_ref_dist', 0.0), 'y': r['mean_pfc'], 'ridx': i}
+                for i, r in um_b_indexed
+            ]
 
-        # Gold ring on selected pair (both A and B points)
+        # Gold rings on selected points
         if self._selected_midx is not None and self._selected_midx < len(self._matched):
             m  = self._matched[self._selected_midx]
             pt = (m['species1'], m['species2'])
             if pt in active:
                 for px, py in [(m['atom1_ref_dist_a'], m['mean_pfc_a']),
                                (m['atom1_ref_dist_b'], m['mean_pfc_b'])]:
-                    ax.scatter([px], [py], s=140,
-                               facecolors='none', edgecolors='#c8a000',
-                               linewidths=2.5, zorder=5)
+                    ax.scatter([px], [py], s=140, facecolors='none',
+                               edgecolors='#c8a000', linewidths=2.5, zorder=5)
+
+        for sel, lst in [(self._selected_ua, self._unmatched_a),
+                         (self._selected_ub, self._unmatched_b)]:
+            if sel is not None:
+                ridx, r = sel
+                if (r['species1'], r['species2']) in active:
+                    ax.scatter(
+                        [r.get('atom1_ref_dist', 0.0)], [r['mean_pfc']],
+                        s=140, facecolors='none', edgecolors='#c8a000',
+                        linewidths=2.5, zorder=5,
+                    )
 
         # Legend
         handles = []
@@ -578,11 +639,11 @@ class StiffnessShiftWidget(QWidget):
                               color='#555555', markersize=7, label='A  (○)'))
         handles.append(Line2D([0], [0], linestyle='', marker='^',
                               color='#555555', markersize=7, label='B  (△)'))
-        if um_a:
+        if um_a_indexed:
             handles.append(Line2D([0], [0], linestyle='', marker='x',
                                   color='#aaaaaa', markersize=7,
                                   markeredgewidth=1.4, label='Unmatched A'))
-        if um_b:
+        if um_b_indexed:
             handles.append(Line2D([0], [0], linestyle='', marker='s',
                                   color='#aaaaaa', markersize=6,
                                   label='Unmatched B'))
@@ -597,7 +658,7 @@ class StiffnessShiftWidget(QWidget):
         self._canvas.draw_idle()
 
     # ------------------------------------------------------------------
-    # Table
+    # Matched-pair table
     # ------------------------------------------------------------------
 
     def _refresh_table(self):
@@ -605,13 +666,9 @@ class StiffnessShiftWidget(QWidget):
         self._table.setSortingEnabled(False)
         self._table.setRowCount(0)
 
-        sorted_pairs = sorted(
-            enumerate(self._matched),
-            key=lambda p: abs(p[1]['delta_pfc']),
-            reverse=True,
-        )
-
-        for midx, m in sorted_pairs:
+        for midx, m in sorted(enumerate(self._matched),
+                               key=lambda p: abs(p[1]['delta_pfc']),
+                               reverse=True):
             row = self._table.rowCount()
             self._table.insertRow(row)
 
@@ -638,7 +695,6 @@ class StiffnessShiftWidget(QWidget):
 
         self._table.setSortingEnabled(True)
         self._table.blockSignals(False)
-
         if self._selected_midx is not None:
             self._sync_table_selection()
 
@@ -650,18 +706,87 @@ class StiffnessShiftWidget(QWidget):
             if item and item.data(Qt.UserRole) == self._selected_midx:
                 self._table.blockSignals(True)
                 self._table.selectRow(row)
-                self._table.scrollToItem(
-                    item, QAbstractItemView.PositionAtCenter
-                )
+                self._table.scrollToItem(item, QAbstractItemView.PositionAtCenter)
                 self._table.blockSignals(False)
                 return
 
     # ------------------------------------------------------------------
-    # Interaction
+    # Unmatched-pair table
+    # ------------------------------------------------------------------
+
+    def _refresh_unmatched_table(self):
+        self._table_um.blockSignals(True)
+        self._table_um.setSortingEnabled(False)
+        self._table_um.setRowCount(0)
+
+        rows = (
+            [('A', i, r) for i, r in enumerate(self._unmatched_a)] +
+            [('B', i, r) for i, r in enumerate(self._unmatched_b)]
+        )
+        rows.sort(key=lambda t: abs(t[2]['mean_pfc']), reverse=True)
+
+        for struct, ridx, r in rows:
+            row = self._table_um.rowCount()
+            self._table_um.insertRow(row)
+
+            # Column 0: Struct. — UserRole stores (which, ridx) for lookup
+            st_item = QTableWidgetItem(struct)
+            st_item.setFlags(st_item.flags() & ~Qt.ItemIsEditable)
+            st_item.setData(Qt.UserRole, (struct.lower(), ridx))
+            self._table_um.setItem(row, 0, st_item)
+
+            sp_item = QTableWidgetItem(f"{r['species1']}–{r['species2']}")
+            sp_item.setFlags(sp_item.flags() & ~Qt.ItemIsEditable)
+            self._table_um.setItem(row, 1, sp_item)
+
+            a1_item = _NumericItem(str(int(r['atom1_idx'])))
+            a1_item.setFlags(a1_item.flags() & ~Qt.ItemIsEditable)
+            self._table_um.setItem(row, 2, a1_item)
+
+            a2_item = _NumericItem(str(int(r['atom2_idx'])))
+            a2_item.setFlags(a2_item.flags() & ~Qt.ItemIsEditable)
+            self._table_um.setItem(row, 3, a2_item)
+
+            rd_item = _NumericItem(f"{r.get('atom1_ref_dist', 0.0):.4f}")
+            rd_item.setFlags(rd_item.flags() & ~Qt.ItemIsEditable)
+            self._table_um.setItem(row, 4, rd_item)
+
+            pfc_val  = r['mean_pfc']
+            pfc_item = _NumericItem(f'{pfc_val:+.4f}')
+            pfc_item.setFlags(pfc_item.flags() & ~Qt.ItemIsEditable)
+            pfc_item.setForeground(
+                QColor(30, 60, 160) if pfc_val >= 0 else QColor(180, 40, 30)
+            )
+            self._table_um.setItem(row, 5, pfc_item)
+
+        self._table_um.setSortingEnabled(True)
+        self._table_um.blockSignals(False)
+
+        if self._selected_ua is not None or self._selected_ub is not None:
+            self._sync_unmatched_table_selection()
+
+    def _sync_unmatched_table_selection(self):
+        if self._selected_ua is not None:
+            target = ('a', self._selected_ua[0])
+        elif self._selected_ub is not None:
+            target = ('b', self._selected_ub[0])
+        else:
+            return
+        for row in range(self._table_um.rowCount()):
+            item = self._table_um.item(row, 0)
+            if item and item.data(Qt.UserRole) == target:
+                self._table_um.blockSignals(True)
+                self._table_um.selectRow(row)
+                self._table_um.scrollToItem(item, QAbstractItemView.PositionAtCenter)
+                self._table_um.blockSignals(False)
+                return
+
+    # ------------------------------------------------------------------
+    # Scatter interaction
     # ------------------------------------------------------------------
 
     def _on_scatter_click(self, event):
-        if event.inaxes is None or not self._scatter_pts or event.button != 1:
+        if event.inaxes is None or event.button != 1:
             return
         cx, cy = event.xdata, event.ydata
         if cx is None:
@@ -671,7 +796,10 @@ class StiffnessShiftWidget(QWidget):
         x_range = (ax.get_xlim()[1] - ax.get_xlim()[0]) or 1
         y_range = (ax.get_ylim()[1] - ax.get_ylim()[0]) or 1
 
-        best_d, best_midx = float('inf'), None
+        best_d    = float('inf')
+        best_type = None
+        best_id   = None
+
         for pts_list in self._scatter_pts.values():
             for pt_info in pts_list:
                 for px, py in [(pt_info['xa'], pt_info['ya']),
@@ -680,11 +808,35 @@ class StiffnessShiftWidget(QWidget):
                     dy = (py - cy) / y_range
                     d  = (dx**2 + dy**2) ** 0.5
                     if d < best_d:
-                        best_d, best_midx = d, pt_info['midx']
+                        best_d, best_type, best_id = d, 'matched', pt_info['midx']
 
-        if best_midx is None or best_d > PICK_TOLERANCE:
+        for pt_info in self._um_a_pts:
+            dx = (pt_info['x'] - cx) / x_range
+            dy = (pt_info['y'] - cy) / y_range
+            d  = (dx**2 + dy**2) ** 0.5
+            if d < best_d:
+                best_d, best_type, best_id = d, 'unmatched_a', pt_info['ridx']
+
+        for pt_info in self._um_b_pts:
+            dx = (pt_info['x'] - cx) / x_range
+            dy = (pt_info['y'] - cy) / y_range
+            d  = (dx**2 + dy**2) ** 0.5
+            if d < best_d:
+                best_d, best_type, best_id = d, 'unmatched_b', pt_info['ridx']
+
+        if best_type is None or best_d > PICK_TOLERANCE:
             return
-        self._select_pair(best_midx, source='scatter')
+
+        if best_type == 'matched':
+            self._select_pair(best_id, source='scatter')
+        elif best_type == 'unmatched_a':
+            self._select_unmatched(best_id, 'a', source='scatter')
+        else:
+            self._select_unmatched(best_id, 'b', source='scatter')
+
+    # ------------------------------------------------------------------
+    # Table interaction
+    # ------------------------------------------------------------------
 
     def _on_table_select(self):
         rows = self._table.selectedItems()
@@ -698,11 +850,31 @@ class StiffnessShiftWidget(QWidget):
             return
         self._select_pair(midx, source='table')
 
+    def _on_unmatched_table_select(self):
+        rows = self._table_um.selectedItems()
+        if not rows:
+            return
+        item = self._table_um.item(rows[0].row(), 0)
+        if item is None:
+            return
+        key = item.data(Qt.UserRole)
+        if key is None:
+            return
+        which, ridx = key
+        self._select_unmatched(ridx, which, source='table')
+
+    # ------------------------------------------------------------------
+    # Selection
+    # ------------------------------------------------------------------
+
     def _select_pair(self, midx: int, source: str = 'click'):
-        self._selected_midx = midx
         if midx >= len(self._matched):
             return
         m = self._matched[midx]
+
+        self._selected_midx = midx
+        self._selected_ua   = None
+        self._selected_ub   = None
 
         self._sel_bar.setText(
             f'  {m["species1"]}–{m["species2"]}'
@@ -713,10 +885,53 @@ class StiffnessShiftWidget(QWidget):
             f'   ΔpFC = {m["delta_pfc"]:+.5f} eV/Å²'
         )
 
-        if source != 'scatter':
-            self._refresh_plot()
+        if source == 'scatter':
+            self._bottom_tabs.setCurrentIndex(0)
+        self._refresh_plot()
         if source != 'table':
             self._sync_table_selection()
 
         self._view_a.highlight_bond(m['atom1_idx_a'], m['atom2_idx_a'])
         self._view_b.highlight_bond(m['atom1_idx_b'], m['atom2_idx_b'])
+
+    def _select_unmatched(self, ridx: int, which: str, source: str = 'click'):
+        self._selected_midx = None
+
+        if which == 'a':
+            if ridx >= len(self._unmatched_a):
+                return
+            record = self._unmatched_a[ridx]
+            self._selected_ua = (ridx, record)
+            self._selected_ub = None
+        else:
+            if ridx >= len(self._unmatched_b):
+                return
+            record = self._unmatched_b[ridx]
+            self._selected_ua = None
+            self._selected_ub = (ridx, record)
+
+        struct_lbl = 'A' if which == 'a' else 'B'
+        self._sel_bar.setText(
+            f'  {record["species1"]}–{record["species2"]}'
+            f'   [Unmatched {struct_lbl}]'
+            f'   atom {int(record["atom1_idx"])}→{int(record["atom2_idx"])}'
+            f'   ref dist = {record.get("atom1_ref_dist", 0.0):.3f} Å'
+            f'   pFC = {record["mean_pfc"]:+.5f} eV/Å²'
+        )
+
+        if source == 'scatter':
+            self._bottom_tabs.setCurrentIndex(1)
+        self._refresh_plot()
+        if source != 'table':
+            self._sync_unmatched_table_selection()
+
+        if which == 'a':
+            self._view_a.highlight_bond(
+                int(record['atom1_idx']), int(record['atom2_idx'])
+            )
+            self._view_b.clear_highlight()
+        else:
+            self._view_a.clear_highlight()
+            self._view_b.highlight_bond(
+                int(record['atom1_idx']), int(record['atom2_idx'])
+            )

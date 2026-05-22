@@ -450,8 +450,7 @@ class RefsitePFCWidget(QWidget):
                 f'   pFC = {rec["mean_pfc"]:+.5f} eV/Å²'
             )
 
-        if source != 'scatter':
-            self._refresh_plot()
+        self._refresh_plot()
         if source != 'table':
             self._sync_table_selection()
 
