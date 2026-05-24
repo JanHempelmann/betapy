@@ -1,3 +1,5 @@
+LICENSE
+README.md
 pyproject.toml
 betapy/__init__.py
 betapy/cli.py
@@ -8,6 +10,7 @@ betapy.egg-info/entry_points.txt
 betapy.egg-info/requires.txt
 betapy.egg-info/top_level.txt
 betapy/core/__init__.py
+betapy/core/constants.py
 betapy/core/io.py
 betapy/core/projection.py
 betapy/core/settings.py
@@ -17,7 +20,10 @@ betapy/data/elements.py
 betapy/gui/__init__.py
 betapy/gui/app.py
 betapy/gui/pfc_viewer.py
+betapy/gui/refsite_viewer.py
 betapy/gui/site_picker.py
+betapy/gui/splash.py
+betapy/gui/stiffness_shift_widget.py
 betapy/gui/structure_view.py
 tests/__init__.py
 tests/test_io.py

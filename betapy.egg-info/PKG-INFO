@@ -3,6 +3,7 @@ Name: betapy
 Version: 0.2.0
 Summary: Projected force constant analysis for phonopy supercells
 Requires-Python: >=3.8
+License-File: LICENSE
 Requires-Dist: numpy
 Requires-Dist: pandas
 Requires-Dist: matplotlib
@@ -11,3 +12,5 @@ Requires-Dist: pyvista
 Requires-Dist: pyvistaqt
 Requires-Dist: pyyaml
 Requires-Dist: scipy
+Requires-Dist: tqdm
+Dynamic: license-file
