@@ -583,9 +583,14 @@ class PFCViewerWidget(QWidget):
             from collections import Counter
             atom1_counts = Counter(int(r['atom1_idx']) for r in best_shell['records'])
             rep_atom1 = atom1_counts.most_common(1)[0][0]
-            pairs = [(int(r['atom1_idx']), int(r['atom2_idx']))
-                     for r in best_shell['records']
-                     if int(r['atom1_idx']) == rep_atom1]
+            seen_pairs: set = set()
+            pairs = []
+            for r in best_shell['records']:
+                if int(r['atom1_idx']) == rep_atom1:
+                    p = (int(r['atom1_idx']), int(r['atom2_idx']))
+                    if p not in seen_pairs:
+                        seen_pairs.add(p)
+                        pairs.append(p)
             if self._supercell is not None:
                 self.structure_view.highlight_bonds(pairs, center_on=rep_atom1)
 

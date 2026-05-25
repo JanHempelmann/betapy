@@ -11,9 +11,9 @@ from PyQt5.QtWidgets import (
     QPushButton, QLabel, QFileDialog,
     QStatusBar, QMessageBox,
     QDialog, QFormLayout, QDialogButtonBox, QComboBox,
-    QTabBar, QMenu,
+    QTabBar, QMenu, QProgressBar,
 )
-from PyQt5.QtCore import Qt, QSettings, QEvent, QTimer
+from PyQt5.QtCore import Qt, QSettings, QEvent, QTimer, QThread, pyqtSignal
 
 from betapy.core.settings import Settings
 from betapy.core.io import read_SPOSCAR, read_FORCE_CONSTANTS
@@ -118,6 +118,32 @@ class PreferencesDialog(QDialog):
         self.accept()
 
 
+class _AnalysisWorker(QThread):
+    """Background thread for compute_bulk_pfcs so the GUI stays responsive."""
+    progress = pyqtSignal(int, int)   # (current_pair, total_pairs)
+    finished = pyqtSignal(list, list) # (results, onsite)
+    error    = pyqtSignal(str)
+
+    def __init__(self, supercell, fc_data):
+        super().__init__()
+        self._supercell = supercell
+        self._fc_data   = fc_data
+
+    def run(self):
+        try:
+            from betapy.core.projection import compute_bulk_pfcs
+            results, onsite, _ = compute_bulk_pfcs(
+                self._supercell,
+                self._fc_data['atomic_pairs'],
+                self._fc_data['force_matrices'],
+                show_progress=False,
+                progress_callback=self.progress.emit,
+            )
+            self.finished.emit(results, onsite)
+        except Exception as e:
+            self.error.emit(str(e))
+
+
 class MainWindow(QMainWindow):
 
     def __init__(self, splash=None, cli_args=None):
@@ -196,6 +222,14 @@ class MainWindow(QMainWindow):
             'or load a settings file, '
             'or use "Open existing pFCs CSV" in the pFC Viewer tab.'
         )
+
+        self._progress_bar = QProgressBar()
+        self._progress_bar.setFixedWidth(220)
+        self._progress_bar.setFixedHeight(16)
+        self._progress_bar.setTextVisible(False)
+        self._progress_bar.hide()
+        self.status.addPermanentWidget(self._progress_bar)
+        self._worker = None
 
         # Apply saved unit preference to all freshly created widgets
         self._set_unit(self._unit_combo.currentData())
@@ -609,24 +643,32 @@ class MainWindow(QMainWindow):
     # ------------------------------------------------------------------
 
     def _run_analysis(self):
-        from betapy.core.projection import compute_bulk_pfcs, unique_pfcs
-
-        self.status.showMessage('Running analysis…')
-        QApplication.processEvents()
-
-        try:
-            results, onsite, _ = compute_bulk_pfcs(
-                self.supercell,
-                self.fc_data['atomic_pairs'],
-                self.fc_data['force_matrices'],
-                show_progress=False,
-            )
-            df_unique = unique_pfcs(results)
-        except Exception as e:
-            QMessageBox.critical(self, 'Analysis error', str(e))
-            self.status.showMessage('Analysis failed.')
+        if self._worker is not None and self._worker.isRunning():
             return
 
+        n_pairs = len(self.fc_data['atomic_pairs'])
+        self._progress_bar.setRange(0, n_pairs)
+        self._progress_bar.setValue(0)
+        self._progress_bar.show()
+        self.btn_run.setEnabled(False)
+        self.status.showMessage(f'Analysing {n_pairs} pairs…')
+
+        self._worker = _AnalysisWorker(self.supercell, self.fc_data)
+        self._worker.progress.connect(self._on_analysis_progress)
+        self._worker.finished.connect(self._on_analysis_done)
+        self._worker.error.connect(self._on_analysis_error)
+        self._worker.start()
+
+    def _on_analysis_progress(self, n, total):
+        self._progress_bar.setValue(n)
+
+    def _on_analysis_done(self, results, onsite):
+        self._progress_bar.setValue(self._progress_bar.maximum())
+        self._progress_bar.hide()
+        self.btn_run.setEnabled(True)
+
+        from betapy.core.projection import unique_pfcs
+        df_unique = unique_pfcs(results)
         self.pfc_viewer.load_data(df_unique, results, supercell=self.supercell)
         self.site_picker.load_supercell(self.supercell, self.fc_data)
 
@@ -634,6 +676,12 @@ class MainWindow(QMainWindow):
             f'Analysis complete — {len(results)} off-site pairs, '
             f'{len(df_unique)} unique pFC values.'
         )
+
+    def _on_analysis_error(self, msg):
+        self._progress_bar.hide()
+        self.btn_run.setEnabled(True)
+        QMessageBox.critical(self, 'Analysis error', msg)
+        self.status.showMessage('Analysis failed.')
 
 
 def main(cli_args=None):

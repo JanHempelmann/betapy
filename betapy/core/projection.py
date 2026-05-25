@@ -55,16 +55,20 @@ def _onsite_norm(fc_matrix):
 # ---------------------------------------------------------------------------
 
 def compute_bulk_pfcs(supercell, atomic_pairs, force_matrices,
-                      show_progress=True):
+                      show_progress=True, progress_callback=None):
     """
     Separate on-site and off-site pairs, project off-site FCs along bond vectors.
 
     Parameters
     ----------
-    supercell      : Supercell instance
-    atomic_pairs   : list of [i, j] 1-based index pairs
-    force_matrices : list of (3,3) arrays, one per pair
-    show_progress  : bool, show tqdm progress bar (default True)
+    supercell         : Supercell instance
+    atomic_pairs      : list of [i, j] 1-based index pairs
+    force_matrices    : list of (3,3) arrays, one per pair
+    show_progress     : bool, show tqdm progress bar (default True)
+    progress_callback : callable(n, total) or None
+        Called periodically with the current pair count and total.
+        Throttled to ~200 calls regardless of dataset size so callers
+        (e.g. a Qt progress bar) are not flooded with events.
 
     Returns
     -------
@@ -79,11 +83,16 @@ def compute_bulk_pfcs(supercell, atomic_pairs, force_matrices,
     onsite  = []
     distances = []
 
-    for pair, fc_mat in tqdm(zip(atomic_pairs, force_matrices),
-                              total=len(atomic_pairs),
+    total = len(atomic_pairs)
+    _cb_step = max(1, total // 200)  # ~200 GUI updates regardless of size
+
+    for k, (pair, fc_mat) in enumerate(tqdm(zip(atomic_pairs, force_matrices),
+                              total=total,
                               desc='bulk pFCs',
                               unit='pair',
-                              disable=not show_progress):
+                              disable=not show_progress)):
+        if progress_callback is not None and k % _cb_step == 0:
+            progress_callback(k, total)
         i, j = pair
         if i == j:
             # On-site term
@@ -113,6 +122,9 @@ def compute_bulk_pfcs(supercell, atomic_pairs, force_matrices,
                 'rms_pfc':   rms_pfc,
             })
             distances.append(dist)
+
+    if progress_callback is not None:
+        progress_callback(total, total)
 
     return results, onsite, distances
 
