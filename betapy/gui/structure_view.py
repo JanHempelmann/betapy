@@ -48,7 +48,8 @@ REFSITE_BOND_COLOUR   = (0.85, 0.30, 0.10)
 REFSITE_BOND_RADIUS   = 0.04
 REFSITE_BOND_OPACITY  = 0.80
 
-DIM_OPACITY           = 0.12
+DIM_OPACITY           = 0.22   # individual bond highlight: background atoms/bonds
+SHELL_DIM_OPACITY     = 0.35   # shell highlight: gentler — context still readable
 FULL_OPACITY          = 1.0
 
 
@@ -452,6 +453,12 @@ class StructureView(QWidget):
         highlight     = self._highlight_pair
         selected_idxs = set(highlight) if highlight else set()
 
+        # Atoms involved in the current shell highlight (both endpoints)
+        shell_atom_idxs = set()
+        for i_1, j_1 in self._highlight_pairs:
+            shell_atom_idxs.add(i_1)
+            shell_atom_idxs.add(j_1)
+
         # Pre-compute refsite neighbours once — used for both dimming and
         # bond drawing so atoms_within is only called once per redraw.
         refsite_nearby: list = []
@@ -461,8 +468,13 @@ class StructureView(QWidget):
                                              self._refsite_bonds_cutoff)
         active_refsite_idxs = {idx for idx, _ in refsite_nearby}
 
-        # Any dimming at all?
-        dimming = bool(selected_idxs or active_refsite_idxs)
+        # Choose bond background opacity depending on highlight mode
+        if selected_idxs or active_refsite_idxs:
+            bg_bond_opacity = DIM_OPACITY
+        elif shell_atom_idxs:
+            bg_bond_opacity = SHELL_DIM_OPACITY
+        else:
+            bg_bond_opacity = BOND_OPACITY
 
         # Cartesian positions from current display fractional coords
         cart = self._display_frac @ sc.lattice
@@ -492,18 +504,21 @@ class StructureView(QWidget):
                 bond_tubed,
                 color=BOND_COLOUR,
                 name='all_bonds',
-                opacity=DIM_OPACITY if dimming else BOND_OPACITY,
+                opacity=bg_bond_opacity,
                 render=False,
             )
 
         # --- Atoms — split into full-opacity and dim groups ---
-        # Pair-highlight mode : selected_idxs drawn separately (gold);
-        #                       everything else dimmed.
-        # Refsite-bonds mode  : atoms within cutoff at full opacity;
-        #                       everything else dimmed.
-        # Default             : all atoms full opacity.
-        full_groups = {}   # sp -> [cart_pos, ...]  full opacity, species colour
-        dim_groups  = {}   # sp -> [cart_pos, ...]  DIM_OPACITY, species colour
+        # Individual bond mode : selected_idxs drawn separately as gold;
+        #                        all others dimmed at DIM_OPACITY.
+        # Shell mode           : shell_atom_idxs at full species colour;
+        #                        all others dimmed at SHELL_DIM_OPACITY.
+        # Refsite-bonds mode   : atoms within cutoff at full opacity;
+        #                        all others dimmed at DIM_OPACITY.
+        # Default              : all atoms full opacity.
+        full_groups      = {}   # sp -> [pos, ...]  full opacity, species colour
+        dim_groups       = {}   # sp -> [pos, ...]  DIM_OPACITY
+        shell_dim_groups = {}   # sp -> [pos, ...]  SHELL_DIM_OPACITY
 
         for i in range(sc.n_atoms):
             idx = i + 1
@@ -518,6 +533,11 @@ class StructureView(QWidget):
                     dim_groups.setdefault(sp, []).append(pos)
             elif selected_idxs:
                 dim_groups.setdefault(sp, []).append(pos)
+            elif shell_atom_idxs:
+                if idx in shell_atom_idxs:
+                    full_groups.setdefault(sp, []).append(pos)
+                else:
+                    shell_dim_groups.setdefault(sp, []).append(pos)
             else:
                 full_groups.setdefault(sp, []).append(pos)
 
@@ -545,6 +565,19 @@ class StructureView(QWidget):
                 glyphs, color=colour,
                 name=f'atoms_{sp}_dim',
                 opacity=DIM_OPACITY, render=False,
+            )
+
+        for sp, positions in shell_dim_groups.items():
+            colour = self._colours.get(sp, (0.5, 0.5, 0.5))
+            radius = display_radius(sp)
+            cloud  = pv.PolyData(np.array(positions))
+            proto  = pv.Sphere(radius=radius,
+                               theta_resolution=8, phi_resolution=8)
+            glyphs = cloud.glyph(geom=proto, scale=False, orient=False)
+            self.plotter.add_mesh(
+                glyphs, color=colour,
+                name=f'atoms_{sp}_shell_dim',
+                opacity=SHELL_DIM_OPACITY, render=False,
             )
 
         # --- Selected atoms (gold, larger) — pair-highlight mode only ---

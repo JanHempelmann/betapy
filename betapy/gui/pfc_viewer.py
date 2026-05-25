@@ -340,11 +340,22 @@ class PFCViewerWidget(QWidget):
     def _compute_shells(self):
         from betapy.core.projection import group_by_shells
         if self._results:
-            self._shells = group_by_shells(self._results)
+            self._shells = group_by_shells(
+                self._results,
+                max_distance=self._reliability_cutoff,
+            )
+            n = len(self._shells)
+            tip = f'{n} shells'
+            if self._reliability_cutoff is not None:
+                tip += f' within L/2={self._reliability_cutoff:.2f} A'
+            else:
+                tip += ' (load SPOSCAR to apply L/2 cutoff)'
             self._btn_shell.setEnabled(True)
+            self._btn_shell.setToolTip(tip)
         else:
             self._shells = []
             self._btn_shell.setEnabled(False)
+            self._btn_shell.setToolTip('')
 
     def _toggle_view_mode(self, checked):
         self._view_mode      = 'shell' if checked else 'individual'
@@ -578,17 +589,18 @@ class PFCViewerWidget(QWidget):
             if self._supercell is not None:
                 self.structure_view.highlight_bonds(pairs, center_on=rep_atom1)
 
-            sp1     = best_shell['species1']
-            sp2     = best_shell['species2']
-            n       = best_shell['count']
-            d       = best_shell['distance_mean']
-            pfc     = best_shell['pfc_mean'] * factor
-            pfc_min = best_shell['pfc_min']  * factor
-            pfc_max = best_shell['pfc_max']  * factor
+            sp1      = best_shell['species1']
+            sp2      = best_shell['species2']
+            n        = best_shell['count']
+            d        = best_shell['distance_mean']
+            pfc      = best_shell['pfc_mean'] * factor
+            pfc_std  = best_shell['pfc_std']  * factor
+            pfc_min  = best_shell['pfc_min']  * factor
+            pfc_max  = best_shell['pfc_max']  * factor
             self._selection_bar.setText(
-                f'Shell: {sp1}-{sp2}  d = {d:.4f} A  '
-                f'pFC = {pfc:.5f} {unit_lbl}  '
-                f'[{pfc_min:.5f} ... {pfc_max:.5f}]  n = {n}'
+                f'Shell: {sp1}-{sp2}  d = {d:.4f} A  n = {n}  '
+                f'pFC = {pfc:.5f} +/- {pfc_std:.5f} {unit_lbl}  '
+                f'[{pfc_min:.5f} ... {pfc_max:.5f}]'
             )
             self._refresh_plot()
 

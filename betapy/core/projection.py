@@ -150,20 +150,25 @@ def unique_pfcs(bulk_results):
 # Shell grouping: aggregate symmetry-equivalent bonds by distance
 # ---------------------------------------------------------------------------
 
-def group_by_shells(results, dist_precision=0.01):
+def group_by_shells(results, dist_precision=0.01, max_distance=None):
     """
     Group off-site pFC results into distance shells.
 
-    Two pairs belong to the same shell when their (species1, species2) pair
-    type matches and their distance rounds to the same bin at the given
-    precision (default 0.01 A).  In Phonopy output, symmetry-equivalent
-    bonds always have numerically identical distances, so this threshold
-    safely groups true shells without merging distinct ones.
+    Two pairs belong to the same shell when their normalised (species1,
+    species2) pair type matches and their distance rounds to the same bin
+    at the given precision (default 0.01 A).  Species are always stored
+    in alphabetical order so that (V, O) and (O, V) records — which arise
+    when phonopy FORCE_CONSTANTS contains the full N×N matrix — are
+    merged into one shell rather than kept as duplicates.
 
     Parameters
     ----------
     results        : list of dicts from compute_bulk_pfcs() or find_refsite_pairs()
     dist_precision : float, A, binning step (default 0.01)
+    max_distance   : float or None
+        If given, pairs beyond this distance are excluded.  Pass the
+        half-cell reliability cutoff to keep the shell plot clean when
+        full (N×N) force constants are used.
 
     Returns
     -------
@@ -177,14 +182,24 @@ def group_by_shells(results, dist_precision=0.01):
     from collections import defaultdict
     bins = defaultdict(list)
     for r in results:
+        if max_distance is not None and r['distance'] > max_distance:
+            continue
+        # Normalise species order so (A,B) and (B,A) land in the same bin.
+        # Swap atom indices too so rep-atom logic in the GUI stays consistent.
+        sp1, sp2 = r['species1'], r['species2']
+        if sp1 > sp2:
+            sp1, sp2 = sp2, sp1
+            rec = {**r, 'species1': sp1, 'species2': sp2,
+                   'atom1_idx': r['atom2_idx'], 'atom2_idx': r['atom1_idx']}
+        else:
+            rec = r
         d_bin = round(r['distance'] / dist_precision) * dist_precision
-        key   = (r['species1'], r['species2'], d_bin)
-        bins[key].append(r)
+        bins[(sp1, sp2, d_bin)].append(rec)
 
     shells = []
     for (sp1, sp2, _), records in bins.items():
-        pfcs  = np.array([r['mean_pfc'] for r in records])
-        dists = np.array([r['distance']  for r in records])
+        pfcs  = np.array([rec['mean_pfc'] for rec in records])
+        dists = np.array([rec['distance']  for rec in records])
         shells.append({
             'species1':      sp1,
             'species2':      sp2,
