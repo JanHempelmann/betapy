@@ -32,7 +32,7 @@ from matplotlib.backends.backend_qt5agg import (
 from matplotlib.figure import Figure
 
 from betapy.gui.structure_view import StructureView
-from betapy.core.constants import PFC_ROUNDING_DECIMALS
+from betapy.core.constants import PFC_ROUNDING_DECIMALS, EV_ANG2_TO_N_M, UNIT_LABEL, UNIT_EV
 
 
 # How close (in data units) a click must be to count as a point selection
@@ -59,6 +59,7 @@ class PFCViewerWidget(QWidget):
         self._scatter_collections  = {}  # pair_type -> (PathCollection, records)
         self._supercell            = None
         self._selected_record      = None  # record dict for highlighted point
+        self._unit                 = UNIT_EV
 
         self._build_ui()
 
@@ -143,6 +144,12 @@ class PFCViewerWidget(QWidget):
         """
         self._supercell = supercell
         self.structure_view.load_supercell(supercell)
+
+    def set_unit(self, unit: str):
+        """Switch display unit ('eV/Ang2' or 'N/m') and redraw."""
+        if unit != self._unit:
+            self._unit = unit
+            self._refresh_plot()
 
     def _on_colours_changed(self):
         """Called when the structure view colour picker changes a species colour."""
@@ -305,8 +312,9 @@ class PFCViewerWidget(QWidget):
                    if (r['species1'], r['species2']) == pt]
             if not sub:
                 continue
-            xs = [r['distance'] for r in sub]
-            ys = [r['mean_pfc']  for r in sub]
+            factor = EV_ANG2_TO_N_M if self._unit == 'N/m' else 1.0
+            xs = [r['distance']          for r in sub]
+            ys = [r['mean_pfc'] * factor for r in sub]
 
             # Get colours from structure view if loaded, else fallback grey
             if self._supercell is not None:
@@ -344,17 +352,18 @@ class PFCViewerWidget(QWidget):
             self._scatter_collections[pt] = (sc, sub)
 
         # Gold ring on selected point
+        factor = EV_ANG2_TO_N_M if self._unit == 'N/m' else 1.0
         if self._selected_record is not None:
             sr = self._selected_record
             if (sr['species1'], sr['species2']) in active_pairs:
                 ax.scatter(
-                    [sr['distance']], [sr['mean_pfc']],
+                    [sr['distance']], [sr['mean_pfc'] * factor],
                     s=140, facecolors='none', edgecolors='#c8a000',
                     linewidths=2.5, zorder=5,
                 )
 
         ax.set_xlabel('Interatomic distance (Å)', fontsize=12)
-        ax.set_ylabel('Projected force constant (eV/Å²)', fontsize=12)
+        ax.set_ylabel(f'Projected force constant ({UNIT_LABEL[self._unit]})', fontsize=12)
         ax.set_title('Projected force constants vs bond length', fontsize=13)
         if self._scatter_collections:
             legend = ax.legend(loc='upper right', framealpha=0.9)
@@ -392,11 +401,12 @@ class PFCViewerWidget(QWidget):
         x_scale = x_range[1] - x_range[0] or 1
         y_scale = y_range[1] - y_range[0] or 1
 
+        factor = EV_ANG2_TO_N_M if self._unit == 'N/m' else 1.0
         for pt, (sc_obj, records) in self._scatter_collections.items():
             for r in records:
                 # Normalise distances to [0,1] so axes have equal weight
-                dx = (r['distance'] - click_x) / x_scale
-                dy = (r['mean_pfc']  - click_y) / y_scale
+                dx = (r['distance']          - click_x) / x_scale
+                dy = (r['mean_pfc'] * factor - click_y) / y_scale
                 d  = (dx**2 + dy**2) ** 0.5
                 if d < best_dist:
                     best_dist   = d
@@ -411,14 +421,16 @@ class PFCViewerWidget(QWidget):
         sp1 = best_record['species1']
         sp2 = best_record['species2']
         d   = best_record['distance']
-        pfc = best_record['mean_pfc']
+        pfc_raw = best_record['mean_pfc']
+        factor  = EV_ANG2_TO_N_M if self._unit == 'N/m' else 1.0
+        pfc_disp = pfc_raw * factor
 
         if self._supercell is not None:
             self.structure_view.highlight_bond(a1, a2)
 
         self._selection_bar.setText(
             f'Selected:  atom {a1} ({sp1}) — atom {a2} ({sp2})   '
-            f'distance = {d:.4f} Å   pFC = {pfc:.6f} eV/Å²'
+            f'distance = {d:.4f} Å   pFC = {pfc_disp:.6f} {UNIT_LABEL[self._unit]}'
         )
         self.pair_selected.emit(a1, a2)
         self._refresh_plot()   # redraw with gold ring

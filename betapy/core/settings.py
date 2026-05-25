@@ -102,6 +102,8 @@ class Settings:
 
     # --- Output ---
     store:           bool = False
+    # Display unit for pFC values: 'eV/Ang2' (default) or 'N/m'
+    unit:            str  = 'eV/Ang2'
 
     # --- Analysis modes ---
     # Refsite projection (formerly vacancy analysis)
@@ -154,7 +156,7 @@ class Settings:
         s = cls()
 
         # Scalar top-level keys
-        for key in ('sposcar', 'force_constants', 'store'):
+        for key in ('sposcar', 'force_constants', 'store', 'unit'):
             if key in data:
                 setattr(s, key, data[key])
 
@@ -192,6 +194,7 @@ class Settings:
             'sposcar':         self.sposcar,
             'force_constants': self.force_constants,
             'store':           self.store,
+            'unit':            self.unit,
         }
         if self.refsite is not None:
             d['refsite'] = {
@@ -245,6 +248,7 @@ class Settings:
 
             # --- Output ---
             store: false          # write CSV result files
+            # unit: N/m          # display unit for pFC values (default: eV/Ang2)
 
             # --- Reference-site projection (uncomment to enable) ---
             # refsite:
@@ -339,6 +343,11 @@ def _build_parser() -> argparse.ArgumentParser:
         '-s', '--store', action='store_true', default=None,
         help='Write CSV result files.',
     )
+    parser.add_argument(
+        '--unit', choices=['eV/Ang2', 'N/m'], default=None,
+        help='Display unit for pFC values (default: eV/Ang2). '
+             'N/m = multiply by 16.022.',
+    )
 
     # Single-structure inputs
     io_group = parser.add_argument_group('input files')
@@ -424,6 +433,8 @@ def _apply_cli_overrides(settings: Settings, args: argparse.Namespace):
         settings.force_constants = args.force_constants
     if args.store:
         settings.store = True
+    if args.unit:
+        settings.unit = args.unit
 
     # Refsite
     if args.refsite is not None:

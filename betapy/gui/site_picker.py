@@ -214,6 +214,9 @@ class SitePickerWidget(QWidget):
     # Data loading
     # ------------------------------------------------------------------
 
+    def set_unit(self, unit: str):
+        self.pfc_viewer.set_unit(unit)
+
     def load_supercell(self, supercell, fc_data=None):
         """
         Load a supercell for 3D rendering and optionally force-constant data.

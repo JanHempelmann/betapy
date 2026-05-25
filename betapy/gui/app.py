@@ -197,6 +197,9 @@ class MainWindow(QMainWindow):
             'or use "Open existing pFCs CSV" in the pFC Viewer tab.'
         )
 
+        # Apply saved unit preference to all freshly created widgets
+        self._set_unit(self._unit_combo.currentData())
+
     def _build_load_bar(self):
         bar = QWidget()
         row = QHBoxLayout(bar)
@@ -229,6 +232,16 @@ class MainWindow(QMainWindow):
                   self.btn_run]:
             row.addWidget(w)
         row.addStretch()
+        row.addWidget(QLabel('Units:'))
+        self._unit_combo = QComboBox()
+        self._unit_combo.addItem('eV/Å²', 'eV/Ang2')
+        self._unit_combo.addItem('N/m',   'N/m')
+        saved_unit = QSettings(_ORG, _APP).value('display/unit', 'eV/Ang2')
+        idx = self._unit_combo.findData(saved_unit)
+        if idx >= 0:
+            self._unit_combo.setCurrentIndex(idx)
+        self._unit_combo.currentIndexChanged.connect(self._on_unit_changed)
+        row.addWidget(self._unit_combo)
         row.addWidget(btn_prefs)
         return bar
 
@@ -284,6 +297,20 @@ class MainWindow(QMainWindow):
         dlg = PreferencesDialog(self)
         if dlg.exec_() == QDialog.Accepted:
             self._update_tab_visibility()
+
+    def _on_unit_changed(self):
+        unit = self._unit_combo.currentData()
+        QSettings(_ORG, _APP).setValue('display/unit', unit)
+        self._set_unit(unit)
+
+    def _set_unit(self, unit: str):
+        from betapy.gui.pfc_viewer import PFCViewerWidget
+        for i in range(self.tabs.count()):
+            w = self.tabs.widget(i)
+            if isinstance(w, PFCViewerWidget):
+                w.set_unit(unit)
+        self.site_picker.set_unit(unit)
+        self.stiffness_shift.set_unit(unit)
 
     # ------------------------------------------------------------------
     # Tab bar — "+" overlay button and close handling
@@ -377,6 +404,7 @@ class MainWindow(QMainWindow):
         viewer = PFCViewerWidget()
         if self.supercell is not None:
             viewer.set_supercell(self.supercell)
+        viewer.set_unit(self._unit_combo.currentData())
         n = sum(1 for i in range(self.tabs.count())
                 if isinstance(self.tabs.widget(i), PFCViewerWidget))
         self.tabs.addTab(viewer, f'pFC Viewer ({n + 1})')

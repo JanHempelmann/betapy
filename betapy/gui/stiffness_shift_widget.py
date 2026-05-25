@@ -46,6 +46,7 @@ from betapy.core.projection import (
     stiffness_shift_from_pairs,
 )
 from betapy.gui.structure_view import StructureView
+from betapy.core.constants import EV_ANG2_TO_N_M, UNIT_LABEL, UNIT_EV
 
 
 PICK_TOLERANCE = 0.025
@@ -88,11 +89,36 @@ class StiffnessShiftWidget(QWidget):
         self._pair_types  = []
         self._checkboxes  = {}
         self._ax          = None
+        self._unit        = UNIT_EV
+        self._total_raw   = None
+        self._excl_note   = ''
         self._build_ui()
 
     # ------------------------------------------------------------------
     # UI construction
     # ------------------------------------------------------------------
+
+    def set_unit(self, unit: str):
+        """Switch display unit ('eV/Ang2' or 'N/m') and redraw."""
+        if unit != self._unit:
+            self._unit = unit
+            self._refresh_plot()
+            self._refresh_table()
+            self._refresh_unmatched_table()
+            self._update_result_label()
+
+    def _update_result_label(self):
+        if self._total_raw is None:
+            return
+        factor = EV_ANG2_TO_N_M if self._unit == 'N/m' else 1.0
+        unit_lbl = UNIT_LABEL[self._unit]
+        self._result_lbl.setText(
+            f'Matched: {len(self._matched)}   '
+            f'Unmatched A: {len(self._unmatched_a)}   '
+            f'Unmatched B: {len(self._unmatched_b)}\n'
+            f'{self._excl_note}'
+            f'Σ ΔpFC (B-A): {self._total_raw * factor:+.5f} {unit_lbl}'
+        )
 
     def _build_ui(self):
         outer = QVBoxLayout(self)
@@ -471,14 +497,9 @@ class StiffnessShiftWidget(QWidget):
         self._refresh_unmatched_table()
 
         _, total = stiffness_shift_from_pairs(matched)
-        excl_note = f'  excl. {next(iter(excl_sp))} pairs\n' if excl_sp else ''
-        self._result_lbl.setText(
-            f'Matched: {len(matched)}   '
-            f'Unmatched A: {len(unmatched_a)}   '
-            f'Unmatched B: {len(unmatched_b)}\n'
-            f'{excl_note}'
-            f'Σ ΔpFC (B−A): {total:+.5f} eV/Å²'
-        )
+        self._total_raw = total
+        self._excl_note = f'  excl. {next(iter(excl_sp))} pairs\n' if excl_sp else ''
+        self._update_result_label()
 
     # ------------------------------------------------------------------
     # Checkboxes
@@ -544,6 +565,7 @@ class StiffnessShiftWidget(QWidget):
         self._scatter_pts = {}
         self._um_a_pts    = []
         self._um_b_pts    = []
+        factor = EV_ANG2_TO_N_M if self._unit == 'N/m' else 1.0
 
         seen_species = set()
 
@@ -557,10 +579,10 @@ class StiffnessShiftWidget(QWidget):
             if sub:
                 midxs = [i for i, _ in sub]
                 ms    = [m for _, m in sub]
-                xa = np.array([m['atom1_ref_dist_a'] for m in ms])
-                ya = np.array([m['mean_pfc_a']       for m in ms])
-                xb = np.array([m['atom1_ref_dist_b'] for m in ms])
-                yb = np.array([m['mean_pfc_b']       for m in ms])
+                xa = np.array([m['atom1_ref_dist_a']         for m in ms])
+                ya = np.array([m['mean_pfc_a'] * factor      for m in ms])
+                xb = np.array([m['atom1_ref_dist_b']         for m in ms])
+                yb = np.array([m['mean_pfc_b'] * factor      for m in ms])
 
                 for k in range(len(ms)):
                     ax.plot([xa[k], xb[k]], [ya[k], yb[k]],
@@ -585,11 +607,11 @@ class StiffnessShiftWidget(QWidget):
         if um_a_indexed:
             ax.scatter(
                 [r.get('atom1_ref_dist', 0.0) for _, r in um_a_indexed],
-                [r['mean_pfc'] for _, r in um_a_indexed],
+                [r['mean_pfc'] * factor for _, r in um_a_indexed],
                 s=28, color='#aaaaaa', marker='x', linewidths=1.2, zorder=2,
             )
             self._um_a_pts = [
-                {'x': r.get('atom1_ref_dist', 0.0), 'y': r['mean_pfc'], 'ridx': i}
+                {'x': r.get('atom1_ref_dist', 0.0), 'y': r['mean_pfc'] * factor, 'ridx': i}
                 for i, r in um_a_indexed
             ]
 
@@ -599,11 +621,11 @@ class StiffnessShiftWidget(QWidget):
         if um_b_indexed:
             ax.scatter(
                 [r.get('atom1_ref_dist', 0.0) for _, r in um_b_indexed],
-                [r['mean_pfc'] for _, r in um_b_indexed],
+                [r['mean_pfc'] * factor for _, r in um_b_indexed],
                 s=22, color='#aaaaaa', marker='s', edgecolors='none', zorder=2,
             )
             self._um_b_pts = [
-                {'x': r.get('atom1_ref_dist', 0.0), 'y': r['mean_pfc'], 'ridx': i}
+                {'x': r.get('atom1_ref_dist', 0.0), 'y': r['mean_pfc'] * factor, 'ridx': i}
                 for i, r in um_b_indexed
             ]
 
@@ -612,8 +634,8 @@ class StiffnessShiftWidget(QWidget):
             m  = self._matched[self._selected_midx]
             pt = (m['species1'], m['species2'])
             if pt in active:
-                for px, py in [(m['atom1_ref_dist_a'], m['mean_pfc_a']),
-                               (m['atom1_ref_dist_b'], m['mean_pfc_b'])]:
+                for px, py in [(m['atom1_ref_dist_a'], m['mean_pfc_a'] * factor),
+                               (m['atom1_ref_dist_b'], m['mean_pfc_b'] * factor)]:
                     ax.scatter([px], [py], s=140, facecolors='none',
                                edgecolors='#c8a000', linewidths=2.5, zorder=5)
 
@@ -623,7 +645,7 @@ class StiffnessShiftWidget(QWidget):
                 ridx, r = sel
                 if (r['species1'], r['species2']) in active:
                     ax.scatter(
-                        [r.get('atom1_ref_dist', 0.0)], [r['mean_pfc']],
+                        [r.get('atom1_ref_dist', 0.0)], [r['mean_pfc'] * factor],
                         s=140, facecolors='none', edgecolors='#c8a000',
                         linewidths=2.5, zorder=5,
                     )
@@ -652,7 +674,7 @@ class StiffnessShiftWidget(QWidget):
                       framealpha=0.9, fontsize=8)
 
         ax.set_xlabel('Atom 1 – refsite distance (Å)', fontsize=11)
-        ax.set_ylabel('Projected force constant (eV/Å²)', fontsize=11)
+        ax.set_ylabel(f'Projected force constant ({UNIT_LABEL[self._unit]})', fontsize=11)
         ax.set_title('Stiffness shift: A (○) vs B (△)', fontsize=12)
         ax.grid(True, linestyle='--', alpha=0.35)
         self._canvas.draw_idle()
@@ -665,6 +687,11 @@ class StiffnessShiftWidget(QWidget):
         self._table.blockSignals(True)
         self._table.setSortingEnabled(False)
         self._table.setRowCount(0)
+        factor = EV_ANG2_TO_N_M if self._unit == 'N/m' else 1.0
+        unit_lbl = UNIT_LABEL[self._unit]
+        self._table.setHorizontalHeaderItem(3, QTableWidgetItem(f'pFC A ({unit_lbl})'))
+        self._table.setHorizontalHeaderItem(4, QTableWidgetItem(f'pFC B ({unit_lbl})'))
+        self._table.setHorizontalHeaderItem(5, QTableWidgetItem(f'ΔpFC ({unit_lbl})'))
 
         for midx, m in sorted(enumerate(self._matched),
                                key=lambda p: abs(p[1]['delta_pfc']),
@@ -680,9 +707,9 @@ class StiffnessShiftWidget(QWidget):
             for col, val in enumerate([
                 m.get('atom1_ref_dist_a', 0.0),
                 m.get('atom1_ref_dist_b', 0.0),
-                m['mean_pfc_a'],
-                m['mean_pfc_b'],
-                m['delta_pfc'],
+                m['mean_pfc_a'] * factor,
+                m['mean_pfc_b'] * factor,
+                m['delta_pfc']  * factor,
             ], start=1):
                 fmt = f'{val:+.4f}' if col >= 3 else f'{val:.4f}'
                 it  = _NumericItem(fmt)
@@ -718,6 +745,10 @@ class StiffnessShiftWidget(QWidget):
         self._table_um.blockSignals(True)
         self._table_um.setSortingEnabled(False)
         self._table_um.setRowCount(0)
+        factor = EV_ANG2_TO_N_M if self._unit == 'N/m' else 1.0
+        self._table_um.setHorizontalHeaderItem(
+            5, QTableWidgetItem(f'pFC ({UNIT_LABEL[self._unit]})')
+        )
 
         rows = (
             [('A', i, r) for i, r in enumerate(self._unmatched_a)] +
@@ -751,7 +782,7 @@ class StiffnessShiftWidget(QWidget):
             rd_item.setFlags(rd_item.flags() & ~Qt.ItemIsEditable)
             self._table_um.setItem(row, 4, rd_item)
 
-            pfc_val  = r['mean_pfc']
+            pfc_val  = r['mean_pfc'] * factor
             pfc_item = _NumericItem(f'{pfc_val:+.4f}')
             pfc_item.setFlags(pfc_item.flags() & ~Qt.ItemIsEditable)
             pfc_item.setForeground(
@@ -876,13 +907,15 @@ class StiffnessShiftWidget(QWidget):
         self._selected_ua   = None
         self._selected_ub   = None
 
+        factor = EV_ANG2_TO_N_M if self._unit == 'N/m' else 1.0
+        unit_lbl = UNIT_LABEL[self._unit]
         self._sel_bar.setText(
             f'  {m["species1"]}–{m["species2"]}'
             f'   A: {m["atom1_idx_a"]}→{m["atom2_idx_a"]}'
-            f'  pFC = {m["mean_pfc_a"]:+.5f}'
+            f'  pFC = {m["mean_pfc_a"] * factor:+.5f}'
             f'   B: {m["atom1_idx_b"]}→{m["atom2_idx_b"]}'
-            f'  pFC = {m["mean_pfc_b"]:+.5f}'
-            f'   ΔpFC = {m["delta_pfc"]:+.5f} eV/Å²'
+            f'  pFC = {m["mean_pfc_b"] * factor:+.5f}'
+            f'   ΔpFC = {m["delta_pfc"] * factor:+.5f} {unit_lbl}'
         )
 
         if source == 'scatter':
@@ -911,12 +944,13 @@ class StiffnessShiftWidget(QWidget):
             self._selected_ub = (ridx, record)
 
         struct_lbl = 'A' if which == 'a' else 'B'
+        factor = EV_ANG2_TO_N_M if self._unit == 'N/m' else 1.0
         self._sel_bar.setText(
             f'  {record["species1"]}–{record["species2"]}'
             f'   [Unmatched {struct_lbl}]'
             f'   atom {int(record["atom1_idx"])}→{int(record["atom2_idx"])}'
             f'   ref dist = {record.get("atom1_ref_dist", 0.0):.3f} Å'
-            f'   pFC = {record["mean_pfc"]:+.5f} eV/Å²'
+            f'   pFC = {record["mean_pfc"] * factor:+.5f} {UNIT_LABEL[self._unit]}'
         )
 
         if source == 'scatter':

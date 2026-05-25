@@ -26,6 +26,8 @@ from matplotlib.backends.backend_qt5agg import (
 )
 from matplotlib.figure import Figure
 
+from betapy.core.constants import EV_ANG2_TO_N_M, UNIT_LABEL, UNIT_EV
+
 
 PICK_TOLERANCE = 0.025   # fraction of axis range for scatter click detection
 
@@ -57,6 +59,7 @@ class RefsitePFCWidget(QWidget):
         self._scatter_data   = {}    # (sp1, sp2) -> (xs, ys, records)
         self._selected_pair  = None  # (a1, a2) or None
         self._structure_view = None
+        self._unit           = UNIT_EV
         self._build_ui()
 
     # ------------------------------------------------------------------
@@ -149,6 +152,13 @@ class RefsitePFCWidget(QWidget):
     def set_structure_view(self, sv):
         """Link to a StructureView for 3D pair highlighting."""
         self._structure_view = sv
+
+    def set_unit(self, unit: str):
+        """Switch display unit ('eV/Ang2' or 'N/m') and redraw."""
+        if unit != self._unit:
+            self._unit = unit
+            self._refresh_plot()
+            self._refresh_table()
 
     def load_data(self, results: list, supercell=None):
         """Load from a fresh refsite analysis (list of offsite result dicts)."""
@@ -274,6 +284,7 @@ class RefsitePFCWidget(QWidget):
         ax = self.figure.add_subplot(111)
         self._scatter_data = {}
         self._ax = ax
+        factor = EV_ANG2_TO_N_M if self._unit == 'N/m' else 1.0
 
         for pt in self._pair_types:
             if pt not in active_pairs:
@@ -284,7 +295,7 @@ class RefsitePFCWidget(QWidget):
                 continue
 
             xs = np.array([r['atom1_ref_dist'] for r in sub])
-            ys = np.array([r['mean_pfc']        for r in sub])
+            ys = np.array([r['mean_pfc'] * factor for r in sub])
             c1, c2 = self._pair_colours_hex(pt[0], pt[1])
 
             if c1 == c2:
@@ -323,7 +334,7 @@ class RefsitePFCWidget(QWidget):
                         break
 
         ax.set_xlabel('Atom 1 – refsite distance (Å)', fontsize=11)
-        ax.set_ylabel('Projected force constant (eV/Å²)', fontsize=11)
+        ax.set_ylabel(f'Projected force constant ({UNIT_LABEL[self._unit]})', fontsize=11)
         ax.set_title('Refsite projected force constants', fontsize=12)
         if self._scatter_data:
             ax.legend(loc='upper right', framealpha=0.9, fontsize=9)
@@ -338,6 +349,10 @@ class RefsitePFCWidget(QWidget):
         self.table.blockSignals(True)
         self.table.setSortingEnabled(False)
         self.table.setRowCount(0)
+        factor = EV_ANG2_TO_N_M if self._unit == 'N/m' else 1.0
+        self.table.setHorizontalHeaderItem(
+            4, QTableWidgetItem(f'pFC ({UNIT_LABEL[self._unit]})')
+        )
 
         sorted_results = sorted(
             self._results, key=lambda r: abs(r['mean_pfc']), reverse=True
@@ -364,7 +379,7 @@ class RefsitePFCWidget(QWidget):
             for col, val in enumerate([
                 r['atom1_ref_dist'],
                 r['distance'],
-                r['mean_pfc'],
+                r['mean_pfc'] * factor,
             ], start=2):
                 it = _NumericItem(f'{val:+.4f}' if col == 4 else f'{val:.4f}')
                 it.setFlags(it.flags() & ~Qt.ItemIsEditable)

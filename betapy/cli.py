@@ -9,6 +9,7 @@ import timeit
 from pathlib import Path
 
 from betapy.core.settings import Settings
+from betapy.core.constants import EV_ANG2_TO_N_M, UNIT_LABEL
 from betapy.core.io import (
     read_SPOSCAR, read_FORCE_CONSTANTS, read_refpos,
     write_unique_pfcs, write_refsite_pfcs, write_refsite_onsite_pfcs,
@@ -213,8 +214,10 @@ def run_stiffness_shift(settings):
         df, total, n = fallback_equal_count_shift(offsite_a, offsite_b)
         method = f'equal-count fallback ({n} pairs)'
 
+    factor = EV_ANG2_TO_N_M if settings.unit == 'N/m' else 1.0
+    unit_label = UNIT_LABEL.get(settings.unit, settings.unit)
     print(f'\n Method: {method}')
-    print(f'  Total stiffness shift (B − A): {total:+.6f}')
+    print(f'  Total stiffness shift (B − A): {total * factor:+.6f} {unit_label}')
 
     if settings.store:
         out = Path('stiffness_shift.csv')
