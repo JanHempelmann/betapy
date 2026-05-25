@@ -15,7 +15,7 @@ betapy post-processes the force constants calculated by [Phonopy](https://phonop
 - **Bulk pFC analysis** - project force constants along all interatomic bond vectors; identify and tabulate unique pFC values per bond type
 - **Reference-site projection** — project force constants around any fractional coordinate in the cell (vacancy, interstitial, or arbitrary point); does not need to coincide with an atom
 - **Stiffness-shift parameter** — compare pFC sums between two structures (e.g. intercalated vs deintercalated) using position-based atom matching across structures; falls back to distance-ordered equal-count comparison if matching fails
-- **Interactive GUI** — scatter plot of pFC vs bond length with click-to-highlight; 3D structure viewer with CPK colours, automatic bond drawing, and per-species-pair bond toggles
+- **Interactive GUI** — scatter plot of pFC vs bond length with click-to-highlight; 3D structure viewer with Jmol/VESTA colour presets (80+ elements covered), automatic bond drawing, per-species-pair bond toggles, and non-blocking refsite analysis with progress indicator
 - **Settings-file workflow** — YAML settings file with CLI flag overrides, following the Phonopy convention
 
 ---
@@ -70,9 +70,15 @@ The reference site does not need to coincide with an atom — it can be a vacanc
 
 ## Usage
 
+A GeTe example dataset is included in `examples/GeTe/` to verify your installation and explore the output before using your own data.
+
 ### Command line
 
 ```bash
+# Quick start with the included GeTe example
+cd examples/GeTe
+betapy --store
+
 # Bulk pFC analysis, write results to CSV
 betapy --sposcar SPOSCAR --fc FORCE_CONSTANTS --store
 
@@ -120,13 +126,17 @@ stiffness_shift:
 
 ### GUI
 
-Launch with `betapy-gui` from the directory containing your calculation files. betapy will auto-load `SPOSCAR`, `FORCE_CONSTANTS`, and `unique_pFCs.csv` if they are present in the current directory.
+Launch with `betapy-gui` from the directory containing your calculation files. betapy will auto-load `SPOSCAR`, `FORCE_CONSTANTS`, `REFPOS`, and any existing CSV results from the current directory on startup.
 
-The GUI has two tabs:
+The GUI has three tabs:
 
-**pFC Viewer** — scatter plot of projected force constant vs interatomic distance, coloured by atom-pair species type. Click any data point to highlight the corresponding bond in the 3D structure view. Existing `unique_pFCs.csv` files can be loaded directly without re-running the analysis.
+**pFC Viewer** - scatter plot of projected force constant vs interatomic distance, coloured by atom-pair species type. Click any data point to highlight the corresponding bond in the 3D structure view. Existing `unique_pFCs.csv` files can be loaded directly without re-running the analysis.
 
-**Reference Site Picker** — 3D structure viewer for placing a reference site. Click an atom to snap the site to it, or type fractional coordinates directly. Export the result as a `REFPOS` file.
+**Ref. Site Projection** - 3D structure viewer for placing a reference site and running the refsite pFC analysis. Snap the site to an atom by clicking in the 3D view or by typing in the searchable atom list. Analysis runs in a background thread so the GUI stays responsive. Results are shown as a scatter plot and sortable table; export to CSV or REFPOS directly from this tab.
+
+**Stiffness Shift** - load two structures (intercalated and deintercalated), configure the reference site and cutoff, and compute the stiffness-shift parameter. Atom pairs are matched across structures by fractional coordinate proximity.
+
+The 3D structure views use full Jmol colours by default (80+ elements). Switch to the VESTA colour scheme at any time via the `Preset` dropdown in the colour panel, or override individual species colours with the colour picker.
 
 ---
 
@@ -171,18 +181,26 @@ Covalent radii used for automatic bond detection are from:
 betapy/
 ├── betapy/
 │   ├── core/
+│   │   ├── constants.py   # shared constants (rounding precision, metal sets)
 │   │   ├── io.py          # file reading/writing (SPOSCAR, FORCE_CONSTANTS, REFPOS)
 │   │   ├── structure.py   # Supercell class, PBC distance calculations
 │   │   ├── projection.py  # pFC mathematics, shell identification, stiffness shift
 │   │   └── settings.py    # Settings dataclass, YAML loading, CLI parser
 │   ├── gui/
-│   │   ├── app.py         # main window, auto-loading, tab assembly
-│   │   ├── pfc_viewer.py  # scatter plot + 3D view, click-to-highlight
-│   │   ├── site_picker.py # reference site placement tool
-│   │   └── structure_view.py  # shared PyVista 3D renderer
+│   │   ├── app.py              # main window, auto-loading, tab assembly
+│   │   ├── pfc_viewer.py       # scatter plot + 3D view, click-to-highlight
+│   │   ├── refsite_viewer.py   # refsite scatter plot and sortable pair table
+│   │   ├── site_picker.py      # reference site placement and projection tool
+│   │   ├── stiffness_shift_widget.py  # stiffness-shift comparison tab
+│   │   └── structure_view.py   # shared PyVista 3D renderer with colour presets
 │   ├── data/
-│   │   └── elements.py    # covalent radii, CPK colours, display radii
+│   │   └── elements.py    # covalent radii, Jmol/VESTA colour presets, display radii
 │   └── cli.py             # command-line entry point
+├── examples/
+│   └── GeTe/              # GeTe bulk supercell (Phonopy output)
+│       ├── POSCAR          # primitive cell
+│       ├── SPOSCAR         # supercell structure
+│       └── FORCE_CONSTANTS # force constant matrices
 └── tests/
     ├── test_io.py
     └── test_projection.py

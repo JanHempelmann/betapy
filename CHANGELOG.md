@@ -5,6 +5,42 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ---
 
+## [Unreleased]
+
+### Added
+- `betapy/core/constants.py` - single source of truth for shared constants
+  (`PFC_ROUNDING_DECIMALS`, `SAME_SPECIES_METALS`); eliminates duplicated magic
+  numbers across `projection.py`, `pfc_viewer.py`, and `structure_view.py`
+- Full Jmol colour table in `elements.py` - 80+ elements now have explicit
+  colours; previously 52 elements (all 5d metals, lanthanides, Al, Si, Sn, Pb,
+  etc.) fell back to medium grey
+- VESTA colour preset in `elements.py` - identical to Jmol for transition metals,
+  with distinct lanthanide colours and adjusted C/S tones for crystallographic figures
+- `Preset` dropdown in the 3D structure view colour panel - switch between Jmol
+  and VESTA at any time; individual colour overrides still work as before
+- Display radii added for all transition metals, lanthanides, and common main-group
+  elements in `elements.py`
+- Refsite analysis now runs in a background `QThread` with an indeterminate
+  progress dialog - GUI stays responsive during long calculations on large supercells
+- Snap-to-atom combo is now searchable - type any element symbol or index to
+  filter the list (contains-match, case-insensitive)
+- Auto-load failures in the GUI now raise a `QMessageBox` warning instead of
+  silently writing to the status bar
+
+### Fixed
+- CSV separator inconsistency: `write_unique_pfcs()` now uses comma like all
+  other CSV writers; `load_from_csv` in `pfc_viewer.py` simplified accordingly
+- Result dict key `atom_distance` renamed to `distance` in refsite results to
+  match the key used in bulk results - eliminates the `.get('atom_distance',
+  r.get('distance', 0.0))` fallback pattern that appeared three times in
+  `match_fc_pairs` and `fallback_equal_count_shift`
+- `_try_autoload_from_settings()` now tracks what actually loaded vs what failed,
+  and shows a dialog for errors instead of claiming success unconditionally
+- Stiffness-shift atom-matching warning now names the current tolerance value and
+  suggests concrete remedies (`match_tolerance`, cell origin check)
+
+---
+
 ## [0.2.0] — 2025
 
 Complete rewrite as an installable Python package.
