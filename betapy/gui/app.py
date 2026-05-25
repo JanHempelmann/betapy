@@ -11,6 +11,7 @@ from PyQt5.QtWidgets import (
     QPushButton, QLabel, QFileDialog,
     QStatusBar, QMessageBox,
     QDialog, QFormLayout, QDialogButtonBox, QComboBox,
+    QTabBar, QMenu,
 )
 from PyQt5.QtCore import Qt, QSettings
 
@@ -136,8 +137,21 @@ class MainWindow(QMainWindow):
         self.site_picker     = SitePickerWidget()
         self.stiffness_shift = StiffnessShiftWidget()
 
-        # pFC Viewer is always present.
+        # pFC Viewer is always present; track permanent tabs (no close button).
         self.tabs.addTab(self.pfc_viewer, 'pFC Viewer')
+        self._permanent_widgets = {self.pfc_viewer}
+
+        self.tabs.setTabsClosable(True)
+        self.tabs.tabCloseRequested.connect(self._close_tab)
+
+        self._plus_btn = QPushButton('+')
+        self._plus_btn.setFixedSize(24, 24)
+        self._plus_btn.setFlat(True)
+        self._plus_btn.setToolTip('Add tab')
+        self._plus_btn.clicked.connect(self._show_add_tab_menu)
+        self.tabs.setCornerWidget(self._plus_btn, Qt.TopRightCorner)
+
+        self._sync_close_buttons()
 
         self.status = QStatusBar()
         self.setStatusBar(self.status)
@@ -203,6 +217,7 @@ class MainWindow(QMainWindow):
 
         self._set_tab_visible(self.site_picker,     'Ref. Site Projection', 1, show_refsite)
         self._set_tab_visible(self.stiffness_shift, 'Stiffness Shift',      2, show_shift)
+        self._sync_close_buttons()
 
     def _should_show_refsite_tab(self):
         """Auto condition: REFPOS in CWD, or --refsite flag given."""
@@ -233,6 +248,70 @@ class MainWindow(QMainWindow):
         dlg = PreferencesDialog(self)
         if dlg.exec_() == QDialog.Accepted:
             self._update_tab_visibility()
+
+    # ------------------------------------------------------------------
+    # Tab bar — "+" button and close handling
+    # ------------------------------------------------------------------
+
+    def _sync_close_buttons(self):
+        """Remove close buttons from permanent tabs after any tab insertion."""
+        bar = self.tabs.tabBar()
+        for i in range(self.tabs.count()):
+            if self.tabs.widget(i) in self._permanent_widgets:
+                bar.setTabButton(i, QTabBar.RightSide, None)
+                bar.setTabButton(i, QTabBar.LeftSide,  None)
+
+    def _close_tab(self, idx):
+        widget = self.tabs.widget(idx)
+        if widget in self._permanent_widgets:
+            return
+        self.tabs.removeTab(idx)
+        # Optional singleton tabs are kept alive for re-adding; extra pFC
+        # viewers are independent instances and can be destroyed.
+        if widget not in (self.site_picker, self.stiffness_shift):
+            widget.deleteLater()
+
+    def _show_add_tab_menu(self):
+        from betapy.gui.pfc_viewer import PFCViewerWidget
+        menu = QMenu(self)
+
+        menu.addAction('New pFC Viewer', self._add_pfc_viewer_tab)
+        menu.addSeparator()
+
+        has_refsite = self.tabs.indexOf(self.site_picker)     != -1
+        has_shift   = self.tabs.indexOf(self.stiffness_shift) != -1
+
+        label_ref   = ('• ' if has_refsite else '  ') + 'Ref. Site Projection'
+        label_shift = ('• ' if has_shift   else '  ') + 'Stiffness Shift'
+
+        menu.addAction(label_ref,   lambda: self._add_optional_tab(
+            self.site_picker, 'Ref. Site Projection'))
+        menu.addAction(label_shift, lambda: self._add_optional_tab(
+            self.stiffness_shift, 'Stiffness Shift'))
+
+        pos = self._plus_btn.mapToGlobal(self._plus_btn.rect().bottomLeft())
+        menu.exec_(pos)
+
+    def _add_optional_tab(self, widget, label):
+        """Show an optional singleton tab, or focus it if already present."""
+        idx = self.tabs.indexOf(widget)
+        if idx != -1:
+            self.tabs.setCurrentIndex(idx)
+        else:
+            self.tabs.addTab(widget, label)
+            self.tabs.setCurrentWidget(widget)
+            self._sync_close_buttons()
+
+    def _add_pfc_viewer_tab(self):
+        """Open an additional independent pFC Viewer tab."""
+        from betapy.gui.pfc_viewer import PFCViewerWidget
+        viewer = PFCViewerWidget()
+        if self.supercell is not None:
+            viewer.set_supercell(self.supercell)
+        n = sum(1 for i in range(self.tabs.count())
+                if isinstance(self.tabs.widget(i), PFCViewerWidget))
+        self.tabs.addTab(viewer, f'pFC Viewer ({n + 1})')
+        self.tabs.setCurrentWidget(viewer)
 
     # ------------------------------------------------------------------
     # Auto-loading
@@ -365,7 +444,11 @@ class MainWindow(QMainWindow):
         self.settings.sposcar = str(path)
         self.lbl_sposcar.setText(f'SPOSCAR: {path.name}  ✓')
 
-        self.pfc_viewer.set_supercell(self.supercell)
+        from betapy.gui.pfc_viewer import PFCViewerWidget
+        for i in range(self.tabs.count()):
+            w = self.tabs.widget(i)
+            if isinstance(w, PFCViewerWidget):
+                w.set_supercell(self.supercell)
         self.site_picker.load_supercell(
             self.supercell,
             self.fc_data,
