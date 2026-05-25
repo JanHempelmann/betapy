@@ -13,12 +13,11 @@ from PyQt5.QtWidgets import (
     QDialog, QFormLayout, QDialogButtonBox, QComboBox,
     QTabBar, QMenu, QProgressBar,
 )
-from PyQt5.QtCore import Qt, QSettings, QEvent, QTimer, QThread, pyqtSignal
+from PyQt5.QtCore import Qt, QSettings, QEvent, QTimer, QThread, QPoint, pyqtSignal
 
 from betapy.core.settings import Settings
 from betapy.core.io import read_SPOSCAR, read_FORCE_CONSTANTS
 from betapy.core.structure import Supercell
-
 
 # QSettings identifiers — platform-native storage location
 _ORG  = 'betapy'
@@ -371,7 +370,6 @@ class MainWindow(QMainWindow):
         natural_x = bar.natural_tabs_width()
         tab_h     = bar.height()
         btn_h     = self._plus_btn.height()
-        from PyQt5.QtCore import QPoint
         origin = bar.mapTo(self.tabs, QPoint(0, 0))
         x = origin.x() + natural_x + 4
         y = origin.y() + max(0, (tab_h - btn_h) // 2)

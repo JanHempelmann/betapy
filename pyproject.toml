@@ -5,8 +5,36 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "betapy"
 version = "0.4.0"
-description = "Projected force constant analysis for phonopy supercells"
+description = "Projected force constant analysis for Phonopy supercells"
+readme = "README.md"
 requires-python = ">=3.8"
+license = { text = "MIT" }
+authors = [
+    { name = "Jan Hempelmann", email = "jan_hempelmann@web.de" },
+]
+keywords = [
+    "phonon",
+    "force constants",
+    "projected force constants",
+    "materials science",
+    "phonopy",
+    "lattice dynamics",
+    "bonding",
+    "intercalation",
+]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.8",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Scientific/Engineering :: Physics",
+    "Topic :: Scientific/Engineering :: Chemistry",
+]
 dependencies = [
     "numpy",
     "pandas",
@@ -18,6 +46,12 @@ dependencies = [
     "scipy",
     "tqdm",
 ]
+
+[project.urls]
+Repository = "https://github.com/JanHempelmann/betapy"
+
+[project.optional-dependencies]
+test = ["pytest"]
 
 [project.scripts]
 # These become terminal commands after `pip install -e .`

@@ -20,7 +20,7 @@ import pandas as pd
 
 from PyQt5.QtWidgets import (
     QWidget, QHBoxLayout, QVBoxLayout, QSplitter,
-    QCheckBox, QPushButton, QLabel, QFileDialog,
+    QCheckBox, QPushButton, QLabel, QFileDialog, QMessageBox,
     QGroupBox, QScrollArea, QFrame,
 )
 from PyQt5.QtCore import Qt, pyqtSignal
@@ -244,7 +244,6 @@ class PFCViewerWidget(QWidget):
                 f'{len(self._results)} pairs loaded from {path}{struct_note}'
             )
         except Exception as e:
-            from PyQt5.QtWidgets import QMessageBox
             QMessageBox.critical(self, 'Error loading CSV', str(e))
 
     # ------------------------------------------------------------------

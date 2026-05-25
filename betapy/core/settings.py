@@ -16,7 +16,7 @@ settings = Settings.from_yaml('betapy.yaml')
 # Programmatic (GUI)
 settings = Settings()
 settings.store = True
-settings.refsite.cutoff = 4.0
+settings.refsite = RefsiteSettings(cutoff=4.0)
 
 # Write a template settings file
 Settings.write_template('betapy.yaml')
@@ -25,7 +25,7 @@ Settings.write_template('betapy.yaml')
 from __future__ import annotations
 
 import copy
-from dataclasses import dataclass, field, fields, asdict
+from dataclasses import dataclass, field, fields
 from pathlib import Path
 from typing import Optional
 import argparse
@@ -131,7 +131,7 @@ class Settings:
         return cls._from_dict(data)
 
     @classmethod
-    def from_cli(cls, argv=None) -> 'Settings':
+    def from_cli(cls, argv=None) -> 'tuple[Settings, argparse.Namespace]':
         """
         Parse command-line arguments and return a Settings object.
         If --settings is given, that file is loaded first and CLI flags
@@ -406,9 +406,8 @@ def _structure_settings_from_arg(arg_list):
     The directory form is the ergonomic default for interactive use since
     tab-completion works naturally on directory paths.
     """
-    from pathlib import Path as _Path
     if len(arg_list) == 1:
-        d = _Path(arg_list[0])
+        d = Path(arg_list[0])
         return StructureSettings(
             sposcar         = str(d / 'SPOSCAR'),
             force_constants = str(d / 'FORCE_CONSTANTS'),

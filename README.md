@@ -20,6 +20,9 @@ betapy post-processes the force constants calculated by [Phonopy](https://phonop
 - **Settings-file workflow** — YAML settings file with CLI flag overrides, following the Phonopy convention
 
 ### Experimental Features
+
+These features implement methods described in a forthcoming manuscript. They are fully functional and actively used in ongoing research, but their scientific basis has not yet been formally published.
+
 - **Reference-site projection** — project force constants around any fractional coordinate in the cell (vacancy, interstitial, or arbitrary point); does not need to coincide with an atom
 - **Stiffness-shift parameter** — compare pFC sums between two structures (e.g. intercalated vs deintercalated) using position-based atom matching across structures; falls back to distance-ordered equal-count comparison if matching fails
 ---

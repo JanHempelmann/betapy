@@ -459,10 +459,11 @@ class RefsitePFCWidget(QWidget):
             None,
         )
         if rec:
+            factor = EV_ANG2_TO_N_M if self._unit == 'N/m' else 1.0
             self._selection_bar.setText(
                 f'atom {a1} ({rec["species1"]}) — atom {a2} ({rec["species2"]})'
                 f'   ref dist = {rec["atom1_ref_dist"]:.3f} Å'
-                f'   pFC = {rec["mean_pfc"]:+.5f} eV/Å²'
+                f'   pFC = {rec["mean_pfc"] * factor:+.5f} {UNIT_LABEL[self._unit]}'
             )
 
         self._refresh_plot()

@@ -8,7 +8,7 @@ import pytest
 import tempfile
 from pathlib import Path
 
-from betapy.core.io import read_SPOSCAR, read_refpos, write_refpos
+from betapy.core.io import read_SPOSCAR, read_FORCE_CONSTANTS, read_refpos, write_refpos
 
 
 # Minimal SPOSCAR content for a 2-atom cell
@@ -48,6 +48,72 @@ def test_read_sposcar_positions():
     data = read_SPOSCAR(path)
     assert data['positions'][0] == pytest.approx([0.0, 0.0, 0.0])
     assert data['positions'][1] == pytest.approx([0.5, 0.5, 0.5])
+
+
+FC_SYMMETRIC_CONTENT = """\
+2 2
+1 1
+  0.10 0.00 0.00
+  0.00 0.20 0.00
+  0.00 0.00 0.30
+1 2
+  0.40 0.00 0.00
+  0.00 0.50 0.00
+  0.00 0.00 0.60
+2 1
+  0.70 0.00 0.00
+  0.00 0.80 0.00
+  0.00 0.00 0.90
+2 2
+  1.00 0.00 0.00
+  0.00 1.10 0.00
+  0.00 0.00 1.20
+"""
+
+FC_ASYMMETRIC_CONTENT = """\
+1 2
+1 1
+  0.10 0.00 0.00
+  0.00 0.20 0.00
+  0.00 0.00 0.30
+1 2
+  0.40 0.00 0.00
+  0.00 0.50 0.00
+  0.00 0.00 0.60
+"""
+
+
+def test_read_fc_symmetric_header():
+    path = write_temp(FC_SYMMETRIC_CONTENT)
+    data = read_FORCE_CONSTANTS(path)
+    assert data['nats'] == [2, 2]
+
+
+def test_read_fc_symmetric_pairs():
+    path = write_temp(FC_SYMMETRIC_CONTENT)
+    data = read_FORCE_CONSTANTS(path)
+    assert len(data['atomic_pairs']) == 4
+    assert data['atomic_pairs'][0] == [1, 1]
+    assert data['atomic_pairs'][1] == [1, 2]
+    assert data['atomic_pairs'][3] == [2, 2]
+
+
+def test_read_fc_symmetric_matrices():
+    path = write_temp(FC_SYMMETRIC_CONTENT)
+    data = read_FORCE_CONSTANTS(path)
+    assert len(data['force_matrices']) == 4
+    assert data['force_matrices'][0][0] == pytest.approx([0.10, 0.00, 0.00])
+    assert data['force_matrices'][0][1] == pytest.approx([0.00, 0.20, 0.00])
+    assert data['force_matrices'][1][0] == pytest.approx([0.40, 0.00, 0.00])
+    assert data['force_matrices'][3][1] == pytest.approx([0.00, 1.10, 0.00])
+
+
+def test_read_fc_asymmetric_header():
+    path = write_temp(FC_ASYMMETRIC_CONTENT)
+    data = read_FORCE_CONSTANTS(path)
+    assert data['nats'] == [1, 2]
+    assert len(data['atomic_pairs']) == 2
+    assert len(data['force_matrices']) == 2
 
 
 def test_write_read_refpos_roundtrip():
