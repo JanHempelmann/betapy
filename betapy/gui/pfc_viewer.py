@@ -63,6 +63,7 @@ class PFCViewerWidget(QWidget):
         self._shells               = []   # list of shell dicts from group_by_shells()
         self._view_mode            = 'individual'
         self._selected_shell       = None
+        self._reliability_cutoff   = None  # half minimum perpendicular supercell width
 
         self._build_ui()
 
@@ -155,6 +156,14 @@ class PFCViewerWidget(QWidget):
         """
         self._supercell = supercell
         self.structure_view.load_supercell(supercell)
+        L = supercell.lattice
+        a, b, c = L[0], L[1], L[2]
+        V = abs(float(np.dot(a, np.cross(b, c))))
+        self._reliability_cutoff = min(
+            V / np.linalg.norm(np.cross(b, c)),
+            V / np.linalg.norm(np.cross(a, c)),
+            V / np.linalg.norm(np.cross(a, b)),
+        ) / 2.0
 
     def set_unit(self, unit: str):
         """Switch display unit ('eV/Ang2' or 'N/m') and redraw."""
@@ -290,6 +299,40 @@ class PFCViewerWidget(QWidget):
             self._filter_layout.addWidget(row)
             self._checkboxes[pt] = cb
 
+    def _draw_reliability_line(self, ax):
+        """
+        Two-zone reliability shading around the half-cell cutoff (L/2).
+
+        Yellow band from 0.85*L/2 to L/2 — caution, interactions are
+        decaying and may be near the noise floor, but finite-size errors
+        are typically small.  Red band beyond L/2 — strictly outside the
+        minimum-image regime, though errors in practice are often tiny
+        because real interactions have already decayed by this distance.
+        """
+        if self._reliability_cutoff is None:
+            return
+        rc  = self._reliability_cutoff
+        xlim = ax.get_xlim()
+
+        # Caution zone (yellow): 0.85*L/2 to L/2
+        ax.axvspan(rc * 0.85, rc,
+                   color='#e6c800', alpha=0.12, zorder=0, linewidth=0)
+
+        # Unreliable zone (red): L/2 onward
+        ax.axvspan(rc, xlim[1] * 2,
+                   color='#cc4444', alpha=0.09, zorder=0, linewidth=0)
+
+        # Boundary line at L/2
+        ax.axvline(rc, color='#cc4444', linestyle='--',
+                   linewidth=1.2, alpha=0.65, zorder=1)
+
+        ax.text(rc, 0.98, f' L/2={rc:.2f} Å',
+                color='#cc4444', fontsize=8, va='top', ha='left',
+                transform=ax.get_xaxis_transform())
+
+        # axvspan with a far-right edge can expand xlim; restore it
+        ax.set_xlim(xlim)
+
     # ------------------------------------------------------------------
     # Shell computation and view mode
     # ------------------------------------------------------------------
@@ -413,6 +456,7 @@ class PFCViewerWidget(QWidget):
                        if self._supercell is not None else '#555555')
                 legend_text.set_color(lc1)
         ax.grid(True, linestyle='--', alpha=0.4)
+        self._draw_reliability_line(ax)
         self.canvas.draw_idle()
 
     def _refresh_shell_plot(self):
@@ -481,6 +525,7 @@ class PFCViewerWidget(QWidget):
                        if self._supercell is not None else '#555555')
                 legend_text.set_color(lc1)
         ax.grid(True, linestyle='--', alpha=0.4)
+        self._draw_reliability_line(ax)
         self.canvas.draw_idle()
 
     # ------------------------------------------------------------------
@@ -521,10 +566,17 @@ class PFCViewerWidget(QWidget):
                 return
 
             self._selected_shell = best_shell
+            # Pick the atom1 with most bonds in this shell as representative;
+            # show only its bonds so we avoid overlapping images from multiple
+            # symmetry-equivalent source atoms.
+            from collections import Counter
+            atom1_counts = Counter(int(r['atom1_idx']) for r in best_shell['records'])
+            rep_atom1 = atom1_counts.most_common(1)[0][0]
             pairs = [(int(r['atom1_idx']), int(r['atom2_idx']))
-                     for r in best_shell['records']]
+                     for r in best_shell['records']
+                     if int(r['atom1_idx']) == rep_atom1]
             if self._supercell is not None:
-                self.structure_view.highlight_bonds(pairs)
+                self.structure_view.highlight_bonds(pairs, center_on=rep_atom1)
 
             sp1     = best_shell['species1']
             sp2     = best_shell['species2']

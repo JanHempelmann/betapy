@@ -265,18 +265,25 @@ class StructureView(QWidget):
             self._update_display_frac(atom1_idx_1based)
         self._redraw()
 
-    def highlight_bonds(self, pairs):
+    def highlight_bonds(self, pairs, center_on=None):
         """
-        Highlight a set of bonds (shell mode) without centering or dimming.
+        Highlight a set of bonds (shell mode).
 
         Parameters
         ----------
-        pairs : list of (atom1_idx_1based, atom2_idx_1based)
+        pairs     : list of (atom1_idx_1based, atom2_idx_1based)
+        center_on : int or None — if given, center the display on this
+                    1-based atom index (same convention as highlight_bond).
+                    Pass the representative atom1 so all bonds radiate
+                    cleanly from the cell center with no broken edges.
         """
         self._highlight_pairs = list(pairs)
         self._highlight_pair  = None
         if self.supercell is not None:
-            self._display_frac = self.supercell.positions.copy()
+            if center_on is not None:
+                self._update_display_frac(center_on)
+            else:
+                self._display_frac = self.supercell.positions.copy()
         self._redraw()
 
     def clear_highlight(self):
