@@ -5,12 +5,12 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ---
 
-## [Unreleased]
+## [0.3.0] — 2025
 
 ### Added
 - `betapy/core/constants.py` - single source of truth for shared constants
-  (`PFC_ROUNDING_DECIMALS`, `SAME_SPECIES_METALS`); eliminates duplicated magic
-  numbers across `projection.py`, `pfc_viewer.py`, and `structure_view.py`
+  (`PFC_ROUNDING_DECIMALS`, `EV_ANG2_TO_N_M`, `SAME_SPECIES_METALS`); eliminates
+  duplicated magic numbers across modules
 - Full Jmol colour table in `elements.py` - 80+ elements now have explicit
   colours; previously 52 elements (all 5d metals, lanthanides, Al, Si, Sn, Pb,
   etc.) fell back to medium grey
@@ -26,6 +26,22 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   filter the list (contains-match, case-insensitive)
 - Auto-load failures in the GUI now raise a `QMessageBox` warning instead of
   silently writing to the status bar
+- **Unit toggle** - pFC values can be displayed in eV/Å² (native) or N/m
+  (x16.022) across all GUI panels (scatter plots, tables, status bars, result
+  labels); selection is persisted via `QSettings` and restored on next launch;
+  CSV export always writes native eV/Å²
+- `--unit eV/Ang2|N/m` CLI flag and `unit: N/m` YAML key - CLI output and
+  stiffness-shift result observe the selected unit
+- **Browser-style "+" tab button** - sits immediately to the right of the last
+  tab; clicking opens a dropdown to add a New pFC Viewer, Ref. Site Projection,
+  or Stiffness Shift tab without changing persistent preferences
+- **Multiple pFC Viewer tabs** - additional pFC Viewer instances can be opened
+  for side-by-side comparison; each tab is independent and closeable
+- **Optional tabs** - Ref. Site Projection and Stiffness Shift are hidden by
+  default and appear automatically when relevant files (`REFPOS` in CWD) or CLI
+  flags (`--refsite`, `--stiffness-shift`) are detected; visibility mode
+  (auto/always/never) is configurable per tab via the preferences dialog
+  (⚙ button) and persisted via `QSettings`
 
 ### Fixed
 - CSV separator inconsistency: `write_unique_pfcs()` now uses comma like all
@@ -38,6 +54,12 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   and shows a dialog for errors instead of claiming success unconditionally
 - Stiffness-shift atom-matching warning now names the current tolerance value and
   suggests concrete remedies (`match_tolerance`, cell origin check)
+- `cli.py` now passes CLI arguments through to the GUI (`betapy --gui`) so that
+  `--refsite` and `--stiffness-shift` flags correctly trigger optional tab
+  visibility at startup
+- Removed build artefacts (`__pycache__/`, `betapy.egg-info/`) from git tracking;
+  `.gitignore` already covered these patterns but the files had been committed
+  before the rules took effect
 
 ---
 

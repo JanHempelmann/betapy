@@ -15,7 +15,8 @@ betapy post-processes the force constants calculated by [Phonopy](https://phonop
 - **Bulk pFC analysis** - project force constants along all interatomic bond vectors; identify and tabulate unique pFC values per bond type
 - **Reference-site projection** — project force constants around any fractional coordinate in the cell (vacancy, interstitial, or arbitrary point); does not need to coincide with an atom
 - **Stiffness-shift parameter** — compare pFC sums between two structures (e.g. intercalated vs deintercalated) using position-based atom matching across structures; falls back to distance-ordered equal-count comparison if matching fails
-- **Interactive GUI** — scatter plot of pFC vs bond length with click-to-highlight; 3D structure viewer with Jmol/VESTA colour presets (80+ elements covered), automatic bond drawing, per-species-pair bond toggles, and non-blocking refsite analysis with progress indicator
+- **Interactive GUI** — scatter plot of pFC vs bond length with click-to-highlight; 3D structure viewer with Jmol/VESTA colour presets (80+ elements covered), automatic bond drawing, per-species-pair bond toggles, and non-blocking refsite analysis with progress indicator; multi-tab layout with browser-style "+" button for opening additional viewers
+- **Unit toggle** - switch between eV/Å² (native) and N/m (×16.022) in the GUI toolbar; preference is remembered across sessions; `--unit` flag and `unit:` YAML key available for CLI and settings-file workflows
 - **Settings-file workflow** — YAML settings file with CLI flag overrides, following the Phonopy convention
 
 ---
@@ -92,6 +93,9 @@ betapy --settings betapy.yaml
 # Write a commented template settings file
 betapy --write-template
 
+# Output values in N/m instead of eV/Å²
+betapy --unit N/m --settings betapy.yaml
+
 # Launch GUI
 betapy-gui
 # or
@@ -128,7 +132,9 @@ stiffness_shift:
 
 Launch with `betapy-gui` from the directory containing your calculation files. betapy will auto-load `SPOSCAR`, `FORCE_CONSTANTS`, `REFPOS`, and any existing CSV results from the current directory on startup.
 
-The GUI has three tabs:
+**pFC Viewer** is always present. The **Ref. Site Projection** and **Stiffness Shift** tabs appear automatically when the relevant files or CLI flags are detected (a `REFPOS` file in the working directory, or `--refsite`/`--stiffness-shift` flags). Tab visibility can be forced on or off permanently via the preferences dialog (⚙ button). Additional tabs - including extra pFC Viewer instances for side-by-side comparison - can be opened at any time using the **"+"** button to the right of the tab bar.
+
+The **unit toggle** in the toolbar switches all displayed pFC values between eV/Å² and N/m; the preference is remembered between sessions.
 
 **pFC Viewer** - scatter plot of projected force constant vs interatomic distance, coloured by atom-pair species type. Click any data point to highlight the corresponding bond in the 3D structure view. Existing `unique_pFCs.csv` files can be loaded directly without re-running the analysis.
 
