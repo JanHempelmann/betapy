@@ -5,6 +5,46 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ---
 
+## [0.4.0] — 2026-05-25
+
+### Added
+- **Shell view** in pFC Viewer — toggle between individual bond points and
+  aggregated distance shells (one scatter point per shell, sized by bond count,
+  with vertical pFC min/max range bars); shells are grouped by species pair and
+  distance bin (0.01 Å precision, matching Phonopy's symmetry-equivalent bond
+  distances exactly)
+- **Multi-bond 3D highlighting** in shell mode — clicking a shell in the scatter
+  plot highlights all bonds from the most-connected representative source atom in
+  the 3D view; background atoms are dimmed at a gentler shell opacity
+  (`SHELL_DIM_OPACITY = 0.35`) to preserve structural context
+- **Reliability boundary** on all pFC scatter plots — two-zone shading marks the
+  half-cell cutoff (L/2) computed correctly for any supercell geometry as
+  `min(V/|b×c|, V/|a×c|, V/|a×b|) / 2`: yellow caution zone from 0.85·L/2 to
+  L/2 and a red unreliable zone beyond L/2, with a dashed boundary line and Å
+  label; the boundary is applied automatically whenever a SPOSCAR is loaded
+- **GUI progress bar** for bulk pFC analysis — analysis now runs in a background
+  `QThread` (`_AnalysisWorker`), keeping the GUI fully responsive; a `QProgressBar`
+  appears in the status bar and is throttled to ~200 updates regardless of dataset
+  size; the Analyse button is disabled during the run to prevent double-triggering
+- Full N×N force constant matrix support in shell view — species-pair normalisation
+  in `group_by_shells()` merges (A, B) and (B, A) records that arise when phonopy
+  writes a complete N×N `FORCE_CONSTANTS` file, preventing the scatter plot from
+  expanding to redundant mirrored pair types; a `max_distance` cutoff (L/2) keeps
+  the shell count manageable for large supercells
+
+### Fixed
+- Shell mode 3D bond rendering — PyVista's `.tube()` on a batched `PolyData` with
+  multiple disconnected 2-point line cells only tubed the first segment; each bond
+  in a shell now gets its own `pv.Line(p1, p2).tube()` actor with a unique name
+  (`highlight_bond_multi_{k}`) so all bonds are drawn
+- Shell mode pair deduplication — full FC matrices store both (i, j) and (j, i),
+  causing each bond to appear twice in the filtered pairs list after species
+  normalisation and exactly half the expected bonds to be visible (as perfectly
+  overlapping pairs); the click handler now deduplicates before passing pairs to
+  `highlight_bonds()`
+
+---
+
 ## [0.3.0] — 2025
 
 ### Added

@@ -16,7 +16,10 @@ betapy post-processes the force constants calculated by [Phonopy](https://phonop
 - **Reference-site projection** — project force constants around any fractional coordinate in the cell (vacancy, interstitial, or arbitrary point); does not need to coincide with an atom
 - **Stiffness-shift parameter** — compare pFC sums between two structures (e.g. intercalated vs deintercalated) using position-based atom matching across structures; falls back to distance-ordered equal-count comparison if matching fails
 - **Interactive GUI** — scatter plot of pFC vs bond length with click-to-highlight; 3D structure viewer with Jmol/VESTA colour presets (80+ elements covered), automatic bond drawing, per-species-pair bond toggles, and non-blocking refsite analysis with progress indicator; multi-tab layout with browser-style "+" button for opening additional viewers
-- **Unit toggle** - switch between eV/Å² (native) and N/m (×16.022) in the GUI toolbar; preference is remembered across sessions; `--unit` flag and `unit:` YAML key available for CLI and settings-file workflows
+- **Shell view** — toggle the scatter plot between individual bond points and aggregated distance shells; each shell shows the mean pFC with a min/max range bar and is sized by bond count; clicking a shell highlights all bonds from the representative source atom in 3D
+- **Reliability boundary** — two-zone shading on all scatter plots marks the half-cell cutoff (L/2), computed correctly for any supercell geometry; yellow caution zone near L/2, red zone beyond it
+- **Non-blocking analysis** — bulk pFC analysis runs in a background thread with a progress bar in the status bar; the GUI stays fully responsive during computation
+- **Unit toggle** — switch between eV/Å² (native) and N/m (×16.022) in the GUI toolbar; preference is remembered across sessions; `--unit` flag and `unit:` YAML key available for CLI and settings-file workflows
 - **Settings-file workflow** — YAML settings file with CLI flag overrides, following the Phonopy convention
 
 ---
@@ -136,7 +139,7 @@ Launch with `betapy-gui` from the directory containing your calculation files. b
 
 The **unit toggle** in the toolbar switches all displayed pFC values between eV/Å² and N/m; the preference is remembered between sessions.
 
-**pFC Viewer** - scatter plot of projected force constant vs interatomic distance, coloured by atom-pair species type. Click any data point to highlight the corresponding bond in the 3D structure view. Existing `unique_pFCs.csv` files can be loaded directly without re-running the analysis.
+**pFC Viewer** — scatter plot of projected force constant vs interatomic distance, coloured by atom-pair species type. Click any data point to highlight the corresponding bond in the 3D structure view. A **reliability boundary** (two-zone shading at L/2) is drawn automatically when a SPOSCAR is loaded. Toggle to **shell view** to see one aggregated point per distance shell with pFC range bars; clicking a shell highlights all bonds from the representative source atom in the 3D view. Existing `unique_pFCs.csv` files can be loaded directly without re-running the analysis. For large datasets (full N×N force constant matrices), shell view is recommended for interactive use — individual view with hundreds of thousands of points will be slow.
 
 **Ref. Site Projection** - 3D structure viewer for placing a reference site and running the refsite pFC analysis. Snap the site to an atom by clicking in the 3D view or by typing in the searchable atom list. Analysis runs in a background thread so the GUI stays responsive. Results are shown as a scatter plot and sortable table; export to CSV or REFPOS directly from this tab.
 
