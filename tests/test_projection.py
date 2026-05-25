@@ -152,6 +152,19 @@ def test_unique_pfcs_empty():
     assert unique_pfcs([]).empty
 
 
+def test_unique_pfcs_same_value_different_species_not_merged():
+    # Ge-Te and Ge-Ge bonds with identical pFC must NOT be collapsed into one row
+    results = [
+        {'atom1_idx': 1, 'atom2_idx': 2, 'species1': 'Ge', 'species2': 'Te',
+         'distance': 3.0, 'mean_pfc': 1.0, 'rms_pfc': 1.0},
+        {'atom1_idx': 2, 'atom2_idx': 3, 'species1': 'Ge', 'species2': 'Ge',
+         'distance': 4.0, 'mean_pfc': 1.0, 'rms_pfc': 1.0},
+    ]
+    df = unique_pfcs(results)
+    assert len(df) == 2
+    assert set(zip(df['Atom 1'], df['Atom 2'])) == {('Ge', 'Te'), ('Ge', 'Ge')}
+
+
 # ---------------------------------------------------------------------------
 # match_atoms_across_structures
 # ---------------------------------------------------------------------------

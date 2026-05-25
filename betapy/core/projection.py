@@ -132,25 +132,34 @@ def compute_bulk_pfcs(supercell, atomic_pairs, force_matrices,
 def unique_pfcs(bulk_results):
     """
     Find unique pFC values (rounded to 5 decimal places) from bulk results.
+    Uniqueness is determined per species-pair group: a Ge-Te value of 1.0 and
+    a Ge-Ge value of 1.0 are distinct and both appear in the output.
 
     Returns a DataFrame with columns:
         atom1_idx, species1, atom2_idx, species2, distance, pfc_value
+    Rows are sorted by species pair, then by pFC value within each pair.
     """
     if not bulk_results:
         return pd.DataFrame()
 
-    pfc_vals = np.array([r['mean_pfc'] for r in bulk_results])
-    rounded  = np.around(pfc_vals, PFC_ROUNDING_DECIMALS)
-    _, indices, _ = np.unique(rounded, return_index=True, return_counts=True)
+    from collections import defaultdict
+    groups = defaultdict(list)
+    for r in bulk_results:
+        groups[(r['species1'], r['species2'])].append(r)
 
     rows = []
-    for idx in indices:
-        r = bulk_results[idx]
-        rows.append([
-            r['atom1_idx'], r['species1'],
-            r['atom2_idx'], r['species2'],
-            r['distance'],  r['mean_pfc'],
-        ])
+    for (sp1, sp2) in sorted(groups.keys()):
+        records  = groups[(sp1, sp2)]
+        pfc_vals = np.array([r['mean_pfc'] for r in records])
+        rounded  = np.around(pfc_vals, PFC_ROUNDING_DECIMALS)
+        _, indices, _ = np.unique(rounded, return_index=True, return_counts=True)
+        for idx in indices:
+            r = records[idx]
+            rows.append([
+                r['atom1_idx'], r['species1'],
+                r['atom2_idx'], r['species2'],
+                r['distance'],  r['mean_pfc'],
+            ])
 
     return pd.DataFrame(rows, columns=[
         'Index 1', 'Atom 1', 'Index 2', 'Atom 2',
