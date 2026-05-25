@@ -13,7 +13,8 @@ from PyQt5.QtWidgets import (
     QDialog, QFormLayout, QDialogButtonBox, QComboBox,
     QTabBar, QMenu,
 )
-from PyQt5.QtCore import Qt, QSettings
+from PyQt5.QtCore import Qt, QSettings, QRect, pyqtSignal
+from PyQt5.QtGui import QPainter, QColor, QPen
 
 from betapy.core.settings import Settings
 from betapy.core.io import read_SPOSCAR, read_FORCE_CONSTANTS
@@ -28,6 +29,80 @@ _APP  = 'betapy'
 _AUTO   = 'auto'
 _ALWAYS = 'always'
 _NEVER  = 'never'
+
+
+class _PlusTabBar(QTabBar):
+    """
+    QTabBar subclass that paints a '+' button immediately after the last tab.
+    Emits add_requested(global_pos) when clicked; supports hover highlighting.
+    """
+
+    add_requested = pyqtSignal(object)   # carries QPoint for menu positioning
+
+    _W = 34   # button width  (px)
+    _M = 4    # gap after last tab (px)
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setMouseTracking(True)
+        self._hovered = False
+
+    # ---- geometry -----------------------------------------------------------
+
+    def _btn_rect(self):
+        n = self.count()
+        if n == 0:
+            return None
+        last = self.tabRect(n - 1)
+        h    = last.height() - 6
+        y    = last.top() + (last.height() - h) // 2
+        return QRect(last.right() + 1 + self._M, y, self._W, h)
+
+    # ---- painting -----------------------------------------------------------
+
+    def paintEvent(self, event):
+        super().paintEvent(event)
+        rect = self._btn_rect()
+        if rect is None:
+            return
+        p = QPainter(self)
+        p.setRenderHint(QPainter.Antialiasing)
+        if self._hovered:
+            p.setBrush(QColor(195, 195, 195))
+            p.setPen(QPen(QColor(120, 120, 120), 1))
+        else:
+            p.setBrush(QColor(218, 218, 218))
+            p.setPen(QPen(QColor(160, 160, 160), 1))
+        p.drawRoundedRect(rect, 4, 4)
+        p.setPen(QColor(55, 55, 55))
+        font = self.font()
+        font.setPixelSize(16)
+        font.setBold(True)
+        p.setFont(font)
+        p.drawText(rect, Qt.AlignCenter, '+')
+
+    # ---- interaction --------------------------------------------------------
+
+    def mouseMoveEvent(self, event):
+        rect    = self._btn_rect()
+        hovered = rect is not None and rect.contains(event.pos())
+        if hovered != self._hovered:
+            self._hovered = hovered
+            self.update()
+        super().mouseMoveEvent(event)
+
+    def leaveEvent(self, event):
+        if self._hovered:
+            self._hovered = False
+            self.update()
+        super().leaveEvent(event)
+
+    def mousePressEvent(self, event):
+        rect = self._btn_rect()
+        if rect is not None and rect.contains(event.pos()):
+            self.add_requested.emit(self.mapToGlobal(rect.bottomLeft()))
+            return
+        super().mousePressEvent(event)
 
 
 class PreferencesDialog(QDialog):
@@ -127,6 +202,11 @@ class MainWindow(QMainWindow):
         self.tabs = QTabWidget()
         layout.addWidget(self.tabs)
 
+        # Install '+' tab bar before any tabs are added.
+        _bar = _PlusTabBar()
+        _bar.add_requested.connect(self._show_add_tab_menu)
+        self.tabs.setTabBar(_bar)
+
         from betapy.gui.pfc_viewer             import PFCViewerWidget
         from betapy.gui.site_picker            import SitePickerWidget
         from betapy.gui.stiffness_shift_widget import StiffnessShiftWidget
@@ -143,13 +223,6 @@ class MainWindow(QMainWindow):
 
         self.tabs.setTabsClosable(True)
         self.tabs.tabCloseRequested.connect(self._close_tab)
-
-        self._plus_btn = QPushButton('+')
-        self._plus_btn.setFixedSize(24, 24)
-        self._plus_btn.setFlat(True)
-        self._plus_btn.setToolTip('Add tab')
-        self._plus_btn.clicked.connect(self._show_add_tab_menu)
-        self.tabs.setCornerWidget(self._plus_btn, Qt.TopRightCorner)
 
         self._sync_close_buttons()
 
@@ -271,8 +344,7 @@ class MainWindow(QMainWindow):
         if widget not in (self.site_picker, self.stiffness_shift):
             widget.deleteLater()
 
-    def _show_add_tab_menu(self):
-        from betapy.gui.pfc_viewer import PFCViewerWidget
+    def _show_add_tab_menu(self, pos):
         menu = QMenu(self)
 
         menu.addAction('New pFC Viewer', self._add_pfc_viewer_tab)
@@ -289,7 +361,6 @@ class MainWindow(QMainWindow):
         menu.addAction(label_shift, lambda: self._add_optional_tab(
             self.stiffness_shift, 'Stiffness Shift'))
 
-        pos = self._plus_btn.mapToGlobal(self._plus_btn.rect().bottomLeft())
         menu.exec_(pos)
 
     def _add_optional_tab(self, widget, label):
