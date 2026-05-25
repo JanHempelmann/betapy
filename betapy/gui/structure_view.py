@@ -606,25 +606,19 @@ class StructureView(QWidget):
             )
 
         # --- Multi-bond highlight (shell mode) ---
-        if self._highlight_pairs:
-            bond_points, bond_lines, pt_idx = [], [], 0
-            for i_1, j_1 in self._highlight_pairs:
-                p1     = cart[i_1 - 1]
-                frac_i = self._display_frac[i_1 - 1]
-                frac_j = self._display_frac[j_1 - 1]
-                diff   = frac_j - frac_i
-                diff  -= np.floor(diff + 0.5)
-                p2     = p1 + diff @ sc.lattice
-                bond_points.extend([p1, p2])
-                bond_lines.extend([2, pt_idx, pt_idx + 1])
-                pt_idx += 2
-            multi_mesh        = pv.PolyData()
-            multi_mesh.points = np.array(bond_points)
-            multi_mesh.lines  = np.array(bond_lines)
-            multi_tubed       = multi_mesh.tube(radius=HIGHLIGHT_BOND_RADIUS, n_sides=12)
+        # Each bond needs its own tube actor — pv.PolyData with multiple
+        # disconnected 2-point line cells only tubes the first segment.
+        for k, (i_1, j_1) in enumerate(self._highlight_pairs):
+            p1     = cart[i_1 - 1]
+            frac_i = self._display_frac[i_1 - 1]
+            frac_j = self._display_frac[j_1 - 1]
+            diff   = frac_j - frac_i
+            diff  -= np.floor(diff + 0.5)
+            p2     = p1 + diff @ sc.lattice
+            tube   = pv.Line(p1, p2).tube(radius=HIGHLIGHT_BOND_RADIUS, n_sides=12)
             self.plotter.add_mesh(
-                multi_tubed, color=HIGHLIGHT_COLOUR,
-                name='highlight_bonds_multi',
+                tube, color=HIGHLIGHT_COLOUR,
+                name=f'highlight_bond_multi_{k}',
                 opacity=FULL_OPACITY, render=False,
             )
 
