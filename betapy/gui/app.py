@@ -10,19 +10,96 @@ from PyQt5.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout,
     QPushButton, QLabel, QFileDialog,
     QStatusBar, QMessageBox,
+    QDialog, QFormLayout, QDialogButtonBox, QComboBox,
 )
-from PyQt5.QtCore import Qt
+from PyQt5.QtCore import Qt, QSettings
 
 from betapy.core.settings import Settings
 from betapy.core.io import read_SPOSCAR, read_FORCE_CONSTANTS
 from betapy.core.structure import Supercell
 
 
+# QSettings identifiers — platform-native storage location
+_ORG  = 'betapy'
+_APP  = 'betapy'
+
+# Tab preference values
+_AUTO   = 'auto'
+_ALWAYS = 'always'
+_NEVER  = 'never'
+
+
+class PreferencesDialog(QDialog):
+    """
+    Controls which optional tabs are visible.
+
+    Each tab has three modes:
+      Auto   — show when relevant files / CLI flags are detected
+      Always — show unconditionally
+      Never  — hide unconditionally (override auto-detection)
+    """
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle('betapy — Preferences')
+        self.setFixedWidth(420)
+        self._qs = QSettings(_ORG, _APP)
+        self._build_ui()
+
+    def _build_ui(self):
+        layout = QVBoxLayout(self)
+
+        lbl = QLabel('Optional tab visibility')
+        lbl.setStyleSheet('font-weight: bold;')
+        layout.addWidget(lbl)
+
+        note = QLabel(
+            'Auto conditions:\n'
+            '  Ref. Site Projection — REFPOS present in working directory, '
+            'or --refsite flag used\n'
+            '  Stiffness Shift — settings file contains stiffness_shift: section, '
+            'or --stiffness-shift flag used'
+        )
+        note.setWordWrap(True)
+        note.setStyleSheet('color: #666; font-size: 11px; padding: 4px 0 8px 0;')
+        layout.addWidget(note)
+
+        form = QFormLayout()
+        form.setLabelAlignment(Qt.AlignRight)
+
+        self._refsite_combo = self._make_combo('tab/refsite')
+        self._shift_combo   = self._make_combo('tab/stiffness_shift')
+        form.addRow('Ref. Site Projection:', self._refsite_combo)
+        form.addRow('Stiffness Shift:',      self._shift_combo)
+        layout.addLayout(form)
+
+        btns = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        btns.accepted.connect(self._save_and_accept)
+        btns.rejected.connect(self.reject)
+        layout.addWidget(btns)
+
+    def _make_combo(self, key):
+        combo = QComboBox()
+        combo.addItems(['Auto', 'Always', 'Never'])
+        current = self._qs.value(key, _AUTO)
+        combo.setCurrentText(current.capitalize())
+        return combo
+
+    def _save_and_accept(self):
+        self._qs.setValue('tab/refsite',
+                          self._refsite_combo.currentText().lower())
+        self._qs.setValue('tab/stiffness_shift',
+                          self._shift_combo.currentText().lower())
+        self.accept()
+
+
 class MainWindow(QMainWindow):
 
-    def __init__(self, splash=None):
+    def __init__(self, splash=None, cli_args=None):
         super().__init__()
-        self._splash = splash
+        self._splash   = splash
+        self._cli_args = cli_args   # argparse.Namespace from Settings.from_cli()
+
         self.setWindowTitle('betapy — Projected Force Constant Analysis')
         self.resize(1200, 800)
 
@@ -34,6 +111,11 @@ class MainWindow(QMainWindow):
             self._splash.set_status('Initializing interface…')
         self._build_ui()
         self._autoload_cwd()
+        self._update_tab_visibility()
+
+    # ------------------------------------------------------------------
+    # UI construction
+    # ------------------------------------------------------------------
 
     def _build_ui(self):
         central = QWidget()
@@ -44,17 +126,18 @@ class MainWindow(QMainWindow):
         self.tabs = QTabWidget()
         layout.addWidget(self.tabs)
 
-        from betapy.gui.pfc_viewer            import PFCViewerWidget
-        from betapy.gui.site_picker           import SitePickerWidget
+        from betapy.gui.pfc_viewer             import PFCViewerWidget
+        from betapy.gui.site_picker            import SitePickerWidget
         from betapy.gui.stiffness_shift_widget import StiffnessShiftWidget
 
-        self.pfc_viewer       = PFCViewerWidget()
-        self.site_picker      = SitePickerWidget()
-        self.stiffness_shift  = StiffnessShiftWidget()
+        # Instantiate all widgets upfront; only *add* them to the tab bar
+        # selectively via _update_tab_visibility().
+        self.pfc_viewer      = PFCViewerWidget()
+        self.site_picker     = SitePickerWidget()
+        self.stiffness_shift = StiffnessShiftWidget()
 
-        self.tabs.addTab(self.pfc_viewer,      'pFC Viewer')
-        self.tabs.addTab(self.site_picker,     'Ref. Site Projection')
-        self.tabs.addTab(self.stiffness_shift, 'Stiffness Shift')
+        # pFC Viewer is always present.
+        self.tabs.addTab(self.pfc_viewer, 'pFC Viewer')
 
         self.status = QStatusBar()
         self.setStatusBar(self.status)
@@ -85,13 +168,71 @@ class MainWindow(QMainWindow):
         self.btn_run.setEnabled(False)
         self.btn_run.clicked.connect(self._run_analysis)
 
+        btn_prefs = QPushButton('⚙')
+        btn_prefs.setFixedWidth(28)
+        btn_prefs.setToolTip('Preferences')
+        btn_prefs.clicked.connect(self._open_preferences)
+
         for w in [btn_settings, self.lbl_settings,
                   btn_sposcar,  self.lbl_sposcar,
                   btn_fc,       self.lbl_fc,
                   self.btn_run]:
             row.addWidget(w)
         row.addStretch()
+        row.addWidget(btn_prefs)
         return bar
+
+    # ------------------------------------------------------------------
+    # Tab visibility management
+    # ------------------------------------------------------------------
+
+    def _update_tab_visibility(self):
+        """Add or remove optional tabs based on preferences + auto-detection."""
+        qs = QSettings(_ORG, _APP)
+        pref_refsite = qs.value('tab/refsite',          _AUTO)
+        pref_shift   = qs.value('tab/stiffness_shift',  _AUTO)
+
+        show_refsite = (
+            pref_refsite == _ALWAYS or
+            (pref_refsite == _AUTO and self._should_show_refsite_tab())
+        )
+        show_shift = (
+            pref_shift == _ALWAYS or
+            (pref_shift == _AUTO and self._should_show_stiffness_tab())
+        )
+
+        self._set_tab_visible(self.site_picker,     'Ref. Site Projection', 1, show_refsite)
+        self._set_tab_visible(self.stiffness_shift, 'Stiffness Shift',      2, show_shift)
+
+    def _should_show_refsite_tab(self):
+        """Auto condition: REFPOS in CWD, or --refsite flag given."""
+        if self._cli_args and getattr(self._cli_args, 'refsite', None) is not None:
+            return True
+        if (Path.cwd() / 'REFPOS').exists():
+            return True
+        return False
+
+    def _should_show_stiffness_tab(self):
+        """Auto condition: settings carry a stiffness_shift section, or --stiffness-shift flag given."""
+        if self._cli_args and getattr(self._cli_args, 'stiffness_shift', False):
+            return True
+        if self.settings.stiffness_shift is not None:
+            return True
+        return False
+
+    def _set_tab_visible(self, widget, label, preferred_idx, show):
+        """Insert or remove a tab without destroying the widget."""
+        current_idx = self.tabs.indexOf(widget)
+        if show and current_idx == -1:
+            idx = min(preferred_idx, self.tabs.count())
+            self.tabs.insertTab(idx, widget, label)
+        elif not show and current_idx != -1:
+            self.tabs.removeTab(current_idx)
+
+    def _open_preferences(self):
+        dlg = PreferencesDialog(self)
+        if dlg.exec_() == QDialog.Accepted:
+            self._update_tab_visibility()
 
     # ------------------------------------------------------------------
     # Auto-loading
@@ -99,14 +240,13 @@ class MainWindow(QMainWindow):
 
     def _autoload_cwd(self):
         """
-        On startup, check the current working directory for standard
-        Phonopy/betapy output files and load whatever is present.
-        Any combination of these three can be present; missing files are
-        silently skipped.
+        On startup, check the working directory for standard Phonopy/betapy
+        files and load whatever is present. Missing files are silently skipped;
+        files that fail to parse raise a warning dialog.
         """
-        cwd      = Path.cwd()
-        loaded   = []
-        messages = []
+        cwd    = Path.cwd()
+        loaded = []
+        errors = []
 
         sposcar_path = cwd / 'SPOSCAR'
         if sposcar_path.exists():
@@ -116,7 +256,7 @@ class MainWindow(QMainWindow):
                 self._do_load_sposcar(sposcar_path)
                 loaded.append('SPOSCAR')
             except Exception as e:
-                messages.append(f'SPOSCAR auto-load failed: {e}')
+                errors.append(f'SPOSCAR: {e}')
 
         csv_path = cwd / 'unique_pFCs.csv'
         if csv_path.exists():
@@ -126,7 +266,7 @@ class MainWindow(QMainWindow):
                 self.pfc_viewer.load_from_csv(str(csv_path))
                 loaded.append('unique_pFCs.csv')
             except Exception as e:
-                messages.append(f'unique_pFCs.csv auto-load failed: {e}')
+                errors.append(f'unique_pFCs.csv: {e}')
 
         fc_path = cwd / 'FORCE_CONSTANTS'
         if fc_path.exists():
@@ -136,7 +276,7 @@ class MainWindow(QMainWindow):
                 self._do_load_fc(fc_path)
                 loaded.append('FORCE_CONSTANTS')
             except Exception as e:
-                messages.append(f'FORCE_CONSTANTS auto-load failed: {e}')
+                errors.append(f'FORCE_CONSTANTS: {e}')
 
         refpos_path = cwd / 'REFPOS'
         if refpos_path.exists():
@@ -153,17 +293,17 @@ class MainWindow(QMainWindow):
                 self.site_picker.load_refsite_csv(str(refsite_csv_path))
                 loaded.append('refsite_pFCs.csv')
             except Exception as e:
-                messages.append(f'refsite_pFCs.csv auto-load failed: {e}')
+                errors.append(f'refsite_pFCs.csv: {e}')
 
         if loaded:
             self.status.showMessage(
                 f'Auto-loaded from {cwd}: {", ".join(loaded)}'
             )
-        if messages:
+        if errors:
             QMessageBox.warning(
                 self, 'Auto-load error',
                 'Some files could not be loaded automatically:\n\n'
-                + '\n'.join(messages),
+                + '\n'.join(errors),
             )
 
     # ------------------------------------------------------------------
@@ -182,14 +322,15 @@ class MainWindow(QMainWindow):
             self.lbl_settings.setText(f'Settings: {Path(path).name}  ✓')
             self.status.showMessage(f'Loaded settings from {path}')
             self._try_autoload_from_settings()
+            self._update_tab_visibility()   # stiffness_shift section may now be present
         except Exception as e:
             QMessageBox.critical(self, 'Error loading settings', str(e))
 
     def _try_autoload_from_settings(self):
         sp = Path(self.settings.sposcar)
         fc = Path(self.settings.force_constants)
-        loaded  = []
-        errors  = []
+        loaded = []
+        errors = []
         if sp.exists():
             try:
                 self._do_load_sposcar(sp)
@@ -218,46 +359,39 @@ class MainWindow(QMainWindow):
     # ------------------------------------------------------------------
 
     def _do_load_sposcar(self, path):
-        """
-        Load a SPOSCAR file and push the supercell to all tools that need it.
-        Raises on error so callers can handle it appropriately.
-        """
+        """Load SPOSCAR and push supercell to all tools. Raises on error."""
         path = Path(path)
         self.supercell = Supercell(read_SPOSCAR(path))
         self.settings.sposcar = str(path)
         self.lbl_sposcar.setText(f'SPOSCAR: {path.name}  ✓')
 
-        # Push supercell to pFC viewer's structure panel immediately —
-        # no analysis needed to render the structure
         self.pfc_viewer.set_supercell(self.supercell)
         self.site_picker.load_supercell(
             self.supercell,
-            self.fc_data,   # may be None if FC not loaded yet, that's fine
+            self.fc_data,
         )
 
-        # Auto-load REFPOS from the same directory as the SPOSCAR
+        # Co-located REFPOS auto-loads and may reveal the refsite tab
         refpos_path = path.parent / 'REFPOS'
         if refpos_path.exists():
             self.site_picker.load_refpos(str(refpos_path))
+        self._update_tab_visibility()
 
         self._check_ready()
 
     def _do_load_fc(self, path):
-        """Load a FORCE_CONSTANTS file. Raises on error."""
+        """Load FORCE_CONSTANTS. Raises on error."""
         path = Path(path)
         self.fc_data = read_FORCE_CONSTANTS(path)
         self.settings.force_constants = str(path)
         n = len(self.fc_data['atomic_pairs'])
-        self.lbl_fc.setText(
-            f'FORCE_CONSTANTS: {path.name}  ({n} pairs) ✓'
-        )
-        # Update site picker with FC data if supercell already loaded
+        self.lbl_fc.setText(f'FORCE_CONSTANTS: {path.name}  ({n} pairs) ✓')
         if self.supercell is not None:
             self.site_picker.load_supercell(self.supercell, self.fc_data)
         self._check_ready()
 
     # ------------------------------------------------------------------
-    # Manual file loading (button handlers — thin wrappers)
+    # Manual file loading (button handlers)
     # ------------------------------------------------------------------
 
     def _load_sposcar(self):
@@ -321,7 +455,7 @@ class MainWindow(QMainWindow):
         )
 
 
-def main():
+def main(cli_args=None):
     app = QApplication(sys.argv)
     app.setStyle('Fusion')
 
@@ -330,7 +464,7 @@ def main():
     splash.show()
     app.processEvents()
 
-    window = MainWindow(splash=splash)
+    window = MainWindow(splash=splash, cli_args=cli_args)
     window.show()
     splash.finish(window)
 

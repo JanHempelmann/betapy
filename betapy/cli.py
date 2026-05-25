@@ -235,7 +235,7 @@ def main():
 
     if args.gui:
         from betapy.gui.app import main as gui_main
-        gui_main()
+        gui_main(cli_args=args)
         return
 
     t_total = timeit.default_timer()
