@@ -6,3 +6,4 @@ pyvista
 pyvistaqt
 pyyaml
 scipy
+tqdm
