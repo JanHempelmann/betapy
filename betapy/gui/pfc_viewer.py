@@ -598,7 +598,7 @@ class PFCViewerWidget(QWidget):
             pfc_min  = best_shell['pfc_min']  * factor
             pfc_max  = best_shell['pfc_max']  * factor
             self._selection_bar.setText(
-                f'Shell: {sp1}-{sp2}  d = {d:.4f} A  n = {n}  '
+                f'Shell: {sp1}-{sp2}  d = {d:.4f} A  n = {n}  bonds drawn = {len(pairs)}  '
                 f'pFC = {pfc:.5f} +/- {pfc_std:.5f} {unit_lbl}  '
                 f'[{pfc_min:.5f} ... {pfc_max:.5f}]'
             )
