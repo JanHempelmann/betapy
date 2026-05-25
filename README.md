@@ -12,16 +12,16 @@ betapy post-processes the force constants calculated by [Phonopy](https://phonop
 
 ## Features
 
+### Main Features
 - **Bulk pFC analysis** - project force constants along all interatomic bond vectors; identify and tabulate unique pFC values per bond type
-- **Reference-site projection** — project force constants around any fractional coordinate in the cell (vacancy, interstitial, or arbitrary point); does not need to coincide with an atom
-- **Stiffness-shift parameter** — compare pFC sums between two structures (e.g. intercalated vs deintercalated) using position-based atom matching across structures; falls back to distance-ordered equal-count comparison if matching fails
 - **Interactive GUI** — scatter plot of pFC vs bond length with click-to-highlight; 3D structure viewer with Jmol/VESTA colour presets (80+ elements covered), automatic bond drawing, per-species-pair bond toggles, and non-blocking refsite analysis with progress indicator; multi-tab layout with browser-style "+" button for opening additional viewers
 - **Shell view** — toggle the scatter plot between individual bond points and aggregated distance shells; each shell shows the mean pFC with a min/max range bar and is sized by bond count; clicking a shell highlights all bonds from the representative source atom in 3D
-- **Reliability boundary** — two-zone shading on all scatter plots marks the half-cell cutoff (L/2), computed correctly for any supercell geometry; yellow caution zone near L/2, red zone beyond it
-- **Non-blocking analysis** — bulk pFC analysis runs in a background thread with a progress bar in the status bar; the GUI stays fully responsive during computation
 - **Unit toggle** — switch between eV/Å² (native) and N/m (×16.022) in the GUI toolbar; preference is remembered across sessions; `--unit` flag and `unit:` YAML key available for CLI and settings-file workflows
 - **Settings-file workflow** — YAML settings file with CLI flag overrides, following the Phonopy convention
 
+### Experimental Features
+- **Reference-site projection** — project force constants around any fractional coordinate in the cell (vacancy, interstitial, or arbitrary point); does not need to coincide with an atom
+- **Stiffness-shift parameter** — compare pFC sums between two structures (e.g. intercalated vs deintercalated) using position-based atom matching across structures; falls back to distance-ordered equal-count comparison if matching fails
 ---
 
 ## Requirements
