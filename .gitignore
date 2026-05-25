@@ -1,2 +1,50 @@
-assets/.DS_Store
+# Python bytecode
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+*.egg
+*.egg-info/
+dist/
+build/
+.eggs/
+
+# Virtual environments
+.venv/
+env/
+venv/
+
+# betapy calculation outputs — belong to specific runs, not the codebase
+unique_pFCs.csv
+refsite_pFCs.csv
+refsite_onsite_pFCs.csv
+stiffness_shift.csv
+betapy.yaml
+
+# Phonopy input files — calculation-specific, not part of the package
+SPOSCAR
+FORCE_CONSTANTS
+REFPOS
+POSCAR
+KPOINTS
+INCAR
+OUTCAR
+vasprun.xml
+
+# macOS
 .DS_Store
+.AppleDouble
+.LSOverride
+
+# Editors
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Testing
+.pytest_cache/
+.coverage
+htmlcov/
