@@ -1,4 +1,0 @@
-assets
-betapy
-examples
-tests
