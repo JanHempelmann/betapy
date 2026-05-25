@@ -147,6 +147,61 @@ def unique_pfcs(bulk_results):
 
 
 # ---------------------------------------------------------------------------
+# Shell grouping: aggregate symmetry-equivalent bonds by distance
+# ---------------------------------------------------------------------------
+
+def group_by_shells(results, dist_precision=0.01):
+    """
+    Group off-site pFC results into distance shells.
+
+    Two pairs belong to the same shell when their (species1, species2) pair
+    type matches and their distance rounds to the same bin at the given
+    precision (default 0.01 A).  In Phonopy output, symmetry-equivalent
+    bonds always have numerically identical distances, so this threshold
+    safely groups true shells without merging distinct ones.
+
+    Parameters
+    ----------
+    results        : list of dicts from compute_bulk_pfcs() or find_refsite_pairs()
+    dist_precision : float, A, binning step (default 0.01)
+
+    Returns
+    -------
+    shells : list of dicts, each with keys:
+        species1, species2,
+        distance_mean, distance_std,
+        pfc_mean, pfc_std, pfc_min, pfc_max,
+        count, records
+    Sorted by (species1, species2, distance_mean).
+    """
+    from collections import defaultdict
+    bins = defaultdict(list)
+    for r in results:
+        d_bin = round(r['distance'] / dist_precision) * dist_precision
+        key   = (r['species1'], r['species2'], d_bin)
+        bins[key].append(r)
+
+    shells = []
+    for (sp1, sp2, _), records in bins.items():
+        pfcs  = np.array([r['mean_pfc'] for r in records])
+        dists = np.array([r['distance']  for r in records])
+        shells.append({
+            'species1':      sp1,
+            'species2':      sp2,
+            'distance_mean': float(np.mean(dists)),
+            'distance_std':  float(np.std(dists)),
+            'pfc_mean':      float(np.mean(pfcs)),
+            'pfc_std':       float(np.std(pfcs)),
+            'pfc_min':       float(np.min(pfcs)),
+            'pfc_max':       float(np.max(pfcs)),
+            'count':         len(records),
+            'records':       records,
+        })
+    shells.sort(key=lambda s: (s['species1'], s['species2'], s['distance_mean']))
+    return shells
+
+
+# ---------------------------------------------------------------------------
 # Reference-site pFC: project along atom→refsite vectors
 # ---------------------------------------------------------------------------
 

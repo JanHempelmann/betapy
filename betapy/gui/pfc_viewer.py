@@ -56,10 +56,13 @@ class PFCViewerWidget(QWidget):
         self._results              = []   # list of dicts from compute_bulk_pfcs
         self._pair_types           = []
         self._checkboxes           = {}
-        self._scatter_collections  = {}  # pair_type -> (PathCollection, records)
+        self._scatter_collections  = {}  # pair_type -> (PathCollection, records/shells)
         self._supercell            = None
         self._selected_record      = None  # record dict for highlighted point
         self._unit                 = UNIT_EV
+        self._shells               = []   # list of shell dicts from group_by_shells()
+        self._view_mode            = 'individual'
+        self._selected_shell       = None
 
         self._build_ui()
 
@@ -108,9 +111,17 @@ class PFCViewerWidget(QWidget):
         scroll.setFixedHeight(140)
         left_layout.addWidget(scroll)
 
+        bottom_row = QHBoxLayout()
+        self._btn_shell = QPushButton('Shell view')
+        self._btn_shell.setCheckable(True)
+        self._btn_shell.setEnabled(False)
+        self._btn_shell.clicked.connect(self._toggle_view_mode)
         self.chk_unique = QCheckBox('Show unique pFCs only')
         self.chk_unique.stateChanged.connect(self._refresh_plot)
-        left_layout.addWidget(self.chk_unique)
+        bottom_row.addWidget(self._btn_shell)
+        bottom_row.addWidget(self.chk_unique)
+        bottom_row.addStretch()
+        left_layout.addLayout(bottom_row)
 
         splitter.addWidget(left)
 
@@ -170,6 +181,7 @@ class PFCViewerWidget(QWidget):
         if supercell is not None:
             self.set_supercell(supercell)
         self._rebuild_checkboxes()
+        self._compute_shells()
         self._refresh_plot()
         self._status_label.setText(
             f'{len(all_results)} off-site pairs loaded from analysis.'
@@ -213,6 +225,7 @@ class PFCViewerWidget(QWidget):
 
             self._results = df.to_dict('records')
             self._rebuild_checkboxes()
+            self._compute_shells()
             self._refresh_plot()
             struct_note = (
                 '' if self._supercell is not None
@@ -277,11 +290,43 @@ class PFCViewerWidget(QWidget):
             self._filter_layout.addWidget(row)
             self._checkboxes[pt] = cb
 
+    # ------------------------------------------------------------------
+    # Shell computation and view mode
+    # ------------------------------------------------------------------
+
+    def _compute_shells(self):
+        from betapy.core.projection import group_by_shells
+        if self._results:
+            self._shells = group_by_shells(self._results)
+            self._btn_shell.setEnabled(True)
+        else:
+            self._shells = []
+            self._btn_shell.setEnabled(False)
+
+    def _toggle_view_mode(self, checked):
+        self._view_mode      = 'shell' if checked else 'individual'
+        self._selected_shell = None
+        self._selected_record = None
+        self.chk_unique.setEnabled(not checked)
+        self._selection_bar.setText('')
+        if not checked and self._supercell is not None:
+            self.structure_view.clear_highlight()
+        self._refresh_plot()
+
+    # ------------------------------------------------------------------
+    # Plot
+    # ------------------------------------------------------------------
+
     def _refresh_plot(self):
         if not self._results:
             self._draw_empty_plot()
             return
+        if self._view_mode == 'shell':
+            self._refresh_shell_plot()
+        else:
+            self._refresh_individual_plot()
 
+    def _refresh_individual_plot(self):
         use_unique   = self.chk_unique.isChecked()
         active_pairs = {pt for pt, cb in self._checkboxes.items()
                         if cb.isChecked()}
@@ -293,7 +338,6 @@ class PFCViewerWidget(QWidget):
 
         # Determine data to plot
         if use_unique:
-            # Deduplicate by rounding pfc value
             seen = set()
             deduped = []
             for r in self._results:
@@ -316,23 +360,19 @@ class PFCViewerWidget(QWidget):
             xs = [r['distance']          for r in sub]
             ys = [r['mean_pfc'] * factor for r in sub]
 
-            # Get colours from structure view if loaded, else fallback grey
             if self._supercell is not None:
                 c1, c2 = self.structure_view.pair_colours_hex(pt[0], pt[1])
             else:
                 c1 = c2 = '#888888'
 
             if c1 == c2:
-                # Same species — solid circle, plain label
                 sc = ax.scatter(
-                    xs, ys, label=f'{pt[0]}–{pt[1]}',
+                    xs, ys, label=f'{pt[0]}-{pt[1]}',
                     color=c1, s=35,
                     alpha=0.80, edgecolors='none',
                     picker=True, pickradius=6,
                 )
             else:
-                # Mixed species — split half-circle markers
-                # Upper half = species1 colour, lower half = species2 colour
                 theta = np.linspace(0, np.pi, 60)
                 top_verts = np.column_stack([
                     np.concatenate([[0], np.cos(theta),  [0]]),
@@ -346,12 +386,11 @@ class PFCViewerWidget(QWidget):
                            color=c1, alpha=0.80, edgecolors='none')
                 sc = ax.scatter(xs, ys, marker=bot_verts, s=35,
                                 color=c2, alpha=0.80, edgecolors='none',
-                                label=f'{pt[0]}–{pt[1]}',
+                                label=f'{pt[0]}-{pt[1]}',
                                 picker=True, pickradius=6)
 
             self._scatter_collections[pt] = (sc, sub)
 
-        # Gold ring on selected point
         factor = EV_ANG2_TO_N_M if self._unit == 'N/m' else 1.0
         if self._selected_record is not None:
             sr = self._selected_record
@@ -374,7 +413,74 @@ class PFCViewerWidget(QWidget):
                        if self._supercell is not None else '#555555')
                 legend_text.set_color(lc1)
         ax.grid(True, linestyle='--', alpha=0.4)
+        self.canvas.draw_idle()
 
+    def _refresh_shell_plot(self):
+        active_pairs = {pt for pt, cb in self._checkboxes.items()
+                        if cb.isChecked()}
+
+        self.figure.clear()
+        ax = self.figure.add_subplot(111)
+        self._scatter_collections = {}
+        self._ax = ax
+
+        factor = EV_ANG2_TO_N_M if self._unit == 'N/m' else 1.0
+
+        for pt in self._pair_types:
+            if pt not in active_pairs:
+                continue
+            shells_for_pt = [s for s in self._shells
+                             if (s['species1'], s['species2']) == pt]
+            if not shells_for_pt:
+                continue
+
+            if self._supercell is not None:
+                c1, _ = self.structure_view.pair_colours_hex(pt[0], pt[1])
+            else:
+                c1 = '#888888'
+
+            xs     = [s['distance_mean']       for s in shells_for_pt]
+            ys     = [s['pfc_mean']   * factor for s in shells_for_pt]
+            counts = [s['count']                for s in shells_for_pt]
+            sizes  = [max(30, min(200, 30 + 40 * np.log1p(c))) for c in counts]
+
+            sc = ax.scatter(
+                xs, ys, s=sizes,
+                color=c1, alpha=0.85, edgecolors='none',
+                label=f'{pt[0]}-{pt[1]}',
+                picker=True, pickradius=8, zorder=3,
+            )
+
+            for s_dict, x in zip(shells_for_pt, xs):
+                ymin = s_dict['pfc_min'] * factor
+                ymax = s_dict['pfc_max'] * factor
+                ax.vlines(x, ymin, ymax, color=c1, alpha=0.45,
+                          linewidth=1.5, zorder=2)
+
+            self._scatter_collections[pt] = (sc, shells_for_pt)
+
+        if self._selected_shell is not None:
+            ss = self._selected_shell
+            pt = (ss['species1'], ss['species2'])
+            if pt in active_pairs:
+                ax.scatter(
+                    [ss['distance_mean']], [ss['pfc_mean'] * factor],
+                    s=250, facecolors='none', edgecolors='#c8a000',
+                    linewidths=2.5, zorder=5,
+                )
+
+        ax.set_xlabel('Interatomic distance (Å)', fontsize=12)
+        ax.set_ylabel(f'Projected force constant ({UNIT_LABEL[self._unit]})', fontsize=12)
+        ax.set_title('Projected force constants — shell view', fontsize=13)
+        if self._scatter_collections:
+            legend = ax.legend(loc='upper right', framealpha=0.9)
+            for legend_text, pt in zip(legend.get_texts(),
+                                       [p for p in self._pair_types
+                                        if p in active_pairs]):
+                lc1 = (self.structure_view.pair_colours_hex(pt[0], pt[1])[0]
+                       if self._supercell is not None else '#555555')
+                legend_text.set_color(lc1)
+        ax.grid(True, linestyle='--', alpha=0.4)
         self.canvas.draw_idle()
 
     # ------------------------------------------------------------------
@@ -391,49 +497,81 @@ class PFCViewerWidget(QWidget):
         if click_x is None:
             return
 
-        # Find the closest data point across all visible collections
-        best_dist  = float('inf')
-        best_record = None
-
         ax = self._ax
         x_range = ax.get_xlim()
         y_range = ax.get_ylim()
         x_scale = x_range[1] - x_range[0] or 1
         y_scale = y_range[1] - y_range[0] or 1
+        factor   = EV_ANG2_TO_N_M if self._unit == 'N/m' else 1.0
+        unit_lbl = UNIT_LABEL[self._unit]
 
-        factor = EV_ANG2_TO_N_M if self._unit == 'N/m' else 1.0
-        for pt, (sc_obj, records) in self._scatter_collections.items():
-            for r in records:
-                # Normalise distances to [0,1] so axes have equal weight
-                dx = (r['distance']          - click_x) / x_scale
-                dy = (r['mean_pfc'] * factor - click_y) / y_scale
-                d  = (dx**2 + dy**2) ** 0.5
-                if d < best_dist:
-                    best_dist   = d
-                    best_record = r
+        if self._view_mode == 'shell':
+            best_dist  = float('inf')
+            best_shell = None
+            for pt, (sc_obj, shells) in self._scatter_collections.items():
+                for s in shells:
+                    dx = (s['distance_mean']     - click_x) / x_scale
+                    dy = (s['pfc_mean'] * factor - click_y) / y_scale
+                    d  = (dx**2 + dy**2) ** 0.5
+                    if d < best_dist:
+                        best_dist  = d
+                        best_shell = s
 
-        if best_record is None or best_dist > PICK_TOLERANCE:
-            return
+            if best_shell is None or best_dist > PICK_TOLERANCE * 3:
+                return
 
-        self._selected_record = best_record
-        a1  = int(best_record['atom1_idx'])
-        a2  = int(best_record['atom2_idx'])
-        sp1 = best_record['species1']
-        sp2 = best_record['species2']
-        d   = best_record['distance']
-        pfc_raw = best_record['mean_pfc']
-        factor  = EV_ANG2_TO_N_M if self._unit == 'N/m' else 1.0
-        pfc_disp = pfc_raw * factor
+            self._selected_shell = best_shell
+            pairs = [(int(r['atom1_idx']), int(r['atom2_idx']))
+                     for r in best_shell['records']]
+            if self._supercell is not None:
+                self.structure_view.highlight_bonds(pairs)
 
-        if self._supercell is not None:
-            self.structure_view.highlight_bond(a1, a2)
+            sp1     = best_shell['species1']
+            sp2     = best_shell['species2']
+            n       = best_shell['count']
+            d       = best_shell['distance_mean']
+            pfc     = best_shell['pfc_mean'] * factor
+            pfc_min = best_shell['pfc_min']  * factor
+            pfc_max = best_shell['pfc_max']  * factor
+            self._selection_bar.setText(
+                f'Shell: {sp1}-{sp2}  d = {d:.4f} A  '
+                f'pFC = {pfc:.5f} {unit_lbl}  '
+                f'[{pfc_min:.5f} ... {pfc_max:.5f}]  n = {n}'
+            )
+            self._refresh_plot()
 
-        self._selection_bar.setText(
-            f'Selected:  atom {a1} ({sp1}) — atom {a2} ({sp2})   '
-            f'distance = {d:.4f} Å   pFC = {pfc_disp:.6f} {UNIT_LABEL[self._unit]}'
-        )
-        self.pair_selected.emit(a1, a2)
-        self._refresh_plot()   # redraw with gold ring
+        else:
+            best_dist   = float('inf')
+            best_record = None
+            for pt, (sc_obj, records) in self._scatter_collections.items():
+                for r in records:
+                    dx = (r['distance']          - click_x) / x_scale
+                    dy = (r['mean_pfc'] * factor - click_y) / y_scale
+                    d  = (dx**2 + dy**2) ** 0.5
+                    if d < best_dist:
+                        best_dist   = d
+                        best_record = r
+
+            if best_record is None or best_dist > PICK_TOLERANCE:
+                return
+
+            self._selected_record = best_record
+            a1      = int(best_record['atom1_idx'])
+            a2      = int(best_record['atom2_idx'])
+            sp1     = best_record['species1']
+            sp2     = best_record['species2']
+            d       = best_record['distance']
+            pfc_disp = best_record['mean_pfc'] * factor
+
+            if self._supercell is not None:
+                self.structure_view.highlight_bond(a1, a2)
+
+            self._selection_bar.setText(
+                f'Selected:  atom {a1} ({sp1}) - atom {a2} ({sp2})   '
+                f'distance = {d:.4f} A   pFC = {pfc_disp:.6f} {unit_lbl}'
+            )
+            self.pair_selected.emit(a1, a2)
+            self._refresh_plot()
 
     def _export_plot(self):
         path, _ = QFileDialog.getSaveFileName(
