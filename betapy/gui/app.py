@@ -13,8 +13,7 @@ from PyQt5.QtWidgets import (
     QDialog, QFormLayout, QDialogButtonBox, QComboBox,
     QTabBar, QMenu,
 )
-from PyQt5.QtCore import Qt, QSettings, QRect, pyqtSignal
-from PyQt5.QtGui import QPainter, QColor, QPen
+from PyQt5.QtCore import Qt, QSettings, QEvent, QTimer
 
 from betapy.core.settings import Settings
 from betapy.core.io import read_SPOSCAR, read_FORCE_CONSTANTS
@@ -31,78 +30,28 @@ _ALWAYS = 'always'
 _NEVER  = 'never'
 
 
-class _PlusTabBar(QTabBar):
+
+class _TabBar(QTabBar):
     """
-    QTabBar subclass that paints a '+' button immediately after the last tab.
-    Emits add_requested(global_pos) when clicked; supports hover highlighting.
+    QTabBar subclass whose sizeHint equals the sum of natural tab widths —
+    no expansion.  This keeps the allocated bar width tight against the tabs
+    so the '+' overlay button (a child of QTabWidget) can sit in the empty
+    background area immediately to their right.
     """
 
-    add_requested = pyqtSignal(object)   # carries QPoint for menu positioning
+    def sizeHint(self):
+        hint = super().sizeHint()
+        hint.setWidth(self._natural_tabs_width())
+        return hint
 
-    _W = 34   # button width  (px)
-    _M = 4    # gap after last tab (px)
+    def minimumSizeHint(self):
+        return self.sizeHint()
 
-    def __init__(self, parent=None):
-        super().__init__(parent)
-        self.setMouseTracking(True)
-        self._hovered = False
+    def _natural_tabs_width(self):
+        return sum(self.tabSizeHint(i).width() for i in range(self.count()))
 
-    # ---- geometry -----------------------------------------------------------
-
-    def _btn_rect(self):
-        n = self.count()
-        if n == 0:
-            return None
-        last = self.tabRect(n - 1)
-        h    = last.height() - 6
-        y    = last.top() + (last.height() - h) // 2
-        return QRect(last.right() + 1 + self._M, y, self._W, h)
-
-    # ---- painting -----------------------------------------------------------
-
-    def paintEvent(self, event):
-        super().paintEvent(event)
-        rect = self._btn_rect()
-        if rect is None:
-            return
-        p = QPainter(self)
-        p.setRenderHint(QPainter.Antialiasing)
-        if self._hovered:
-            p.setBrush(QColor(195, 195, 195))
-            p.setPen(QPen(QColor(120, 120, 120), 1))
-        else:
-            p.setBrush(QColor(218, 218, 218))
-            p.setPen(QPen(QColor(160, 160, 160), 1))
-        p.drawRoundedRect(rect, 4, 4)
-        p.setPen(QColor(55, 55, 55))
-        font = self.font()
-        font.setPixelSize(16)
-        font.setBold(True)
-        p.setFont(font)
-        p.drawText(rect, Qt.AlignCenter, '+')
-
-    # ---- interaction --------------------------------------------------------
-
-    def mouseMoveEvent(self, event):
-        rect    = self._btn_rect()
-        hovered = rect is not None and rect.contains(event.pos())
-        if hovered != self._hovered:
-            self._hovered = hovered
-            self.update()
-        super().mouseMoveEvent(event)
-
-    def leaveEvent(self, event):
-        if self._hovered:
-            self._hovered = False
-            self.update()
-        super().leaveEvent(event)
-
-    def mousePressEvent(self, event):
-        rect = self._btn_rect()
-        if rect is not None and rect.contains(event.pos()):
-            self.add_requested.emit(self.mapToGlobal(rect.bottomLeft()))
-            return
-        super().mousePressEvent(event)
+    def natural_tabs_width(self):
+        return self._natural_tabs_width()
 
 
 class PreferencesDialog(QDialog):
@@ -202,10 +151,24 @@ class MainWindow(QMainWindow):
         self.tabs = QTabWidget()
         layout.addWidget(self.tabs)
 
-        # Install '+' tab bar before any tabs are added.
-        _bar = _PlusTabBar()
-        _bar.add_requested.connect(self._show_add_tab_menu)
-        self.tabs.setTabBar(_bar)
+        # Custom tab bar: sizeHint = natural tab widths only, so the allocated
+        # bar stays tight against the tabs and the '+' overlay has room beside them.
+        self.tabs.setTabBar(_TabBar())
+
+        # '+' button overlay: child of QTabWidget so it isn't clipped by the
+        # narrow QTabBar geometry; repositioned after every tab change.
+        self._plus_btn = QPushButton('+', self.tabs)
+        self._plus_btn.setFixedSize(30, 24)
+        self._plus_btn.setFlat(True)
+        self._plus_btn.setToolTip('Add tab')
+        self._plus_btn.setStyleSheet(
+            'QPushButton { border:1px solid #aaa; border-radius:3px;'
+            '              background:#dadada; font-size:15px; font-weight:bold; }'
+            'QPushButton:hover  { background:#c4c4c4; }'
+            'QPushButton:pressed{ background:#b0b0b0; }'
+        )
+        self._plus_btn.clicked.connect(self._on_plus_clicked)
+        self.tabs.tabBar().installEventFilter(self)
 
         from betapy.gui.pfc_viewer             import PFCViewerWidget
         from betapy.gui.site_picker            import SitePickerWidget
@@ -323,8 +286,41 @@ class MainWindow(QMainWindow):
             self._update_tab_visibility()
 
     # ------------------------------------------------------------------
-    # Tab bar — "+" button and close handling
+    # Tab bar — "+" overlay button and close handling
     # ------------------------------------------------------------------
+
+    def eventFilter(self, obj, event):
+        """Reposition the '+' button whenever the tab bar lays out."""
+        if obj is self.tabs.tabBar() and event.type() in (
+            QEvent.Resize, QEvent.LayoutRequest
+        ):
+            QTimer.singleShot(0, self._reposition_plus_btn)
+        return super().eventFilter(obj, event)
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self._reposition_plus_btn()
+
+    def _reposition_plus_btn(self):
+        """Place the '+' button immediately after the last tab's natural width."""
+        bar = self.tabs.tabBar()
+        if not isinstance(bar, _TabBar) or bar.count() == 0:
+            self._plus_btn.hide()
+            return
+        natural_x = bar.natural_tabs_width()
+        tab_h     = bar.height()
+        btn_h     = self._plus_btn.height()
+        from PyQt5.QtCore import QPoint
+        origin = bar.mapTo(self.tabs, QPoint(0, 0))
+        x = origin.x() + natural_x + 4
+        y = origin.y() + max(0, (tab_h - btn_h) // 2)
+        self._plus_btn.move(x, y)
+        self._plus_btn.raise_()
+        self._plus_btn.show()
+
+    def _on_plus_clicked(self):
+        pos = self._plus_btn.mapToGlobal(self._plus_btn.rect().bottomLeft())
+        self._show_add_tab_menu(pos)
 
     def _sync_close_buttons(self):
         """Remove close buttons from permanent tabs after any tab insertion."""
@@ -333,6 +329,7 @@ class MainWindow(QMainWindow):
             if self.tabs.widget(i) in self._permanent_widgets:
                 bar.setTabButton(i, QTabBar.RightSide, None)
                 bar.setTabButton(i, QTabBar.LeftSide,  None)
+        QTimer.singleShot(0, self._reposition_plus_btn)
 
     def _close_tab(self, idx):
         widget = self.tabs.widget(idx)
@@ -343,6 +340,7 @@ class MainWindow(QMainWindow):
         # viewers are independent instances and can be destroyed.
         if widget not in (self.site_picker, self.stiffness_shift):
             widget.deleteLater()
+        QTimer.singleShot(0, self._reposition_plus_btn)
 
     def _show_add_tab_menu(self, pos):
         menu = QMenu(self)
@@ -383,6 +381,7 @@ class MainWindow(QMainWindow):
                 if isinstance(self.tabs.widget(i), PFCViewerWidget))
         self.tabs.addTab(viewer, f'pFC Viewer ({n + 1})')
         self.tabs.setCurrentWidget(viewer)
+        QTimer.singleShot(0, self._reposition_plus_btn)
 
     # ------------------------------------------------------------------
     # Auto-loading
