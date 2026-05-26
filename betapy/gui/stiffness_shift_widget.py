@@ -27,7 +27,8 @@ from PyQt5.QtWidgets import (
     QAbstractItemView, QFrame, QScrollArea, QGridLayout,
     QTabWidget, QProgressBar,
 )
-from PyQt5.QtCore import Qt, QThread, pyqtSignal
+from PyQt5.QtCore import Qt, QThread, pyqtSignal, QSettings
+from PyQt5.QtWidgets import QApplication
 from PyQt5.QtGui import QColor
 
 from matplotlib.backends.backend_qt5agg import (
@@ -57,16 +58,17 @@ class _StiffnessWorker(QThread):
     finished = pyqtSignal()
     error    = pyqtSignal(str)
 
-    def __init__(self, dir_a, dir_b, refpos_path,
+    def __init__(self, dir_a, dir_b, refpos_path_a, refpos_path_b,
                  cutoff, msd, tol, excl):
         super().__init__()
-        self._dir_a      = Path(dir_a)
-        self._dir_b      = Path(dir_b)
-        self._refpos_path = Path(refpos_path)
-        self._cutoff     = cutoff
-        self._msd        = msd
-        self._tol        = tol
-        self._excl       = excl
+        self._dir_a        = Path(dir_a)
+        self._dir_b        = Path(dir_b)
+        self._refpos_path_a = Path(refpos_path_a)
+        self._refpos_path_b = Path(refpos_path_b)
+        self._cutoff       = cutoff
+        self._msd          = msd
+        self._tol          = tol
+        self._excl         = excl
         # Outputs — read by the main thread after finished emits
         self.sc_a         = None
         self.sc_b         = None
@@ -85,15 +87,18 @@ class _StiffnessWorker(QThread):
             fc_a = read_FORCE_CONSTANTS(self._dir_a / 'FORCE_CONSTANTS')
             fc_b = read_FORCE_CONSTANTS(self._dir_b / 'FORCE_CONSTANTS')
 
-            refpos_data  = read_refpos(self._refpos_path)
-            all_refsites = refpos_data['positions']
-            if not all_refsites:
-                raise ValueError(f'No positions found in {self._refpos_path}')
+            refsites_a = read_refpos(self._refpos_path_a)['positions']
+            if not refsites_a:
+                raise ValueError(f'No positions found in {self._refpos_path_a}')
+            refsites_b = read_refpos(self._refpos_path_b)['positions']
+            if not refsites_b:
+                raise ValueError(f'No positions found in {self._refpos_path_b}')
+            all_refsites = refsites_a  # used for 3D view markers (structure A frame)
 
             excl_sp = None
             if self._excl:
                 found = set()
-                for frac_pos in all_refsites:
+                for frac_pos in refsites_b:
                     fp    = np.asarray(frac_pos)
                     dists = [sc_b.distance_to_point(k + 1, fp)
                              for k in range(sc_b.n_atoms)]
@@ -103,7 +108,7 @@ class _StiffnessWorker(QThread):
                 excl_sp = found if found else None
 
             offsite_a = []
-            for frac in all_refsites:
+            for frac in refsites_a:
                 res, _ = find_refsite_pairs(
                     sc_a, fc_a['atomic_pairs'], fc_a['force_matrices'],
                     frac, cutoff=self._cutoff, min_distance=0.0,
@@ -112,7 +117,7 @@ class _StiffnessWorker(QThread):
                 offsite_a.extend(res)
 
             offsite_b = []
-            for frac in all_refsites:
+            for frac in refsites_b:
                 res, _ = find_refsite_pairs(
                     sc_b, fc_b['atomic_pairs'], fc_b['force_matrices'],
                     frac, cutoff=self._cutoff, min_distance=self._msd,
@@ -220,11 +225,19 @@ class StiffnessShiftWidget(QWidget):
         outer.setContentsMargins(4, 4, 4, 4)
         outer.addWidget(self._build_load_bar())
 
-        v = QSplitter(Qt.Vertical)
-        outer.addWidget(v)
-        v.addWidget(self._build_views_panel())
-        v.addWidget(self._build_bottom_panel())
-        v.setSizes([480, 380])
+        self._v_splitter = QSplitter(Qt.Vertical)
+        outer.addWidget(self._v_splitter)
+        self._v_splitter.addWidget(self._build_views_panel())
+        self._v_splitter.addWidget(self._build_bottom_panel())
+
+        screen_h = QApplication.primaryScreen().availableGeometry().height()
+        self._v_splitter.setSizes([int(screen_h * 0.35), int(screen_h * 0.30)])
+
+        s = QSettings('betapy', 'StiffnessShift')
+        ratios = s.value('v_splitter')
+        if ratios:
+            self._v_splitter.setSizes([int(float(r) * 1000) for r in ratios])
+        self._v_splitter.splitterMoved.connect(self._save_splitter_state)
 
     def _build_load_bar(self):
         bar = QGroupBox('Structures and settings')
@@ -239,28 +252,39 @@ class StiffnessShiftWidget(QWidget):
         grid.addWidget(self._edit_a, 0, 1)
         btn_a = QPushButton('Browse…')
         btn_a.setFixedWidth(80)
-        btn_a.clicked.connect(lambda: self._browse_dir(self._edit_a))
+        btn_a.clicked.connect(lambda: self._browse_dir(self._edit_a, self._edit_refpos_a))
         grid.addWidget(btn_a, 0, 2)
 
-        grid.addWidget(QLabel('Structure B (intercalated):'), 1, 0)
+        grid.addWidget(QLabel('REFPOS A:'), 1, 0)
+        self._edit_refpos_a = QLineEdit()
+        self._edit_refpos_a.setPlaceholderText('auto-detected from Dir A, or browse')
+        grid.addWidget(self._edit_refpos_a, 1, 1)
+        btn_rpa = QPushButton('Browse…')
+        btn_rpa.setFixedWidth(80)
+        btn_rpa.clicked.connect(lambda: self._browse_file(
+            self._edit_refpos_a, 'REFPOS files (REFPOS);;All files (*)'
+        ))
+        grid.addWidget(btn_rpa, 1, 2)
+
+        grid.addWidget(QLabel('Structure B (intercalated):'), 2, 0)
         self._edit_b = QLineEdit()
         self._edit_b.setPlaceholderText('directory containing SPOSCAR, FORCE_CONSTANTS')
-        grid.addWidget(self._edit_b, 1, 1)
+        grid.addWidget(self._edit_b, 2, 1)
         btn_b = QPushButton('Browse…')
         btn_b.setFixedWidth(80)
-        btn_b.clicked.connect(lambda: self._browse_dir(self._edit_b))
-        grid.addWidget(btn_b, 1, 2)
+        btn_b.clicked.connect(lambda: self._browse_dir(self._edit_b, self._edit_refpos_b))
+        grid.addWidget(btn_b, 2, 2)
 
-        grid.addWidget(QLabel('REFPOS:'), 2, 0)
-        self._edit_refpos = QLineEdit()
-        self._edit_refpos.setPlaceholderText('auto-detected from Dir A, or browse')
-        grid.addWidget(self._edit_refpos, 2, 1)
-        btn_rp = QPushButton('Browse…')
-        btn_rp.setFixedWidth(80)
-        btn_rp.clicked.connect(lambda: self._browse_file(
-            self._edit_refpos, 'REFPOS files (REFPOS);;All files (*)'
+        grid.addWidget(QLabel('REFPOS B:'), 3, 0)
+        self._edit_refpos_b = QLineEdit()
+        self._edit_refpos_b.setPlaceholderText('auto-detected from Dir B, or browse')
+        grid.addWidget(self._edit_refpos_b, 3, 1)
+        btn_rpb = QPushButton('Browse…')
+        btn_rpb.setFixedWidth(80)
+        btn_rpb.clicked.connect(lambda: self._browse_file(
+            self._edit_refpos_b, 'REFPOS files (REFPOS);;All files (*)'
         ))
-        grid.addWidget(btn_rp, 2, 2)
+        grid.addWidget(btn_rpb, 3, 2)
         outer_layout.addLayout(grid)
 
         srow = QHBoxLayout()
@@ -455,17 +479,38 @@ class StiffnessShiftWidget(QWidget):
         rl.addWidget(self._sel_bar)
 
         h.addWidget(right_w)
-        h.setSizes([560, 380])
+        screen_w = QApplication.primaryScreen().availableGeometry().width()
+        h.setSizes([int(screen_w * 0.38), int(screen_w * 0.25)])
+
+        s = QSettings('betapy', 'StiffnessShift')
+        ratios = s.value('h_splitter')
+        if ratios:
+            h.setSizes([int(float(r) * 1000) for r in ratios])
+        h.splitterMoved.connect(self._save_splitter_state)
+        self._h_splitter = h
         return h
 
     # ------------------------------------------------------------------
     # File dialogs
     # ------------------------------------------------------------------
 
-    def _browse_dir(self, edit):
+    def _save_splitter_state(self):
+        s = QSettings('betapy', 'StiffnessShift')
+        for key, splitter in [('v_splitter', self._v_splitter),
+                               ('h_splitter', self._h_splitter)]:
+            sizes = splitter.sizes()
+            total = sum(sizes)
+            if total > 0:
+                s.setValue(key, [sz / total for sz in sizes])
+
+    def _browse_dir(self, edit, refpos_edit=None):
         path = QFileDialog.getExistingDirectory(self, 'Select directory')
         if path:
             edit.setText(path)
+            if refpos_edit is not None and not refpos_edit.text().strip():
+                candidate = Path(path) / 'REFPOS'
+                if candidate.exists():
+                    refpos_edit.setText(str(candidate))
 
     def _browse_file(self, edit, filter_str):
         path, _ = QFileDialog.getOpenFileName(self, 'Select file', '', filter_str)
@@ -492,9 +537,10 @@ class StiffnessShiftWidget(QWidget):
         if self._worker is not None and self._worker.isRunning():
             return
 
-        dir_a_str  = self._edit_a.text().strip()
-        dir_b_str  = self._edit_b.text().strip()
-        refpos_str = self._edit_refpos.text().strip()
+        dir_a_str    = self._edit_a.text().strip()
+        dir_b_str    = self._edit_b.text().strip()
+        refpos_a_str = self._edit_refpos_a.text().strip()
+        refpos_b_str = self._edit_refpos_b.text().strip()
 
         if not dir_a_str or not dir_b_str:
             QMessageBox.warning(self, 'Missing input',
@@ -503,25 +549,30 @@ class StiffnessShiftWidget(QWidget):
 
         dir_a = Path(dir_a_str)
         dir_b = Path(dir_b_str)
-        if refpos_str:
-            refpos_path = Path(refpos_str)
-        else:
-            refpos_path = dir_a / 'REFPOS'
-            if not refpos_path.exists():
-                refpos_path = dir_b / 'REFPOS'
+
+        refpos_path_a = Path(refpos_a_str) if refpos_a_str else dir_a / 'REFPOS'
+        if not refpos_path_a.exists():
+            QMessageBox.warning(self, 'Missing REFPOS',
+                                f'REFPOS for structure A not found:\n{refpos_path_a}')
+            return
+
+        refpos_path_b = Path(refpos_b_str) if refpos_b_str else dir_b / 'REFPOS'
+        if not refpos_path_b.exists():
+            refpos_path_b = refpos_path_a  # fall back to A's REFPOS
 
         self._btn_run.setEnabled(False)
         self._progress_bar.setRange(0, 0)  # indeterminate / busy indicator
         self._progress_bar.show()
 
         self._worker = _StiffnessWorker(
-            dir_a        = dir_a,
-            dir_b        = dir_b,
-            refpos_path  = refpos_path,
-            cutoff       = self._spin_cutoff.value(),
-            msd          = self._spin_msd.value(),
-            tol          = self._spin_tol.value(),
-            excl         = self._chk_excl.isChecked(),
+            dir_a          = dir_a,
+            dir_b          = dir_b,
+            refpos_path_a  = refpos_path_a,
+            refpos_path_b  = refpos_path_b,
+            cutoff         = self._spin_cutoff.value(),
+            msd            = self._spin_msd.value(),
+            tol            = self._spin_tol.value(),
+            excl           = self._chk_excl.isChecked(),
         )
         self._worker.finished.connect(self._on_analysis_done)
         self._worker.error.connect(self._on_analysis_error)
