@@ -96,7 +96,8 @@ class StructureView(QWidget):
         outer.setContentsMargins(0, 0, 0, 0)
 
         self.plotter = QtInteractor(self)
-        self.plotter.set_background('white')
+        self.plotter.set_background('#1e1e1e')
+        self.plotter.add_axes(interactive=False)
         outer.addWidget(self.plotter, stretch=1)
 
         if show_color_picker:
