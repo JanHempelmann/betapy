@@ -67,7 +67,7 @@ class StiffnessShiftWidget(QWidget):
         super().__init__(parent)
         self._sc_a         = None
         self._sc_b         = None
-        self._refsite_frac = None
+        self._all_refsites = []
         self._offsite_a    = []
         self._offsite_b    = []
         self._matched      = []
@@ -426,11 +426,14 @@ class StiffnessShiftWidget(QWidget):
 
         excl_sp = None
         if excl:
-            frac_0 = np.asarray(all_refsites[0])
-            dists  = [sc_b.distance_to_point(k + 1, frac_0) for k in range(sc_b.n_atoms)]
-            ni     = min(range(sc_b.n_atoms), key=lambda k: dists[k])
-            if dists[ni] < msd:
-                excl_sp = {sc_b.species(ni + 1)}
+            found = set()
+            for frac_pos in all_refsites:
+                fp    = np.asarray(frac_pos)
+                dists = [sc_b.distance_to_point(k + 1, fp) for k in range(sc_b.n_atoms)]
+                ni    = min(range(sc_b.n_atoms), key=lambda k: dists[k])
+                if dists[ni] < msd:
+                    found.add(sc_b.species(ni + 1))
+            excl_sp = found if found else None
 
         offsite_a = []
         for frac in all_refsites:
@@ -461,10 +464,10 @@ class StiffnessShiftWidget(QWidget):
         )
 
         # Commit state
-        self._sc_a          = sc_a
-        self._sc_b          = sc_b
-        self._refsite_frac  = np.asarray(all_refsites[0])
-        self._offsite_a     = offsite_a
+        self._sc_a         = sc_a
+        self._sc_b         = sc_b
+        self._all_refsites = all_refsites
+        self._offsite_a    = offsite_a
         self._offsite_b     = offsite_b
         self._matched       = matched
         self._unmatched_a   = unmatched_a
@@ -475,9 +478,9 @@ class StiffnessShiftWidget(QWidget):
 
         # 3D views
         self._view_a.load_supercell(sc_a)
-        self._view_a.set_ref_site(self._refsite_frac)
+        self._view_a.set_ref_sites(all_refsites)
         self._view_b.load_supercell(sc_b)
-        self._view_b.set_ref_site(self._refsite_frac)
+        self._view_b.set_ref_sites(all_refsites)
 
         for btn, view in [(self._btn_conn_a, self._view_a),
                           (self._btn_conn_b, self._view_b)]:

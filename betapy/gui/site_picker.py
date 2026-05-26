@@ -64,9 +64,10 @@ class SitePickerWidget(QWidget):
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.supercell = None
-        self.fc_data   = None
-        self._ref_frac = np.array([0.5, 0.5, 0.5])
+        self.supercell  = None
+        self.fc_data    = None
+        self._ref_frac  = np.array([0.5, 0.5, 0.5])
+        self._positions = []
         self._last_offsite = []
         self._last_onsite  = []
         self._last_label   = 'custom_site'
@@ -102,17 +103,27 @@ class SitePickerWidget(QWidget):
         # Fractional coordinate spinboxes
         coord_box = QGroupBox('Reference site (fractional coords)')
         coord_grid = QGridLayout()
+
+        # Position selector (hidden unless REFPOS has multiple positions)
+        self._pos_label = QLabel('Position:')
+        self._pos_combo = QComboBox()
+        self._pos_combo.currentIndexChanged.connect(self._on_pos_changed)
+        coord_grid.addWidget(self._pos_label, 0, 0)
+        coord_grid.addWidget(self._pos_combo, 0, 1)
+        self._pos_label.hide()
+        self._pos_combo.hide()
+
         self._spin = {}
-        for row, label in enumerate(['a', 'b', 'c']):
-            coord_grid.addWidget(QLabel(label), row, 0)
+        for i, label in enumerate(['a', 'b', 'c']):
+            coord_grid.addWidget(QLabel(label), i + 1, 0)
             spin = QDoubleSpinBox()
             spin.setRange(-10.0, 10.0)
             spin.setSingleStep(0.01)
             spin.setDecimals(6)
-            spin.setValue(self._ref_frac[row])
+            spin.setValue(self._ref_frac[i])
             spin.valueChanged.connect(self._on_spin_changed)
             self._spin[label] = spin
-            coord_grid.addWidget(spin, row, 1)
+            coord_grid.addWidget(spin, i + 1, 1)
         coord_box.setLayout(coord_grid)
         ctrl_layout.addWidget(coord_box)
 
@@ -297,19 +308,37 @@ class SitePickerWidget(QWidget):
     # ------------------------------------------------------------------
 
     def load_refpos(self, path):
-        """
-        Read a REFPOS file and update the reference site position.
-        Uses the first site if multiple are present. Silently ignores errors.
-        """
+        """Read a REFPOS file and update the reference site position."""
         try:
             data = read_refpos(path)
         except Exception:
             return
         if not data['positions']:
             return
+        self._positions = data['positions']
         self._last_label = data['label']
         self.label_edit.setText(data['label'])
-        self._set_ref_frac(data['positions'][0])
+
+        if len(self._positions) > 1:
+            self._pos_combo.blockSignals(True)
+            self._pos_combo.clear()
+            for i, pos in enumerate(self._positions):
+                self._pos_combo.addItem(
+                    f'{i + 1}:  ({pos[0]:.4f}, {pos[1]:.4f}, {pos[2]:.4f})'
+                )
+            self._pos_combo.setCurrentIndex(0)
+            self._pos_combo.blockSignals(False)
+            self._pos_label.show()
+            self._pos_combo.show()
+        else:
+            self._pos_label.hide()
+            self._pos_combo.hide()
+
+        self._set_ref_frac(self._positions[0])
+
+    def _on_pos_changed(self, index):
+        if 0 <= index < len(self._positions):
+            self._set_ref_frac(self._positions[index])
 
     # ------------------------------------------------------------------
     # Connection toggle

@@ -81,7 +81,9 @@ class StructureView(QWidget):
         self._bond_checkboxes    = {}   # frozenset -> QCheckBox
         # Reference site state (None = not set)
         self._refsite_frac        = None
+        self._refsite_fracs       = []     # all positions for multi-site
         self._refsite_bonds_cutoff = None  # Å, or None to hide
+        self._n_refsite_cubes     = 0
 
         self._build_ui(show_color_picker)
 
@@ -233,7 +235,9 @@ class StructureView(QWidget):
         self._highlight_pairs     = []
         self._display_frac        = supercell.positions.copy()
         self._refsite_frac        = None
+        self._refsite_fracs       = []
         self._refsite_bonds_cutoff = None
+        self._n_refsite_cubes     = 0
         self._colours        = {
             sp: element_colour(sp) for sp in supercell.chem_symbols
         }
@@ -297,23 +301,39 @@ class StructureView(QWidget):
 
     def set_ref_site(self, frac_coords):
         """Place or move the reference site cube marker."""
-        self._refsite_frac = np.asarray(frac_coords, dtype=float)
+        self.set_ref_sites([frac_coords])
+
+    def set_ref_sites(self, frac_coords_list):
+        """Place cube markers for one or more reference sites."""
+        self._remove_refsite_cubes(render=False)
+        if not frac_coords_list:
+            self._refsite_fracs = []
+            return
+        self._refsite_fracs = [np.asarray(f, dtype=float) for f in frac_coords_list]
+        self._refsite_frac  = self._refsite_fracs[0]
         if self.supercell is None:
             return
         if self._refsite_bonds_cutoff is not None:
-            # Bonds shown: re-center display on the new position and full redraw
             self._center_display_on_refsite()
             self._redraw()
             return
-        # Fast path: just swap the cube actor without a full redraw
-        self.plotter.remove_actor('refsite_cube', render=False)
-        cart = self._refsite_frac @ self.supercell.lattice
-        s    = REFSITE_CUBE_SIZE
-        cube = pv.Cube(center=cart, x_length=s, y_length=s, z_length=s)
-        self.plotter.add_mesh(
-            cube, color=REFSITE_COLOUR, opacity=REFSITE_CUBE_OPACITY,
-            name='refsite_cube', render=True,
-        )
+        s = REFSITE_CUBE_SIZE
+        for i, frac in enumerate(self._refsite_fracs):
+            cart = frac @ self.supercell.lattice
+            cube = pv.Cube(center=cart, x_length=s, y_length=s, z_length=s)
+            is_last = (i == len(self._refsite_fracs) - 1)
+            self.plotter.add_mesh(
+                cube, color=REFSITE_COLOUR, opacity=REFSITE_CUBE_OPACITY,
+                name=f'refsite_cube_{i}', render=is_last,
+            )
+        self._n_refsite_cubes = len(self._refsite_fracs)
+
+    def _remove_refsite_cubes(self, render=True):
+        for i in range(getattr(self, '_n_refsite_cubes', 1)):
+            self.plotter.remove_actor(f'refsite_cube_{i}', render=False)
+        # Legacy name used before multi-site support
+        self.plotter.remove_actor('refsite_cube', render=render)
+        self._n_refsite_cubes = 0
 
     def set_refsite_bonds(self, cutoff):
         """
@@ -622,17 +642,20 @@ class StructureView(QWidget):
                 opacity=FULL_OPACITY, render=False,
             )
 
-        # --- Refsite cube marker ---
-        if self._refsite_frac is not None:
+        # --- Refsite cube markers ---
+        fracs_to_draw = self._refsite_fracs if self._refsite_fracs else (
+            [self._refsite_frac] if self._refsite_frac is not None else []
+        )
+        s = REFSITE_CUBE_SIZE
+        for i, frac in enumerate(fracs_to_draw):
             if self._refsite_bonds_cutoff is not None:
                 cart_ref = np.array([0.5, 0.5, 0.5]) @ sc.lattice
             else:
-                cart_ref = self._refsite_frac @ sc.lattice
-            s    = REFSITE_CUBE_SIZE
+                cart_ref = frac @ sc.lattice
             cube = pv.Cube(center=cart_ref, x_length=s, y_length=s, z_length=s)
             self.plotter.add_mesh(
                 cube, color=REFSITE_COLOUR, opacity=REFSITE_CUBE_OPACITY,
-                name='refsite_cube', render=False,
+                name=f'refsite_cube_{i}', render=False,
             )
 
             # --- Refsite bonds (use precomputed nearby list) ---
