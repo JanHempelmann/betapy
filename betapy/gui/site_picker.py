@@ -399,14 +399,16 @@ class SitePickerWidget(QWidget):
 
         self.pfc_viewer.load_data(offsite, self.supercell)
 
-        ref_sp = self._analysis_ref_sp
-        note   = f'  (excl. {ref_sp} pairs)\n' if ref_sp else ''
+        ref_sp  = self._analysis_ref_sp
+        note    = f'  (excl. {ref_sp} pairs)\n' if ref_sp else ''
+        pfc_sum = sum(r['mean_pfc'] for r in offsite) if offsite else 0.0
         self.result_label.setText(
             f'Found:\n'
             f'  {len(offsite)} off-site pairs\n'
             f'{note}'
             f'  {len(onsite)} on-site terms\n'
-            f'cutoff: {self.cutoff_spin.value():.2f} Å'
+            f'cutoff: {self.cutoff_spin.value():.2f} Å\n'
+            f'Σ pFC = {pfc_sum:+.4f} eV/Å²'
         )
 
     def _on_analysis_error(self, msg):

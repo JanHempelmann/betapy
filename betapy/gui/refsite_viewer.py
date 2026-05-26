@@ -9,6 +9,7 @@ corresponding atom pair in the linked StructureView.
 import math
 import numpy as np
 import pandas as pd
+from pathlib import Path
 
 from PyQt5.QtWidgets import (
     QWidget, QHBoxLayout, QVBoxLayout, QSplitter,
@@ -60,6 +61,7 @@ class RefsitePFCWidget(QWidget):
         self._selected_pair  = None  # (a1, a2) or None
         self._structure_view = None
         self._unit           = UNIT_EV
+        self._sum_raw        = None  # Σ pFC in eV/Å², set after each load
         self._build_ui()
 
     # ------------------------------------------------------------------
@@ -153,21 +155,40 @@ class RefsitePFCWidget(QWidget):
         """Link to a StructureView for 3D pair highlighting."""
         self._structure_view = sv
 
+    def _update_status_label(self, source_note=''):
+        """Rebuild the status label from current data and unit."""
+        if not self._results:
+            self._status_label.setText('No data — run refsite analysis or load CSV.')
+            return
+        factor   = EV_ANG2_TO_N_M if self._unit == 'N/m' else 1.0
+        unit_lbl = UNIT_LABEL[self._unit]
+        n        = len(self._results)
+        if self._sum_raw is not None:
+            sum_val = self._sum_raw * factor
+            self._status_label.setText(
+                f'{n} off-site pairs{source_note}   |   '
+                f'Σ pFC = {sum_val:+.4f} {unit_lbl}'
+            )
+        else:
+            self._status_label.setText(f'{n} pairs{source_note}')
+
     def set_unit(self, unit: str):
         """Switch display unit ('eV/Ang2' or 'N/m') and redraw."""
         if unit != self._unit:
             self._unit = unit
             self._refresh_plot()
             self._refresh_table()
+            self._update_status_label()
 
     def load_data(self, results: list, supercell=None):
         """Load from a fresh refsite analysis (list of offsite result dicts)."""
         self._results       = results
         self._selected_pair = None
+        self._sum_raw       = sum(r['mean_pfc'] for r in results) if results else None
         self._rebuild_checkboxes()
         self._refresh_plot()
         self._refresh_table()
-        self._status_label.setText(f'{len(results)} off-site pairs.')
+        self._update_status_label()
 
     def load_from_csv(self, path=None):
         """Load from a refsite_pFCs.csv file."""
@@ -199,12 +220,11 @@ class RefsitePFCWidget(QWidget):
                 )
             self._results       = df.to_dict('records')
             self._selected_pair = None
+            self._sum_raw       = sum(r['mean_pfc'] for r in self._results)
             self._rebuild_checkboxes()
             self._refresh_plot()
             self._refresh_table()
-            self._status_label.setText(
-                f'{len(self._results)} pairs loaded from {path}'
-            )
+            self._update_status_label(f' — loaded from {Path(path).name}')
         except Exception as e:
             QMessageBox.critical(self, 'Error loading CSV', str(e))
 
