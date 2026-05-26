@@ -687,7 +687,7 @@ def main(cli_args=None):
     app = QApplication(sys.argv)
     app.setStyle('Fusion')
 
-    _icon_path = Path(__file__).parent.parent / 'data' / 'logo.png'
+    _icon_path = Path(__file__).parent.parent / 'data' / 'icon.png'
     if _icon_path.exists():
         app.setWindowIcon(QIcon(str(_icon_path)))
 
