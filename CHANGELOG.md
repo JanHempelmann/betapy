@@ -5,6 +5,29 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ---
 
+## [1.0.0] — 2026-05-26
+
+### Added
+- **Settings-file path resolution** — relative file paths in YAML settings files
+  (`sposcar`, `force_constants`, `refsite.file`, `stiffness_shift.refpos`, and all
+  `structure_a`/`structure_b` paths) are now resolved relative to the YAML file's
+  parent directory rather than the working directory; absolute paths pass through
+  unchanged; makes settings files portable and shareable without editing paths
+- **Non-blocking stiffness-shift analysis** — the Stiffness Shift tab now runs the
+  heavy computation in a background `QThread` (`_StiffnessWorker`); an indeterminate
+  `QProgressBar` appears while computing and the Run button is disabled to prevent
+  double-triggering; the GUI remains fully responsive throughout
+- **CITATION.cff** — GitHub "Cite this repository" metadata pointing to the 2021
+  *Advanced Materials* paper that introduced projected force constants
+- **62 automated tests** — full test suite covering shell grouping, species
+  normalisation, reliability cutoff geometry, pair deduplication, progress
+  callbacks, and end-to-end GeTe pipeline integration
+
+### Changed
+- Development status classifier updated from `4 - Beta` to `5 - Production/Stable`
+
+---
+
 ## [0.4.0] — 2026-05-25
 
 ### Added

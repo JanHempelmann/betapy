@@ -117,18 +117,48 @@ class Settings:
 
     @classmethod
     def from_yaml(cls, path: str | Path) -> 'Settings':
-        """Load settings from a YAML file, falling back to defaults."""
+        """Load settings from a YAML file, falling back to defaults.
+
+        All relative paths in the file are resolved relative to the directory
+        containing the YAML, so the file can live anywhere and still find its
+        SPOSCAR/FORCE_CONSTANTS siblings without needing CWD to match.
+        """
         if not _YAML_AVAILABLE:
             raise ImportError(
                 'pyyaml is required to load settings files. '
                 'Install it with: pip install pyyaml'
             )
-        path = Path(path)
+        path = Path(path).resolve()
         if not path.exists():
             raise FileNotFoundError(f'Settings file not found: {path}')
         with open(path) as f:
             data = yaml.safe_load(f) or {}
-        return cls._from_dict(data)
+        s = cls._from_dict(data)
+        s._resolve_relative_paths(path.parent)
+        return s
+
+    def _resolve_relative_paths(self, base_dir: Path) -> None:
+        """Resolve all file-path fields relative to base_dir in-place."""
+        def _r(p: Optional[str]) -> Optional[str]:
+            if p is None:
+                return None
+            pp = Path(p)
+            return str((base_dir / pp).resolve()) if not pp.is_absolute() else p
+
+        self.sposcar         = _r(self.sposcar)
+        self.force_constants = _r(self.force_constants)
+
+        if self.refsite is not None:
+            self.refsite.file = _r(self.refsite.file)
+
+        if self.stiffness_shift is not None:
+            ss = self.stiffness_shift
+            ss.refpos = _r(ss.refpos)
+            for struct in (ss.structure_a, ss.structure_b):
+                if struct is not None:
+                    struct.sposcar         = _r(struct.sposcar)
+                    struct.force_constants = _r(struct.force_constants)
+                    struct.refpos          = _r(struct.refpos)
 
     @classmethod
     def from_cli(cls, argv=None) -> 'tuple[Settings, argparse.Namespace]':

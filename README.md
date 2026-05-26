@@ -6,7 +6,7 @@
 
 **betapy — phonon-based bonding analysis for crystalline materials**
 
-betapy post-processes the force constants calculated by [Phonopy](https://phonopy.github.io/phonopy/) to extract projected force constants (pFCs) along interatomic bond vectors. It is designed for layered oxide and related intercalation materials, with particular support for analysing force constant distributions around vacancy and reference sites — and for quantifying how structural stiffness changes between intercalated and deintercalated phases.
+betapy post-processes the force constants calculated by [Phonopy](https://phonopy.github.io/phonopy/) to extract projected force constants (pFCs) along interatomic bond vectors which can serve as descriptors for bond stiffness or strength. It provides a complementary way of bonding analysis to wavefunction-based approaches and has been used successfully to detect longer range multicenter bonding effects in phase-change materials and beyond.
 
 ---
 
@@ -69,6 +69,7 @@ v_Li              ← label (any string)
   1               ← number of sites
 Direct
   0.0807  0.0417  0.1118   ← fractional coordinates, one per line
+  .....                    ← more coordinates are supported, following VASP's POSCAR format
 ```
 
 The reference site does not need to coincide with an atom — it can be a vacancy, interstitial, or any point of interest in the cell.
@@ -86,7 +87,7 @@ A GeTe example dataset is included in `examples/GeTe/` to verify your installati
 cd examples/GeTe
 betapy --store
 
-# Bulk pFC analysis, write results to CSV
+# Bulk pFC analysis, write results to CSV; if SPOSCAR and FORCE_CONSTANTS have their default names, these arguments can be omitted 
 betapy --sposcar SPOSCAR --fc FORCE_CONSTANTS --store
 
 # Reference-site projection with 5 Å cutoff
@@ -130,7 +131,7 @@ stiffness_shift:
     sposcar: path/to/intercalated/SPOSCAR
     force_constants: path/to/intercalated/FORCE_CONSTANTS
     refpos: path/to/REFPOS
-  cutoff: 6.0
+  cutoff: 5.0
   min_site_dist: 0.1    # excludes site-occupying atom in intercalated structure
 ```
 
@@ -179,7 +180,7 @@ Further development of pFCs as a probe for multicenter bonding in phase-change m
 
 > Hempelmann, J.; Müller, P. C.; Ertural, C.; Dronskowski, R. *Angew. Chem. Int. Ed.* **2022**, *61*, e202115778. DOI: [10.1002/anie.202115778](https://doi.org/10.1002/anie.202115778)
 
-The **stiffness-shift parameter** implemented in betapy compares the sum of reference-site projected force constants between a deintercalated structure (projection around a vacancy) and an intercalated structure (projection around the occupied site, excluding the site-occupying atom). Atom pairs are matched across structures by fractional coordinate proximity rather than index, making the comparison robust to index reordering between VASP calculations.
+The **stiffness-shift parameter** implemented in betapy compares the sum of reference-site projected force constants between a deintercalated structure (projection around a vacancy) and an intercalated structure (projection around the occupied site, excluding the site-occupying atom). Atom pairs are matched across structures by fractional coordinate proximity rather than index, making the comparison robust to index reordering between VASP calculations. It is employed for the first time in a forthcoming manuscript.
 
 Covalent radii used for automatic bond detection are from:
 
@@ -215,7 +216,8 @@ betapy/
 │       └── FORCE_CONSTANTS # force constant matrices
 └── tests/
     ├── test_io.py
-    └── test_projection.py
+    ├── test_projection.py
+    └── test_shells.py
 ```
 
 ---

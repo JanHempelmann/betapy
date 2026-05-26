@@ -25,9 +25,9 @@ from PyQt5.QtWidgets import (
     QGroupBox, QFileDialog, QMessageBox, QCheckBox,
     QTableWidget, QTableWidgetItem, QHeaderView,
     QAbstractItemView, QFrame, QScrollArea, QGridLayout,
-    QTabWidget,
+    QTabWidget, QProgressBar,
 )
-from PyQt5.QtCore import Qt
+from PyQt5.QtCore import Qt, QThread, pyqtSignal
 from PyQt5.QtGui import QColor
 
 from matplotlib.backends.backend_qt5agg import (
@@ -52,6 +52,100 @@ from betapy.core.constants import EV_ANG2_TO_N_M, UNIT_LABEL, UNIT_EV
 PICK_TOLERANCE = 0.025
 
 
+class _StiffnessWorker(QThread):
+    """Background thread for stiffness-shift computation."""
+    finished = pyqtSignal()
+    error    = pyqtSignal(str)
+
+    def __init__(self, dir_a, dir_b, refpos_path,
+                 cutoff, msd, tol, excl):
+        super().__init__()
+        self._dir_a      = Path(dir_a)
+        self._dir_b      = Path(dir_b)
+        self._refpos_path = Path(refpos_path)
+        self._cutoff     = cutoff
+        self._msd        = msd
+        self._tol        = tol
+        self._excl       = excl
+        # Outputs — read by the main thread after finished emits
+        self.sc_a         = None
+        self.sc_b         = None
+        self.all_refsites = []
+        self.offsite_a    = []
+        self.offsite_b    = []
+        self.matched      = []
+        self.unmatched_a  = []
+        self.unmatched_b  = []
+        self.excl_sp      = None
+
+    def run(self):
+        try:
+            sc_a = Supercell(read_SPOSCAR(self._dir_a / 'SPOSCAR'))
+            sc_b = Supercell(read_SPOSCAR(self._dir_b / 'SPOSCAR'))
+            fc_a = read_FORCE_CONSTANTS(self._dir_a / 'FORCE_CONSTANTS')
+            fc_b = read_FORCE_CONSTANTS(self._dir_b / 'FORCE_CONSTANTS')
+
+            refpos_data  = read_refpos(self._refpos_path)
+            all_refsites = refpos_data['positions']
+            if not all_refsites:
+                raise ValueError(f'No positions found in {self._refpos_path}')
+
+            excl_sp = None
+            if self._excl:
+                found = set()
+                for frac_pos in all_refsites:
+                    fp    = np.asarray(frac_pos)
+                    dists = [sc_b.distance_to_point(k + 1, fp)
+                             for k in range(sc_b.n_atoms)]
+                    ni = min(range(sc_b.n_atoms), key=lambda k: dists[k])
+                    if dists[ni] < self._msd:
+                        found.add(sc_b.species(ni + 1))
+                excl_sp = found if found else None
+
+            offsite_a = []
+            for frac in all_refsites:
+                res, _ = find_refsite_pairs(
+                    sc_a, fc_a['atomic_pairs'], fc_a['force_matrices'],
+                    frac, cutoff=self._cutoff, min_distance=0.0,
+                    exclude_species=excl_sp, show_progress=False,
+                )
+                offsite_a.extend(res)
+
+            offsite_b = []
+            for frac in all_refsites:
+                res, _ = find_refsite_pairs(
+                    sc_b, fc_b['atomic_pairs'], fc_b['force_matrices'],
+                    frac, cutoff=self._cutoff, min_distance=self._msd,
+                    exclude_species=excl_sp, show_progress=False,
+                )
+                offsite_b.extend(res)
+
+            all_species  = sorted(set(sc_a.chem_symbols) & set(sc_b.chem_symbols))
+            atom_matches = {}
+            for sp in all_species:
+                m, _ = match_atoms_across_structures(
+                    sc_a, sc_b, sp, tolerance=self._tol
+                )
+                atom_matches.update(m)
+
+            matched, unmatched_a, unmatched_b = match_fc_pairs(
+                offsite_a, offsite_b, atom_matches, sc_a
+            )
+
+            self.sc_a         = sc_a
+            self.sc_b         = sc_b
+            self.all_refsites = all_refsites
+            self.offsite_a    = offsite_a
+            self.offsite_b    = offsite_b
+            self.matched      = matched
+            self.unmatched_a  = unmatched_a
+            self.unmatched_b  = unmatched_b
+            self.excl_sp      = excl_sp
+            self.finished.emit()
+        except Exception as e:
+            self.error.emit(str(e))
+
+
 class _NumericItem(QTableWidgetItem):
     def __lt__(self, other):
         try:
@@ -65,6 +159,7 @@ class StiffnessShiftWidget(QWidget):
 
     def __init__(self, parent=None):
         super().__init__(parent)
+        self._worker       = None
         self._sc_a         = None
         self._sc_b         = None
         self._all_refsites = []
@@ -205,10 +300,17 @@ class StiffnessShiftWidget(QWidget):
         )
         srow.addWidget(self._chk_excl)
 
-        btn_run = QPushButton('Run analysis')
-        btn_run.setFixedWidth(110)
-        btn_run.clicked.connect(self._run_analysis)
-        srow.addWidget(btn_run)
+        self._btn_run = QPushButton('Run analysis')
+        self._btn_run.setFixedWidth(110)
+        self._btn_run.clicked.connect(self._run_analysis)
+        srow.addWidget(self._btn_run)
+
+        self._progress_bar = QProgressBar()
+        self._progress_bar.setFixedWidth(120)
+        self._progress_bar.setFixedHeight(16)
+        self._progress_bar.setTextVisible(False)
+        self._progress_bar.hide()
+        srow.addWidget(self._progress_bar)
 
         self._result_lbl = QLabel('')
         self._result_lbl.setWordWrap(True)
@@ -387,96 +489,69 @@ class StiffnessShiftWidget(QWidget):
     # ------------------------------------------------------------------
 
     def _run_analysis(self):
-        try:
-            self._do_analysis()
-        except Exception as e:
-            QMessageBox.critical(self, 'Analysis error', str(e))
+        if self._worker is not None and self._worker.isRunning():
+            return
 
-    def _do_analysis(self):
         dir_a_str  = self._edit_a.text().strip()
         dir_b_str  = self._edit_b.text().strip()
         refpos_str = self._edit_refpos.text().strip()
 
         if not dir_a_str or not dir_b_str:
-            raise ValueError('Please specify both structure directories.')
+            QMessageBox.warning(self, 'Missing input',
+                                'Please specify both structure directories.')
+            return
 
         dir_a = Path(dir_a_str)
         dir_b = Path(dir_b_str)
-
-        sc_a = Supercell(read_SPOSCAR(dir_a / 'SPOSCAR'))
-        sc_b = Supercell(read_SPOSCAR(dir_b / 'SPOSCAR'))
-        fc_a = read_FORCE_CONSTANTS(dir_a / 'FORCE_CONSTANTS')
-        fc_b = read_FORCE_CONSTANTS(dir_b / 'FORCE_CONSTANTS')
-
         if refpos_str:
             refpos_path = Path(refpos_str)
         else:
             refpos_path = dir_a / 'REFPOS'
             if not refpos_path.exists():
                 refpos_path = dir_b / 'REFPOS'
-        refpos_data  = read_refpos(refpos_path)
-        all_refsites = refpos_data['positions']
-        if not all_refsites:
-            raise ValueError(f'No positions found in {refpos_path}')
 
-        cutoff = self._spin_cutoff.value()
-        msd    = self._spin_msd.value()
-        tol    = self._spin_tol.value()
-        excl   = self._chk_excl.isChecked()
+        self._btn_run.setEnabled(False)
+        self._progress_bar.setRange(0, 0)  # indeterminate / busy indicator
+        self._progress_bar.show()
 
-        excl_sp = None
-        if excl:
-            found = set()
-            for frac_pos in all_refsites:
-                fp    = np.asarray(frac_pos)
-                dists = [sc_b.distance_to_point(k + 1, fp) for k in range(sc_b.n_atoms)]
-                ni    = min(range(sc_b.n_atoms), key=lambda k: dists[k])
-                if dists[ni] < msd:
-                    found.add(sc_b.species(ni + 1))
-            excl_sp = found if found else None
-
-        offsite_a = []
-        for frac in all_refsites:
-            res, _ = find_refsite_pairs(
-                sc_a, fc_a['atomic_pairs'], fc_a['force_matrices'],
-                frac, cutoff=cutoff, min_distance=0.0,
-                exclude_species=excl_sp, show_progress=False,
-            )
-            offsite_a.extend(res)
-
-        offsite_b = []
-        for frac in all_refsites:
-            res, _ = find_refsite_pairs(
-                sc_b, fc_b['atomic_pairs'], fc_b['force_matrices'],
-                frac, cutoff=cutoff, min_distance=msd,
-                exclude_species=excl_sp, show_progress=False,
-            )
-            offsite_b.extend(res)
-
-        all_species  = sorted(set(sc_a.chem_symbols) & set(sc_b.chem_symbols))
-        atom_matches = {}
-        for sp in all_species:
-            m, _ = match_atoms_across_structures(sc_a, sc_b, sp, tolerance=tol)
-            atom_matches.update(m)
-
-        matched, unmatched_a, unmatched_b = match_fc_pairs(
-            offsite_a, offsite_b, atom_matches, sc_a
+        self._worker = _StiffnessWorker(
+            dir_a        = dir_a,
+            dir_b        = dir_b,
+            refpos_path  = refpos_path,
+            cutoff       = self._spin_cutoff.value(),
+            msd          = self._spin_msd.value(),
+            tol          = self._spin_tol.value(),
+            excl         = self._chk_excl.isChecked(),
         )
+        self._worker.finished.connect(self._on_analysis_done)
+        self._worker.error.connect(self._on_analysis_error)
+        self._worker.start()
 
-        # Commit state
+    def _on_analysis_done(self):
+        self._progress_bar.hide()
+        self._btn_run.setEnabled(True)
+
+        w = self._worker
+        sc_a        = w.sc_a
+        sc_b        = w.sc_b
+        all_refsites = w.all_refsites
+        matched      = w.matched
+        unmatched_a  = w.unmatched_a
+        unmatched_b  = w.unmatched_b
+        excl_sp      = w.excl_sp
+
         self._sc_a         = sc_a
         self._sc_b         = sc_b
         self._all_refsites = all_refsites
-        self._offsite_a    = offsite_a
-        self._offsite_b     = offsite_b
-        self._matched       = matched
-        self._unmatched_a   = unmatched_a
-        self._unmatched_b   = unmatched_b
+        self._offsite_a    = w.offsite_a
+        self._offsite_b    = w.offsite_b
+        self._matched      = matched
+        self._unmatched_a  = unmatched_a
+        self._unmatched_b  = unmatched_b
         self._selected_midx = None
         self._selected_ua   = None
         self._selected_ub   = None
 
-        # 3D views
         self._view_a.load_supercell(sc_a)
         self._view_a.set_ref_sites(all_refsites)
         self._view_b.load_supercell(sc_b)
@@ -488,7 +563,6 @@ class StiffnessShiftWidget(QWidget):
             btn.setText('Show connections')
             view.set_refsite_bonds(None)
 
-        # Update tab titles with counts
         self._bottom_tabs.setTabText(0, f'Matched ({len(matched)})')
         self._bottom_tabs.setTabText(
             1, f'Unmatched ({len(unmatched_a) + len(unmatched_b)})'
@@ -503,6 +577,11 @@ class StiffnessShiftWidget(QWidget):
         self._total_raw = total
         self._excl_note = f'  excl. {next(iter(excl_sp))} pairs\n' if excl_sp else ''
         self._update_result_label()
+
+    def _on_analysis_error(self, msg):
+        self._progress_bar.hide()
+        self._btn_run.setEnabled(True)
+        QMessageBox.critical(self, 'Analysis error', msg)
 
     # ------------------------------------------------------------------
     # Checkboxes

@@ -1,0 +1,35 @@
+cff-version: 1.2.0
+message: >-
+  If you use betapy in your research, please cite the following
+  paper in which the projected force constant method was introduced.
+type: software
+title: betapy
+version: 1.0.0
+date-released: "2026-05-26"
+repository-code: https://github.com/JanHempelmann/betapy
+license: MIT
+authors:
+  - family-names: Hempelmann
+    given-names: Jan
+    email: hempelmann.j.aa@m.titech.ac.jp
+preferred-citation:
+  type: article
+  authors:
+    - family-names: Hempelmann
+      given-names: Jan
+    - family-names: Müller
+      given-names: Paul C. A.
+    - family-names: Konze
+      given-names: Philipp M.
+    - family-names: Stoffel
+      given-names: Ralf P.
+    - family-names: Steinberg
+      given-names: Simon
+    - family-names: Dronskowski
+      given-names: Richard
+  title: "Long-Range Forces in Rock-Salt-Type Tellurides and How they Mirror the Underlying Chemical Bonding"
+  journal: "Advanced Materials"
+  year: 2021
+  volume: 33
+  article-number: "2100163"
+  doi: "10.1002/adma.202100163"
