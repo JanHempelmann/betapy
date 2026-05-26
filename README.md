@@ -19,6 +19,10 @@ betapy post-processes the force constants calculated by [Phonopy](https://phonop
 - **Unit toggle** — switch between eV/Å² (native) and N/m (×16.022) in the GUI toolbar; preference is remembered across sessions; `--unit` flag and `unit:` YAML key available for CLI and settings-file workflows
 - **Settings-file workflow** — YAML settings file with CLI flag overrides, following the Phonopy convention
 
+The interactive GUI provides a scatter plot of pFC vs bond length alongside a 3D structure viewer — clicking any data point highlights the corresponding bond:
+
+![betapy pFC Viewer — scatter plot with bond highlighted in the 3D structure view](assets/betapy_screenshot.png)
+
 ### Experimental Features
 
 These features implement methods described in a forthcoming manuscript. They are fully functional and actively used in ongoing research, but their scientific basis has not yet been formally published.
