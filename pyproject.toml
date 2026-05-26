@@ -62,3 +62,6 @@ betapy-gui = "betapy.gui.app:main"
 [tool.setuptools.packages.find]
 # Tells setuptools to find all packages inside the betapy/ directory
 where = ["."]
+
+[tool.setuptools.package-data]
+betapy = ["data/*.png"]

@@ -14,6 +14,7 @@ from PyQt5.QtWidgets import (
     QTabBar, QMenu, QProgressBar,
 )
 from PyQt5.QtCore import Qt, QSettings, QEvent, QTimer, QThread, QPoint, pyqtSignal
+from PyQt5.QtGui import QIcon
 
 from betapy.core.settings import Settings
 from betapy.core.io import read_SPOSCAR, read_FORCE_CONSTANTS
@@ -685,6 +686,10 @@ class MainWindow(QMainWindow):
 def main(cli_args=None):
     app = QApplication(sys.argv)
     app.setStyle('Fusion')
+
+    _icon_path = Path(__file__).parent.parent / 'data' / 'logo.png'
+    if _icon_path.exists():
+        app.setWindowIcon(QIcon(str(_icon_path)))
 
     from betapy.gui.splash import BetapySplashScreen
     splash = BetapySplashScreen()

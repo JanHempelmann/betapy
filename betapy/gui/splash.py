@@ -52,9 +52,7 @@ class BetapySplashScreen(QSplashScreen):
     """
 
     def __init__(self):
-        logo_path = (
-            Path(__file__).parent.parent.parent / 'assets' / 'logo.png'
-        )
+        logo_path = Path(__file__).parent.parent / 'data' / 'logo.png'
         logo_pix = QPixmap(str(logo_path))
         if logo_pix.isNull():
             # Fallback: blank white pixmap so the splash still appears
