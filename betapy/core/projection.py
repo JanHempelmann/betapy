@@ -8,6 +8,7 @@ No file I/O, no UI concerns live here.
 import numpy as np
 import pandas as pd
 from tqdm import tqdm
+from scipy.optimize import linear_sum_assignment
 
 from betapy.core.constants import PFC_ROUNDING_DECIMALS
 
@@ -382,18 +383,21 @@ def refsite_results_to_dataframes(offsite_results, onsite_results, ref_label):
 # Atom matching across structures for stiffness-shift comparison
 # ---------------------------------------------------------------------------
 
-def match_atoms_across_structures(sc_a, sc_b, species, tolerance=0.3):
+def match_atoms_across_structures(sc_a, sc_b, species, tolerance=0.1):
     """
     For each atom of `species` in sc_a, find the closest atom of the
-    same species in sc_b by Cartesian distance (PBC-aware).
+    same species in sc_b by fractional-coordinate distance (PBC-aware).
     Each atom in sc_b can only be matched once (greedy nearest-neighbour).
 
     Parameters
     ----------
     sc_a, sc_b  : Supercell instances
     species     : str, chemical symbol to match (e.g. 'V', 'O')
-    tolerance   : float, maximum Angstrom distance to accept as a valid
-                  match (default 0.3 Å)
+    tolerance   : float, maximum fractional-coordinate distance (dimensionless,
+                  default 0.1) to accept as a valid match.
+                  Using fractional rather than Cartesian distance makes the
+                  criterion invariant to cell-parameter changes between A and B
+                  (e.g. cell expansion on intercalation).
 
     Returns
     -------
@@ -411,32 +415,96 @@ def match_atoms_across_structures(sc_a, sc_b, species, tolerance=0.3):
         # Species entirely absent in sc_b (e.g. Li in deintercalated)
         return {}, [idx for idx, _ in atoms_a]
 
+    # Build cost matrix (fractional distances) and use optimal assignment
+    # (Hungarian algorithm) to avoid greedy artifacts when atom counts match.
+    pa = np.array([p for _, p in atoms_a])   # (Na, 3)
+    pb = np.array([p for _, p in atoms_b])   # (Nb, 3)
+    diff = pb[None, :, :] - pa[:, None, :]   # (Na, Nb, 3)
+    diff -= np.floor(diff + 0.5)
+    cost = np.linalg.norm(diff, axis=2)       # (Na, Nb)
+
+    row_ind, col_ind = linear_sum_assignment(cost)
+    row_to_col = dict(zip(row_ind.tolist(), col_ind.tolist()))
+
     matches   = {}
     unmatched = []
-    used_b    = set()
-
-    for idx_a, pos_a in atoms_a:
-        best_dist  = float('inf')
-        best_idx_b = None
-
-        for idx_b, pos_b in atoms_b:
-            if idx_b in used_b:
-                continue
-            diff = np.asarray(pos_b) - np.asarray(pos_a)
-            diff -= np.floor(diff + 0.5)   # minimum image
-            cart_diff = diff @ sc_a.lattice  # fractional → Cartesian (Å)
-            dist = float(np.linalg.norm(cart_diff))
-            if dist < best_dist:
-                best_dist  = dist
-                best_idx_b = idx_b
-
-        if best_dist <= tolerance:
-            matches[idx_a] = best_idx_b
-            used_b.add(best_idx_b)
-        else:
+    for i, (idx_a, _) in enumerate(atoms_a):
+        if i not in row_to_col:
             unmatched.append(idx_a)
+        else:
+            j = row_to_col[i]
+            if cost[i, j] <= tolerance:
+                matches[idx_a] = atoms_b[j][0]
+            else:
+                unmatched.append(idx_a)
 
     return matches, unmatched
+
+
+def match_atoms_local(offsite_a, offsite_b, sc_a, sc_b,
+                      refsite_a, refsite_b, tolerance=0.05):
+    """
+    Match atoms appearing in offsite_a to atoms in offsite_b using their
+    LOCAL fractional displacement from the respective reference sites.
+
+    This is origin-independent: it works even when A and B were computed
+    with different unit-cell origins (common for intercalation pairs), because
+    it compares displacement RELATIVE to the refsite rather than absolute
+    fractional coordinates.  The same fractional tolerance applies to all
+    three axes but is harmless: within the small local neighbourhood of the
+    refsite (typically ≤ cutoff/cell_param ≈ 0.25), correct atom pairs
+    are separated by <<0.05 and wrong candidates are ≥0.1 away.
+
+    Parameters
+    ----------
+    offsite_a, offsite_b : list of dicts from find_refsite_pairs()
+    sc_a, sc_b           : Supercell instances for structures A and B
+    refsite_a, refsite_b : array-like (3,), fractional refsite coords in A / B
+    tolerance            : float, max fractional displacement distance for a
+                           valid match (default 0.05)
+
+    Returns
+    -------
+    matches : dict {atom_idx_a (1-based): atom_idx_b (1-based)}
+    """
+    refsite_a = np.asarray(refsite_a)
+    refsite_b = np.asarray(refsite_b)
+
+    # Collect unique atoms from each offsite list and compute local displacements
+    def _local_disps(offsite, sc, refsite):
+        atoms = {}
+        for r in offsite:
+            for idx in (r['atom1_idx'], r['atom2_idx']):
+                if idx not in atoms:
+                    pos = np.asarray(sc.positions[idx - 1])
+                    d = pos - refsite
+                    d -= np.floor(d + 0.5)
+                    atoms[idx] = d
+        return atoms
+
+    a_atoms = _local_disps(offsite_a, sc_a, refsite_a)
+    b_atoms = _local_disps(offsite_b, sc_b, refsite_b)
+
+    if not a_atoms or not b_atoms:
+        return {}
+
+    a_ids = list(a_atoms.keys())
+    b_ids = list(b_atoms.keys())
+
+    # Build cost matrix of pairwise fractional displacement distances
+    a_arr = np.array([a_atoms[i] for i in a_ids])   # (Na, 3)
+    b_arr = np.array([b_atoms[j] for j in b_ids])   # (Nb, 3)
+    diff = b_arr[None, :, :] - a_arr[:, None, :]    # (Na, Nb, 3)
+    diff -= np.floor(diff + 0.5)
+    cost = np.linalg.norm(diff, axis=2)              # (Na, Nb)
+
+    row_ind, col_ind = linear_sum_assignment(cost)
+    matches = {}
+    for r, c in zip(row_ind.tolist(), col_ind.tolist()):
+        if cost[r, c] <= tolerance:
+            matches[a_ids[r]] = b_ids[c]
+
+    return matches
 
 
 def match_fc_pairs(results_a, results_b, atom_matches, sc_a):
@@ -479,8 +547,8 @@ def match_fc_pairs(results_a, results_b, atom_matches, sc_a):
     for r in results_a:
         i, j = r['atom1_idx'], r['atom2_idx']
 
-        # Skip if either atom has no match (e.g. Li-containing pairs)
         if i not in atom_matches or j not in atom_matches:
+            unmatched_a.append(r)
             continue
 
         i_b = atom_matches[i]

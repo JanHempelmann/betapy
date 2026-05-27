@@ -42,7 +42,7 @@ from betapy.core.io import read_SPOSCAR, read_FORCE_CONSTANTS, read_refpos
 from betapy.core.structure import Supercell
 from betapy.core.projection import (
     find_refsite_pairs,
-    match_atoms_across_structures,
+    match_atoms_local,
     match_fc_pairs,
     stiffness_shift_from_pairs,
 )
@@ -125,16 +125,32 @@ class _StiffnessWorker(QThread):
                 )
                 offsite_b.extend(res)
 
-            all_species  = sorted(set(sc_a.chem_symbols) & set(sc_b.chem_symbols))
+            sp_set = set(sc_a.chem_symbols) & set(sc_b.chem_symbols)
+            # Drop pairs involving species absent from the other structure
+            # (e.g. Li-containing pairs when A is the intercalated phase)
+            offsite_a_matched = [
+                r for r in offsite_a
+                if r['species1'] in sp_set and r['species2'] in sp_set
+            ]
+            offsite_b_matched = [
+                r for r in offsite_b
+                if r['species1'] in sp_set and r['species2'] in sp_set
+            ]
+
+            # Match atoms by local displacement from each refsite pair.
+            # This is origin-independent: correct even when A and B were
+            # computed with different cell settings/origins.
             atom_matches = {}
-            for sp in all_species:
-                m, _ = match_atoms_across_structures(
-                    sc_a, sc_b, sp, tolerance=self._tol
+            for ref_a, ref_b in zip(refsites_a, refsites_b):
+                m = match_atoms_local(
+                    offsite_a_matched, offsite_b_matched,
+                    sc_a, sc_b, ref_a, ref_b,
+                    tolerance=self._tol,
                 )
                 atom_matches.update(m)
 
             matched, unmatched_a, unmatched_b = match_fc_pairs(
-                offsite_a, offsite_b, atom_matches, sc_a
+                offsite_a_matched, offsite_b_matched, atom_matches, sc_a
             )
 
             self.sc_a         = sc_a
@@ -314,12 +330,23 @@ class StiffnessShiftWidget(QWidget):
         self._spin_msd.setFixedWidth(72)
         srow.addWidget(self._spin_msd)
 
-        srow.addWidget(QLabel('Match tol (Å):'))
+        _tol_lbl = QLabel('Match tol (frac):')
+        _tol_lbl.setToolTip(
+            'Maximum allowed difference in LOCAL fractional displacement from the '
+            'refsite for two atoms to be considered equivalent across structures.\n'
+            'This is origin-independent: it compares each atom\'s position relative '
+            'to its own refsite, so it works even when A and B use different cell '
+            'origins.\n'
+            'Correct matches are typically <0.01; wrong candidates >0.1. '
+            'The default 0.05 is safe for typical intercalation pairs.'
+        )
+        srow.addWidget(_tol_lbl)
         self._spin_tol = QDoubleSpinBox()
-        self._spin_tol.setRange(0.01, 2.0)
-        self._spin_tol.setSingleStep(0.05)
-        self._spin_tol.setDecimals(2)
-        self._spin_tol.setValue(0.3)
+        self._spin_tol.setRange(0.001, 0.5)
+        self._spin_tol.setSingleStep(0.01)
+        self._spin_tol.setDecimals(3)
+        self._spin_tol.setValue(0.05)
+        self._spin_tol.setToolTip(_tol_lbl.toolTip())
         self._spin_tol.setFixedWidth(72)
         srow.addWidget(self._spin_tol)
 
