@@ -42,8 +42,7 @@ from betapy.core.io import read_SPOSCAR, read_FORCE_CONSTANTS, read_refpos
 from betapy.core.structure import Supercell
 from betapy.core.projection import (
     find_refsite_pairs,
-    match_atoms_local,
-    match_fc_pairs,
+    match_fc_pairs_direct,
     stiffness_shift_from_pairs,
 )
 from betapy.gui.structure_view import StructureView
@@ -107,51 +106,40 @@ class _StiffnessWorker(QThread):
                         found.add(sc_b.species(ni + 1))
                 excl_sp = found if found else None
 
-            offsite_a = []
-            for frac in refsites_a:
-                res, _ = find_refsite_pairs(
-                    sc_a, fc_a['atomic_pairs'], fc_a['force_matrices'],
-                    frac, cutoff=self._cutoff, min_distance=0.0,
-                    exclude_species=excl_sp, show_progress=False,
-                )
-                offsite_a.extend(res)
-
-            offsite_b = []
-            for frac in refsites_b:
-                res, _ = find_refsite_pairs(
-                    sc_b, fc_b['atomic_pairs'], fc_b['force_matrices'],
-                    frac, cutoff=self._cutoff, min_distance=self._msd,
-                    exclude_species=excl_sp, show_progress=False,
-                )
-                offsite_b.extend(res)
-
             sp_set = set(sc_a.chem_symbols) & set(sc_b.chem_symbols)
-            # Drop pairs involving species absent from the other structure
-            # (e.g. Li-containing pairs when A is the intercalated phase)
-            offsite_a_matched = [
-                r for r in offsite_a
-                if r['species1'] in sp_set and r['species2'] in sp_set
-            ]
-            offsite_b_matched = [
-                r for r in offsite_b
-                if r['species1'] in sp_set and r['species2'] in sp_set
-            ]
 
-            # Match atoms by local displacement from each refsite pair.
-            # This is origin-independent: correct even when A and B were
-            # computed with different cell settings/origins.
-            atom_matches = {}
+            offsite_a   = []
+            offsite_b   = []
+            matched     = []
+            unmatched_a = []
+            unmatched_b = []
+
             for ref_a, ref_b in zip(refsites_a, refsites_b):
-                m = match_atoms_local(
-                    offsite_a_matched, offsite_b_matched,
-                    sc_a, sc_b, ref_a, ref_b,
-                    tolerance=self._tol,
+                res_a, _ = find_refsite_pairs(
+                    sc_a, fc_a['atomic_pairs'], fc_a['force_matrices'],
+                    ref_a, cutoff=self._cutoff, min_distance=0.0,
+                    exclude_species=excl_sp, show_progress=False,
                 )
-                atom_matches.update(m)
+                res_b, _ = find_refsite_pairs(
+                    sc_b, fc_b['atomic_pairs'], fc_b['force_matrices'],
+                    ref_b, cutoff=self._cutoff, min_distance=self._msd,
+                    exclude_species=excl_sp, show_progress=False,
+                )
 
-            matched, unmatched_a, unmatched_b = match_fc_pairs(
-                offsite_a_matched, offsite_b_matched, atom_matches, sc_a
-            )
+                # Drop pairs involving species absent from the other structure
+                # (e.g. Li-containing pairs when A is the deintercalated phase)
+                sub_a = [r for r in res_a if r['species1'] in sp_set and r['species2'] in sp_set]
+                sub_b = [r for r in res_b if r['species1'] in sp_set and r['species2'] in sp_set]
+
+                offsite_a.extend(res_a)
+                offsite_b.extend(res_b)
+
+                m, ua, ub = match_fc_pairs_direct(
+                    sub_a, sub_b, sc_a, sc_b, ref_a, ref_b, tol=self._tol
+                )
+                matched.extend(m)
+                unmatched_a.extend(ua)
+                unmatched_b.extend(ub)
 
             self.sc_a         = sc_a
             self.sc_b         = sc_b
