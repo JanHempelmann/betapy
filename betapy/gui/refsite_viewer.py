@@ -78,9 +78,14 @@ class RefsitePFCWidget(QWidget):
         btn_load.clicked.connect(self.load_from_csv)
         self._status_label = QLabel('No data — run refsite analysis or load CSV.')
         self._status_label.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+        self._btn_copy_sum = QPushButton('Copy Σ pFC')
+        self._btn_copy_sum.setFixedWidth(90)
+        self._btn_copy_sum.setEnabled(False)
+        self._btn_copy_sum.clicked.connect(self._copy_sum)
         toolbar.addWidget(btn_load)
         toolbar.addStretch()
         toolbar.addWidget(self._status_label)
+        toolbar.addWidget(self._btn_copy_sum)
         outer.addLayout(toolbar)
 
         # Main splitter: scatter (left) | table (right)
@@ -159,6 +164,7 @@ class RefsitePFCWidget(QWidget):
         """Rebuild the status label from current data and unit."""
         if not self._results:
             self._status_label.setText('No data — run refsite analysis or load CSV.')
+            self._btn_copy_sum.setEnabled(False)
             return
         factor   = EV_ANG2_TO_N_M if self._unit == 'N/m' else 1.0
         unit_lbl = UNIT_LABEL[self._unit]
@@ -169,8 +175,16 @@ class RefsitePFCWidget(QWidget):
                 f'{n} off-site pairs{source_note}   |   '
                 f'Σ pFC = {sum_val:+.4f} {unit_lbl}'
             )
+            self._btn_copy_sum.setEnabled(True)
         else:
             self._status_label.setText(f'{n} pairs{source_note}')
+
+    def _copy_sum(self):
+        if self._sum_raw is None:
+            return
+        from PyQt5.QtWidgets import QApplication
+        factor = EV_ANG2_TO_N_M if self._unit == 'N/m' else 1.0
+        QApplication.clipboard().setText(f'{self._sum_raw * factor:.5f}')
 
     def set_unit(self, unit: str):
         """Switch display unit ('eV/Ang2' or 'N/m') and redraw."""

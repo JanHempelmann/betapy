@@ -219,6 +219,13 @@ class StiffnessShiftWidget(QWidget):
             f'{self._excl_note}'
             f'Σ ΔpFC (B-A): {self._total_raw * factor:+.5f} {unit_lbl}'
         )
+        self._btn_copy_shift.setEnabled(True)
+
+    def _copy_shift_result(self):
+        if self._total_raw is None:
+            return
+        factor = EV_ANG2_TO_N_M if self._unit == 'N/m' else 1.0
+        QApplication.clipboard().setText(f'{self._total_raw * factor:.5f}')
 
     def _build_ui(self):
         outer = QVBoxLayout(self)
@@ -339,6 +346,12 @@ class StiffnessShiftWidget(QWidget):
         self._result_lbl = QLabel('')
         self._result_lbl.setWordWrap(True)
         srow.addWidget(self._result_lbl, stretch=1)
+
+        self._btn_copy_shift = QPushButton('Copy Σ ΔpFC')
+        self._btn_copy_shift.setFixedWidth(100)
+        self._btn_copy_shift.setEnabled(False)
+        self._btn_copy_shift.clicked.connect(self._copy_shift_result)
+        srow.addWidget(self._btn_copy_shift)
 
         outer_layout.addLayout(srow)
         bar.setLayout(outer_layout)
