@@ -343,9 +343,11 @@ class StiffnessShiftWidget(QWidget):
         self._progress_bar.hide()
         srow.addWidget(self._progress_bar)
 
+        srow.addStretch(1)
+
         self._result_lbl = QLabel('')
         self._result_lbl.setWordWrap(True)
-        srow.addWidget(self._result_lbl, stretch=1)
+        srow.addWidget(self._result_lbl)
 
         self._btn_copy_shift = QPushButton('Copy Σ ΔpFC')
         self._btn_copy_shift.setFixedWidth(100)
