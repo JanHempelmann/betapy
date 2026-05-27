@@ -318,22 +318,22 @@ class StiffnessShiftWidget(QWidget):
         self._spin_msd.setFixedWidth(72)
         srow.addWidget(self._spin_msd)
 
-        _tol_lbl = QLabel('Match tol (frac):')
+        _tol_lbl = QLabel('Match tol (Å):')
         _tol_lbl.setToolTip(
-            'Maximum allowed difference in LOCAL fractional displacement from the '
-            'refsite for two atoms to be considered equivalent across structures.\n'
-            'This is origin-independent: it compares each atom\'s position relative '
-            'to its own refsite, so it works even when A and B use different cell '
-            'origins.\n'
-            'Correct matches are typically <0.01; wrong candidates >0.1. '
-            'The default 0.05 is safe for typical intercalation pairs.'
+            'Maximum RMS of (Δatom1_ref_dist, Δbond_length) in Å for two pairs\n'
+            'to be considered equivalent across structures.\n'
+            'Uses Cartesian distances only — invariant to cell origin, rotation,\n'
+            'and inversion — so it works even when A and B were set up with\n'
+            'different crystallographic origins or have significant lattice changes.\n'
+            'Correct intercalation pairs differ by <0.2 Å; wrong pairs by >0.5 Å.\n'
+            'Default 0.3 Å gives a safe margin for typical intercalation.'
         )
         srow.addWidget(_tol_lbl)
         self._spin_tol = QDoubleSpinBox()
-        self._spin_tol.setRange(0.001, 0.5)
-        self._spin_tol.setSingleStep(0.01)
-        self._spin_tol.setDecimals(3)
-        self._spin_tol.setValue(0.05)
+        self._spin_tol.setRange(0.01, 2.0)
+        self._spin_tol.setSingleStep(0.05)
+        self._spin_tol.setDecimals(2)
+        self._spin_tol.setValue(0.3)
         self._spin_tol.setToolTip(_tol_lbl.toolTip())
         self._spin_tol.setFixedWidth(72)
         srow.addWidget(self._spin_tol)

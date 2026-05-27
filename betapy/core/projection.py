@@ -508,28 +508,27 @@ def match_atoms_local(offsite_a, offsite_b, sc_a, sc_b,
 
 
 def match_fc_pairs_direct(results_a, results_b, sc_a, sc_b,
-                          refsite_a, refsite_b, tol=0.05):
+                          refsite_a, refsite_b, tol=0.3):
     """
-    Match off-site pFC pairs directly by physical fingerprint:
-    ordered species pair + local fractional displacement of BOTH atoms
-    from the respective reference sites.
+    Match off-site pFC pairs by scalar Cartesian fingerprint:
+    (species1, species2, atom1_ref_dist_Å, bond_length_Å).
 
-    Origin-independent: works even when A and B were relaxed with different
-    cell settings or origins, because it compares positions relative to the
-    refsite rather than global atom indices.
-
-    Step 1 — match atom1 indices per species via Hungarian algorithm on
-             local fractional displacement.
-    Step 2 — for each matched atom1 pair, match atom2 by species and local
-             displacement within that small group (another small Hungarian).
+    Both quantities are already computed by find_refsite_pairs() and are
+    Cartesian distances in Å — invariant to cell origin, translation,
+    rotation, and inversion.  This makes the matching robust even when A
+    and B were relaxed with different cell settings or have significant
+    lattice-parameter differences (e.g., intercalation-induced c-axis
+    expansion).
 
     Parameters
     ----------
     results_a, results_b : list of dicts from find_refsite_pairs()
-    sc_a, sc_b           : Supercell instances
-    refsite_a, refsite_b : array-like (3,), fractional refsite coords in A / B
-    tol                  : float, max fractional displacement distance to
-                           accept for both atom1 and atom2 (default 0.05)
+    sc_a, sc_b           : Supercell instances (kept for API compatibility)
+    refsite_a, refsite_b : array-like (3,) (kept for API compatibility)
+    tol                  : float, max RMS of (Δatom1_ref_dist, Δbond_length)
+                           in Å to accept as a match (default 0.3 Å).
+                           Correct intercalation pairs typically differ by
+                           <0.2 Å; wrong-bond candidates differ by >0.5 Å.
 
     Returns
     -------
@@ -538,75 +537,27 @@ def match_fc_pairs_direct(results_a, results_b, sc_a, sc_b,
     if not results_a or not results_b:
         return [], list(results_a), list(results_b)
 
-    refsite_a = np.asarray(refsite_a)
-    refsite_b = np.asarray(refsite_b)
-
-    def _ld(sc, idx, ref):
-        d = np.asarray(sc.positions[idx - 1]) - ref
-        d -= np.floor(d + 0.5)
-        return d
-
-    # Cache local displacements for every atom appearing in either result set
-    ca = {}
-    for r in results_a:
-        for k in (r['atom1_idx'], r['atom2_idx']):
-            if k not in ca:
-                ca[k] = _ld(sc_a, k, refsite_a)
-    cb = {}
-    for r in results_b:
-        for k in (r['atom1_idx'], r['atom2_idx']):
-            if k not in cb:
-                cb[k] = _ld(sc_b, k, refsite_b)
-
-    # Step 1: match distinct atom1 indices per species (small problem)
-    a1_sp = {r['atom1_idx']: r['species1'] for r in results_a}
-    b1_sp = {r['atom1_idx']: r['species1'] for r in results_b}
-    atom1_match = {}
-    for sp in set(a1_sp.values()) & set(b1_sp.values()):
-        a_ids = [i for i, s in a1_sp.items() if s == sp]
-        b_ids = [j for j, s in b1_sp.items() if s == sp]
-        pa = np.array([ca[i] for i in a_ids])
-        pb = np.array([cb[j] for j in b_ids])
-        diff = pb[None] - pa[:, None]
-        diff -= np.floor(diff + 0.5)
-        cost = np.linalg.norm(diff, axis=2)
-        ri, ci = linear_sum_assignment(cost)
-        for r, c in zip(ri.tolist(), ci.tolist()):
-            if cost[r, c] <= tol:
-                atom1_match[a_ids[r]] = b_ids[c]
-
-    # Step 2: within each matched atom1 pair, match atom2 per species2
-    a_by_a1 = {}
+    # Group pairs by ordered species pair
+    by_sp_a = {}
     for i, r in enumerate(results_a):
-        a_by_a1.setdefault(r['atom1_idx'], []).append((i, r))
-    b_by_a1 = {}
+        by_sp_a.setdefault((r['species1'], r['species2']), []).append((i, r))
+    by_sp_b = {}
     for j, r in enumerate(results_b):
-        b_by_a1.setdefault(r['atom1_idx'], []).append((j, r))
+        by_sp_b.setdefault((r['species1'], r['species2']), []).append((j, r))
 
-    a_to_b = {}   # orig index in results_a -> orig index in results_b
-    for ia, ib in atom1_match.items():
-        a_pairs = a_by_a1.get(ia, [])
-        b_pairs = b_by_a1.get(ib, [])
-        if not a_pairs or not b_pairs:
-            continue
-        a_by_sp2 = {}
-        for idx, r in a_pairs:
-            a_by_sp2.setdefault(r['species2'], []).append((idx, r))
-        b_by_sp2 = {}
-        for idx, r in b_pairs:
-            b_by_sp2.setdefault(r['species2'], []).append((idx, r))
-        for sp2 in set(a_by_sp2) & set(b_by_sp2):
-            ag = a_by_sp2[sp2]
-            bg = b_by_sp2[sp2]
-            pa2 = np.array([ca[r['atom2_idx']] for _, r in ag])
-            pb2 = np.array([cb[r['atom2_idx']] for _, r in bg])
-            diff = pb2[None] - pa2[:, None]
-            diff -= np.floor(diff + 0.5)
-            cost = np.linalg.norm(diff, axis=2)
-            ri, ci = linear_sum_assignment(cost)
-            for r2, c2 in zip(ri.tolist(), ci.tolist()):
-                if cost[r2, c2] <= tol:
-                    a_to_b[ag[r2][0]] = bg[c2][0]
+    a_to_b = {}
+    for key in set(by_sp_a) & set(by_sp_b):
+        ag = by_sp_a[key]
+        bg = by_sp_b[key]
+        # Fingerprint: [atom1_ref_dist (Å), bond_length (Å)]
+        fp_a = np.array([[r.get('atom1_ref_dist', 0.0), r['distance']] for _, r in ag])
+        fp_b = np.array([[r.get('atom1_ref_dist', 0.0), r['distance']] for _, r in bg])
+        diff = fp_b[None] - fp_a[:, None]   # (Na, Nb, 2)
+        cost = np.linalg.norm(diff, axis=2)  # (Na, Nb)
+        ri, ci = linear_sum_assignment(cost)
+        for r2, c2 in zip(ri.tolist(), ci.tolist()):
+            if cost[r2, c2] <= tol:
+                a_to_b[ag[r2][0]] = bg[c2][0]
 
     # Assemble output in the same format as match_fc_pairs
     matched_pairs = []
