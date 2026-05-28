@@ -106,9 +106,27 @@ class COHPViewerWidget(QDialog):
         """Update the plot for (sp1, sp2, distance) and bring the window forward."""
         self._current_pair = (sp1, sp2, distance)
         self._update_plot()
+        if not self.isVisible():
+            self._position_beside_parent()
         self.show()
         self.raise_()
         self.activateWindow()
+
+    def _position_beside_parent(self):
+        """On first show, place to the right of the parent window (screen-safe)."""
+        top = self.parent().window() if self.parent() else None
+        if top is None:
+            return
+        pg = top.frameGeometry()
+        x, y = pg.right() + 10, pg.top()
+        from PyQt5.QtWidgets import QApplication
+        screen = QApplication.screenAt(pg.center())
+        if screen:
+            sr = screen.availableGeometry()
+            if x + self.width() > sr.right():
+                x = max(sr.left(), pg.left() - self.width() - 10)
+            y = max(sr.top(), min(y, sr.bottom() - self.height()))
+        self.move(x, y)
 
     # ------------------------------------------------------------------
     # UI
