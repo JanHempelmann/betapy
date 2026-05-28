@@ -45,6 +45,7 @@ from betapy.core.projection import (
     match_fc_pairs_direct,
     stiffness_shift_from_pairs,
 )
+from betapy.core import cache as _cache
 from betapy.gui.structure_view import StructureView
 from betapy.core.constants import EV_ANG2_TO_N_M, UNIT_LABEL, UNIT_EV
 
@@ -82,6 +83,31 @@ class _StiffnessWorker(QThread):
 
     def run(self):
         try:
+            # --- Cache check (keyed on all six input files + parameters) ---
+            _key = _cache.make_key(
+                self._dir_a / 'SPOSCAR', self._dir_a / 'FORCE_CONSTANTS',
+                self._refpos_path_a,
+                self._dir_b / 'SPOSCAR', self._dir_b / 'FORCE_CONSTANTS',
+                self._refpos_path_b,
+                cutoff=self._cutoff, msd=self._msd,
+                tol=self._tol, excl=self._excl,
+            )
+            _hit = _cache.load(_key)
+            if _hit is not None:
+                self.sc_a       = _hit['sc_a']
+                self.sc_b       = _hit['sc_b']
+                self.refsites_a = _hit['refsites_a']
+                self.refsites_b = _hit['refsites_b']
+                self.offsite_a  = _hit['offsite_a']
+                self.offsite_b  = _hit['offsite_b']
+                self.matched    = _hit['matched']
+                self.unmatched_a = _hit['unmatched_a']
+                self.unmatched_b = _hit['unmatched_b']
+                self.excl_sp    = _hit['excl_sp']
+                self.finished.emit()
+                return
+
+            # --- Full computation ---
             sc_a = Supercell(read_SPOSCAR(self._dir_a / 'SPOSCAR'))
             sc_b = Supercell(read_SPOSCAR(self._dir_b / 'SPOSCAR'))
             fc_a = read_FORCE_CONSTANTS(self._dir_a / 'FORCE_CONSTANTS')
@@ -93,7 +119,6 @@ class _StiffnessWorker(QThread):
             refsites_b = read_refpos(self._refpos_path_b)['positions']
             if not refsites_b:
                 raise ValueError(f'No positions found in {self._refpos_path_b}')
-            # (all_refsites_a/b used separately for 3D view markers per structure)
 
             excl_sp = None
             if self._excl:
@@ -127,8 +152,6 @@ class _StiffnessWorker(QThread):
                     exclude_species=excl_sp, show_progress=False,
                 )
 
-                # Drop pairs involving species absent from the other structure
-                # (e.g. Li-containing pairs when A is the deintercalated phase)
                 sub_a = [r for r in res_a if r['species1'] in sp_set and r['species2'] in sp_set]
                 sub_b = [r for r in res_b if r['species1'] in sp_set and r['species2'] in sp_set]
 
@@ -146,12 +169,20 @@ class _StiffnessWorker(QThread):
             self.sc_b       = sc_b
             self.refsites_a = refsites_a
             self.refsites_b = refsites_b
-            self.offsite_a    = offsite_a
-            self.offsite_b    = offsite_b
-            self.matched      = matched
-            self.unmatched_a  = unmatched_a
-            self.unmatched_b  = unmatched_b
-            self.excl_sp      = excl_sp
+            self.offsite_a  = offsite_a
+            self.offsite_b  = offsite_b
+            self.matched    = matched
+            self.unmatched_a = unmatched_a
+            self.unmatched_b = unmatched_b
+            self.excl_sp    = excl_sp
+
+            _cache.save(_key, {
+                'sc_a': sc_a, 'sc_b': sc_b,
+                'refsites_a': refsites_a, 'refsites_b': refsites_b,
+                'offsite_a': offsite_a, 'offsite_b': offsite_b,
+                'matched': matched, 'unmatched_a': unmatched_a,
+                'unmatched_b': unmatched_b, 'excl_sp': excl_sp,
+            })
             self.finished.emit()
         except Exception as e:
             self.error.emit(str(e))

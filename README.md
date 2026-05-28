@@ -35,11 +35,14 @@ These features implement methods described in a forthcoming manuscript. They are
 
 - Python 3.8 or later
 - [Phonopy](https://phonopy.github.io/phonopy/) — for generating `SPOSCAR` and `FORCE_CONSTANTS` inputs
-- See `pyproject.toml` for Python package dependencies (numpy, pandas, matplotlib, PyQt5, PyVista, pyyaml, scipy)
+- **Core dependencies** (installed automatically): `numpy`, `pandas`, `pyyaml`, `scipy`, `tqdm`
+- **GUI dependencies** (optional, see Installation): `matplotlib`, `PyQt5`, `PyVista`, `pyvistaqt`
 
 ---
 
 ## Installation
+
+**CLI only** — core analysis and all command-line features, no GUI dependencies:
 
 ```bash
 git clone https://github.com/JanHempelmann/betapy.git
@@ -47,12 +50,21 @@ cd betapy
 pip install -e .
 ```
 
-For the GUI, PyVista requires VTK. On conda environments this installs more reliably via conda-forge:
+**With GUI** — adds matplotlib, PyQt5, PyVista, and pyvistaqt for the interactive interface:
 
 ```bash
-conda install -c conda-forge pyvista pyvistaqt
-pip install -e .
+git clone https://github.com/JanHempelmann/betapy.git
+cd betapy
+pip install -e ".[gui]"
 ```
+
+> **PyVista on conda:** VTK (required by PyVista) installs more reliably from conda-forge. If you use a conda environment, install the VTK stack first:
+> ```bash
+> conda install -c conda-forge pyvista pyvistaqt
+> pip install -e ".[gui]"
+> ```
+
+If GUI dependencies are not installed, `betapy-gui` will print a friendly error and exit. The `betapy` CLI works without any GUI packages.
 
 ---
 
@@ -184,7 +196,7 @@ Further development of pFCs as a probe for multicenter bonding in phase-change m
 
 > Hempelmann, J.; Müller, P. C.; Ertural, C.; Dronskowski, R. *Angew. Chem. Int. Ed.* **2022**, *61*, e202115778. DOI: [10.1002/anie.202115778](https://doi.org/10.1002/anie.202115778)
 
-The **stiffness-shift parameter** implemented in betapy compares the sum of reference-site projected force constants between a deintercalated structure (projection around a vacancy) and an intercalated structure (projection around the occupied site, excluding the site-occupying atom). Atom pairs are matched across structures by fractional coordinate proximity rather than index, making the comparison robust to index reordering between VASP calculations. It is employed for the first time in a forthcoming manuscript.
+The **stiffness-shift parameter** implemented in betapy compares the sum of reference-site projected force constants between a deintercalated structure (projection around a vacancy) and an intercalated structure (projection around the occupied site, excluding the site-occupying atom). Atom pairs are matched across structures by a scalar Cartesian fingerprint — (distance from refsite to atom1, distance from refsite to atom2, bond length) — using the Hungarian algorithm per species group with a 0.3 Å tolerance. This makes the comparison robust to index reordering, cell-origin shifts, and structural distortions between VASP calculations. It is employed for the first time in a forthcoming manuscript.
 
 Covalent radii used for automatic bond detection are from:
 
@@ -198,6 +210,7 @@ Covalent radii used for automatic bond detection are from:
 betapy/
 ├── betapy/
 │   ├── core/
+│   │   ├── cache.py       # file-keyed result cache (~/.betapy_cache/)
 │   │   ├── constants.py   # shared constants (rounding precision, metal sets)
 │   │   ├── io.py          # file reading/writing (SPOSCAR, FORCE_CONSTANTS, REFPOS)
 │   │   ├── structure.py   # Supercell class, PBC distance calculations
@@ -212,6 +225,7 @@ betapy/
 │   │   └── structure_view.py   # shared PyVista 3D renderer with colour presets
 │   ├── data/
 │   │   └── elements.py    # covalent radii, Jmol/VESTA colour presets, display radii
+│   ├── _gui_entry.py      # betapy-gui entry point with graceful ImportError handling
 │   └── cli.py             # command-line entry point
 ├── examples/
 │   └── GeTe/              # GeTe bulk supercell (Phonopy output)

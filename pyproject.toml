@@ -38,10 +38,6 @@ classifiers = [
 dependencies = [
     "numpy",
     "pandas",
-    "matplotlib",
-    "pyqt5",
-    "pyvista",
-    "pyvistaqt",
     "pyyaml",
     "scipy",
     "tqdm",
@@ -51,13 +47,14 @@ dependencies = [
 Repository = "https://github.com/JanHempelmann/betapy"
 
 [project.optional-dependencies]
+gui  = ["matplotlib", "pyqt5", "pyvista", "pyvistaqt"]
 test = ["pytest"]
 
 [project.scripts]
 # These become terminal commands after `pip install -e .`
 # `betapy` runs the CLI, `betapy-gui` opens the GUI directly
 betapy     = "betapy.cli:main"
-betapy-gui = "betapy.gui.app:main"
+betapy-gui = "betapy._gui_entry:main"
 
 [tool.setuptools.packages.find]
 # Tells setuptools to find all packages inside the betapy/ directory

@@ -56,18 +56,13 @@ FULL_OPACITY          = 1.0
 class StructureView(QWidget):
     """
     Embeddable 3D structure viewer backed by PyVista/VTK.
-
-    Parameters
-    ----------
-    parent            : QWidget or None
-    show_color_picker : bool — show per-species colour picker panel
     """
 
     # Emitted when any species colour changes — listeners (e.g. pFC scatter
     # plot) can connect to this to stay in sync with the colour picker.
     colours_changed = pyqtSignal()
 
-    def __init__(self, parent=None, show_color_picker=True):
+    def __init__(self, parent=None):
         super().__init__(parent)
         self.supercell        = None
         self._highlight_pair  = None   # single pair (i, j) for individual mode
@@ -85,13 +80,13 @@ class StructureView(QWidget):
         self._refsite_bonds_cutoff = None  # Å, or None to hide
         self._n_refsite_cubes     = 0
 
-        self._build_ui(show_color_picker)
+        self._build_ui()
 
     # ------------------------------------------------------------------
     # UI construction
     # ------------------------------------------------------------------
 
-    def _build_ui(self, show_color_picker):
+    def _build_ui(self):
         outer = QHBoxLayout(self)
         outer.setContentsMargins(0, 0, 0, 0)
 
@@ -100,40 +95,35 @@ class StructureView(QWidget):
         self.plotter.add_axes(interactive=False)
         outer.addWidget(self.plotter, stretch=1)
 
-        if show_color_picker:
-            right_panel = QVBoxLayout()
-            right_widget = QWidget()
-            right_widget.setFixedWidth(155)
-            right_widget.setLayout(right_panel)
+        right_panel = QVBoxLayout()
+        right_widget = QWidget()
+        right_widget.setFixedWidth(155)
+        right_widget.setLayout(right_panel)
 
-            # Colour preset switcher
-            preset_row = QHBoxLayout()
-            preset_row.addWidget(QLabel('Preset:'))
-            self._preset_combo = QComboBox()
-            for name in COLOUR_PRESETS:
-                self._preset_combo.addItem(name)
-            self._preset_combo.currentTextChanged.connect(self._apply_preset)
-            preset_row.addWidget(self._preset_combo)
-            right_panel.addLayout(preset_row)
+        # Colour preset switcher
+        preset_row = QHBoxLayout()
+        preset_row.addWidget(QLabel('Preset:'))
+        self._preset_combo = QComboBox()
+        for name in COLOUR_PRESETS:
+            self._preset_combo.addItem(name)
+        self._preset_combo.currentTextChanged.connect(self._apply_preset)
+        preset_row.addWidget(self._preset_combo)
+        right_panel.addLayout(preset_row)
 
-            self._colour_group  = self._build_colour_panel()
-            self._bond_group    = self._build_bond_toggle_panel()
-            right_panel.addWidget(self._colour_group)
-            right_panel.addWidget(self._bond_group)
+        self._colour_group = self._build_colour_panel()
+        self._bond_group   = self._build_bond_toggle_panel()
+        right_panel.addWidget(self._colour_group)
+        right_panel.addWidget(self._bond_group)
 
-            # Projection toggle
-            self._proj_btn = QPushButton('Parallel projection')
-            self._proj_btn.setCheckable(True)
-            self._proj_btn.setChecked(False)
-            self._proj_btn.clicked.connect(self._toggle_projection)
-            right_panel.addWidget(self._proj_btn)
+        # Projection toggle
+        self._proj_btn = QPushButton('Parallel projection')
+        self._proj_btn.setCheckable(True)
+        self._proj_btn.setChecked(False)
+        self._proj_btn.clicked.connect(self._toggle_projection)
+        right_panel.addWidget(self._proj_btn)
 
-            right_panel.addStretch()
-            outer.addWidget(right_widget)
-        else:
-            self._colour_layout = None
-            self._bond_layout   = None
-            self._preset_combo  = None
+        right_panel.addStretch()
+        outer.addWidget(right_widget)
 
     def _build_colour_panel(self):
         group = QGroupBox('Atom colours')
@@ -154,8 +144,6 @@ class StructureView(QWidget):
         return group
 
     def _rebuild_colour_buttons(self):
-        if self._colour_layout is None:
-            return
         while self._colour_layout.count():
             item = self._colour_layout.takeAt(0)
             if item.widget():
@@ -176,8 +164,6 @@ class StructureView(QWidget):
             self._colour_layout.addWidget(row)
 
     def _rebuild_bond_toggles(self):
-        if self._bond_layout is None:
-            return
         while self._bond_layout.count():
             item = self._bond_layout.takeAt(0)
             if item.widget():
