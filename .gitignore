@@ -48,3 +48,4 @@ vasprun.xml
 .pytest_cache/
 .coverage
 htmlcov/
+internaltesting_examples/
