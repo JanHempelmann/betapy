@@ -245,10 +245,7 @@ Contributions welcome — please open an issue before submitting a pull request.
 
 Development of betapy was supported by the Japan Society for the 
 Promotion of Science (JSPS) KAKENHI Grant-in-Aid for Research Activity 
-Start-up, Grant Number JP23KF0224. The underlying research work was done in the group of Prof. Fumiyasu Oba at the Institute of Science Tokyo, formerly Tokyo Institute of Technology. Early versions of the code were 
-developed during doctoral research funded by the Deutsche 
-Forschungsgemeinschaft (DFG) through the Collaborative Research Centre 
-SFB 917 "Nanoswitches".
+Start-up, Grant Number JP23KF0224. The underlying research work was done in the group of Prof. Fumiyasu Oba at the Institute of Science Tokyo, formerly Tokyo Institute of Technology. Early versions of the code were developed during doctoral research funded by the Deutsche Forschungsgemeinschaft (DFG) through the Collaborative Research Centre FB 917 "Nanoswitches". Projected force constants were conceived in the group of Prof. Richard Dronskowski at the RWTH Aachen University.
 
 ---
 
