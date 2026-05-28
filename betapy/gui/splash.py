@@ -8,6 +8,12 @@ that updates as each component loads.
 import math
 from pathlib import Path
 
+try:
+    from betapy import __version__ as _VERSION
+    _VERSION = f'v{_VERSION}'
+except Exception:
+    _VERSION = ''
+
 from PyQt5.QtWidgets import QSplashScreen, QApplication
 from PyQt5.QtCore import Qt, QTimer, QRect, QPointF
 from PyQt5.QtGui import QPixmap, QPainter, QColor, QFont, QPen
@@ -130,3 +136,13 @@ class BetapySplashScreen(QSplashScreen):
             Qt.AlignHCenter | Qt.AlignVCenter,
             self._status,
         )
+
+        # Version number — bottom right corner
+        if _VERSION:
+            painter.setPen(QColor(*_GREY))
+            painter.setFont(QFont('Arial', 11))
+            painter.drawText(
+                QRect(0, self.height() - BOT_PAD - 4, self.width() - 8, BOT_PAD + 4),
+                Qt.AlignRight | Qt.AlignVCenter,
+                _VERSION,
+            )
