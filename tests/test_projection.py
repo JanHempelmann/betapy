@@ -199,8 +199,9 @@ def test_match_atoms_small_shift_within_tolerance():
 
 def test_match_atoms_large_shift_beyond_tolerance():
     sc_a = _make_sc('Li', [[0.0, 0.0, 0.0]])
-    sc_b = _make_sc('Li', [[0.1, 0.0, 0.0]])   # 0.8 Å shift in 8 Å cell
-    matches, unmatched = match_atoms_across_structures(sc_a, sc_b, 'Li', tolerance=0.3)
+    sc_b = _make_sc('Li', [[0.1, 0.0, 0.0]])   # 0.1 fractional shift (0.8 Å in 8 Å cell)
+    # tolerance is in fractional units; 0.1 shift > 0.05 tolerance → no match
+    matches, unmatched = match_atoms_across_structures(sc_a, sc_b, 'Li', tolerance=0.05)
     assert matches == {}
     assert 1 in unmatched
 
@@ -244,14 +245,14 @@ def test_match_fc_pairs_basic_delta():
     assert matched[0]['delta_pfc'] == pytest.approx(1.0)
 
 
-def test_match_fc_pairs_atom_not_in_matches_silently_skipped():
+def test_match_fc_pairs_incomplete_match_goes_to_unmatched():
     sc = make_simple_supercell()
     results_a = [_refsite_result(1, 2, 'Li', 'O', 3.0, 1.0)]
     results_b = [_refsite_result(1, 2, 'Li', 'O', 3.0, 1.0)]
-    # atom 2 has no entry in atom_matches
+    # atom 2 has no entry in atom_matches → pair cannot be fully matched
     matched, unmatched_a, _ = match_fc_pairs(results_a, results_b, {1: 1}, sc)
     assert len(matched) == 0
-    assert len(unmatched_a) == 0  # silently skipped, not added to unmatched_a
+    assert len(unmatched_a) == 1  # incomplete pair surfaces in unmatched_a
 
 
 def test_match_fc_pairs_no_counterpart_in_b():
