@@ -154,9 +154,10 @@ class MainWindow(QMainWindow):
         self.setWindowTitle('betapy — Projected Force Constant Analysis')
         self.resize(1200, 800)
 
-        self.settings  = Settings()
-        self.supercell = None
-        self.fc_data   = None
+        self.settings       = Settings()
+        self.supercell      = None
+        self.fc_data        = None
+        self._lobster_pairs = None
 
         if self._splash:
             self._splash.set_status('Initializing interface…')
@@ -437,6 +438,8 @@ class MainWindow(QMainWindow):
         viewer = PFCViewerWidget()
         if self.supercell is not None:
             viewer.set_supercell(self.supercell)
+        if self._lobster_pairs is not None:
+            viewer.set_lobster_pairs(self._lobster_pairs)
         viewer.set_unit(self._unit_combo.currentData())
         n = sum(1 for i in range(self.tabs.count())
                 if isinstance(self.tabs.widget(i), PFCViewerWidget))
@@ -568,6 +571,21 @@ class MainWindow(QMainWindow):
     # File loading — internal helpers
     # ------------------------------------------------------------------
 
+    def _try_load_lobster(self, sposcar_dir: Path):
+        """Silently attempt to discover and load a sibling LOBSTER directory."""
+        from betapy.core.lobster import find_lobster_dir, load_pairs as _lob_load
+        ldir = find_lobster_dir(sposcar_dir)
+        if ldir is None:
+            return
+        try:
+            self._lobster_pairs = _lob_load(ldir)
+            n = len(self._lobster_pairs)
+            self.status.showMessage(
+                f'LOBSTER: loaded {n} pair shells from {ldir.name}'
+            )
+        except Exception:
+            self._lobster_pairs = None
+
     def _do_load_sposcar(self, path):
         """Load SPOSCAR and push supercell to all tools. Raises on error."""
         path = Path(path)
@@ -575,11 +593,15 @@ class MainWindow(QMainWindow):
         self.settings.sposcar = str(path)
         self.lbl_sposcar.setText(f'SPOSCAR: {path.name}  ✓')
 
+        self._try_load_lobster(path.parent)
+
         from betapy.gui.pfc_viewer import PFCViewerWidget
         for i in range(self.tabs.count()):
             w = self.tabs.widget(i)
             if isinstance(w, PFCViewerWidget):
                 w.set_supercell(self.supercell)
+                if self._lobster_pairs is not None:
+                    w.set_lobster_pairs(self._lobster_pairs)
         self.site_picker.load_supercell(
             self.supercell,
             self.fc_data,
@@ -669,6 +691,8 @@ class MainWindow(QMainWindow):
         from betapy.core.projection import unique_pfcs
         df_unique = unique_pfcs(results)
         self.pfc_viewer.load_data(df_unique, results, supercell=self.supercell)
+        if self._lobster_pairs is not None:
+            self.pfc_viewer.set_lobster_pairs(self._lobster_pairs)
         self.site_picker.load_supercell(self.supercell, self.fc_data)
 
         self.status.showMessage(

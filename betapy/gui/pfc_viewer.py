@@ -64,6 +64,7 @@ class PFCViewerWidget(QWidget):
         self._view_mode            = 'individual'
         self._selected_shell       = None
         self._reliability_cutoff   = None  # half minimum perpendicular supercell width
+        self._lobster_pairs        = None  # list of dicts from lobster.load_pairs()
 
         self._build_ui()
 
@@ -164,6 +165,10 @@ class PFCViewerWidget(QWidget):
             V / np.linalg.norm(np.cross(a, c)),
             V / np.linalg.norm(np.cross(a, b)),
         ) / 2.0
+
+    def set_lobster_pairs(self, pairs):
+        """Supply LOBSTER pair data for display on scatter-point click."""
+        self._lobster_pairs = pairs if pairs else None
 
     def set_unit(self, unit: str):
         """Switch display unit ('eV/Ang2' or 'N/m') and redraw."""
@@ -634,9 +639,21 @@ class PFCViewerWidget(QWidget):
             if self._supercell is not None:
                 self.structure_view.highlight_bond(a1, a2)
 
+            lobster_str = ''
+            if self._lobster_pairs is not None:
+                from betapy.core.lobster import lookup as _lob_lookup
+                lob_parts = []
+                for lkey, llabel in (('icobi', 'ICOBI'), ('icohp', 'ICOHP'), ('icoop', 'ICOOP')):
+                    val = _lob_lookup(self._lobster_pairs, sp1, sp2, d, key=lkey)
+                    if val is not None:
+                        lob_parts.append(f'{llabel} = {round(val, 5):.5f}')
+                if lob_parts:
+                    lobster_str = '   |   ' + '   '.join(lob_parts)
+
             self._selection_bar.setText(
                 f'Selected:  atom {a1} ({sp1}) - atom {a2} ({sp2})   '
                 f'distance = {d:.4f} A   pFC = {pfc_disp:.6f} {unit_lbl}'
+                + lobster_str
             )
             self.pair_selected.emit(a1, a2)
             self._refresh_plot()

@@ -30,7 +30,21 @@ def _load_structure(sposcar_path, fc_path):
     return supercell, fc_data
 
 
-def run_bulk_analysis(supercell, fc_data, settings):
+def _annotate_lobster(df_unique, lobster_pairs):
+    """Add ICOBI / ICOHP / ICOOP columns to df_unique from LOBSTER pair data."""
+    from betapy.core.lobster import lookup
+    available = {k for row in lobster_pairs for k in ('icobi', 'icohp', 'icoop') if k in row}
+    for col_key, col_name in [('icobi', 'ICOBI'), ('icohp', 'ICOHP'), ('icoop', 'ICOOP')]:
+        if col_key not in available:
+            continue
+        def _lob_val(row):
+            v = lookup(lobster_pairs, row['Atom 1'], row['Atom 2'],
+                       row['Distance (Angstr.)'], key=col_key)
+            return round(v, 5) if v is not None else None
+        df_unique[col_name] = [_lob_val(row) for _, row in df_unique.iterrows()]
+
+
+def run_bulk_analysis(supercell, fc_data, settings, lobster_pairs=None):
     t0 = timeit.default_timer()
     results, onsite, _ = compute_bulk_pfcs(
         supercell,
@@ -41,6 +55,10 @@ def run_bulk_analysis(supercell, fc_data, settings):
     print(f'  Off-site pairs : {len(results)}')
     print(f'  On-site terms  : {len(onsite)}')
     print(f'  Unique pFCs    : {len(df_unique)}')
+    if lobster_pairs:
+        _annotate_lobster(df_unique, lobster_pairs)
+        cols = [c for c in ('ICOBI', 'ICOHP', 'ICOOP') if c in df_unique.columns]
+        print(f'  LOBSTER cols   : {", ".join(cols)}')
     if settings.store:
         write_unique_pfcs(df_unique)
         print('  Written: unique_pFCs.csv')
@@ -262,8 +280,22 @@ def main():
     print(f'done  ({len(fc_data["atomic_pairs"])} pairs, '
           f'FC shape {fc_data["nats"]})')
 
+    # --- LOBSTER integration ---
+    lobster_pairs = None
+    from betapy.core.lobster import find_lobster_dir, load_pairs as _lob_load
+    if settings.lobster_dir:
+        _ldir = Path(settings.lobster_dir)
+        lobster_pairs = _lob_load(_ldir)
+        print(f'\nLOBSTER dir     : {_ldir}  ({len(lobster_pairs)} pair shells)')
+    else:
+        _ldir = find_lobster_dir(Path(settings.sposcar).parent)
+        if _ldir is not None:
+            lobster_pairs = _lob_load(_ldir)
+            print(f'\nLOBSTER dir     : {_ldir.name} (auto-discovered, '
+                  f'{len(lobster_pairs)} pair shells)')
+
     print('\n[Bulk pFC analysis]')
-    run_bulk_analysis(supercell, fc_data, settings)
+    run_bulk_analysis(supercell, fc_data, settings, lobster_pairs=lobster_pairs)
 
     if settings.refsite is not None:
         print(f'\n[Reference-site analysis — cutoff {settings.refsite.cutoff} Å]')

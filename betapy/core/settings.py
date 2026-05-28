@@ -111,6 +111,11 @@ class Settings:
     # Stiffness-shift comparison
     stiffness_shift: Optional[StiffnessShiftSettings] = None
 
+    # --- LOBSTER integration ---
+    # Path to LOBSTER output directory.  When None, betapy auto-discovers a
+    # sibling *_lobster directory (e.g. ScF3_ph → ScF3_lobster).
+    lobster_dir:     Optional[str]                   = None
+
     # ----------------------------------------------------------------
     # Constructors
     # ----------------------------------------------------------------
@@ -160,6 +165,8 @@ class Settings:
                     struct.force_constants = _r(struct.force_constants)
                     struct.refpos          = _r(struct.refpos)
 
+        self.lobster_dir = _r(self.lobster_dir)
+
     @classmethod
     def from_cli(cls, argv=None) -> 'tuple[Settings, argparse.Namespace]':
         """
@@ -186,7 +193,7 @@ class Settings:
         s = cls()
 
         # Scalar top-level keys
-        for key in ('sposcar', 'force_constants', 'store', 'unit'):
+        for key in ('sposcar', 'force_constants', 'store', 'unit', 'lobster_dir'):
             if key in data:
                 setattr(s, key, data[key])
 
@@ -285,6 +292,10 @@ class Settings:
             #   file: REFPOS
             #   cutoff: 5.0       # Angstrom radius around reference site
 
+            # --- LOBSTER integration (optional) ---
+            # lobster_dir:     # path to LOBSTER output directory; auto-discovered if omitted
+            #                  # (e.g. ScF3_ph → ScF3_lobster)
+
             # --- Stiffness-shift comparison (uncomment to enable) ---
             # stiffness_shift:
             #   # Directory form: looks for SPOSCAR, FORCE_CONSTANTS, and REFPOS inside each directory
@@ -377,6 +388,12 @@ def _build_parser() -> argparse.ArgumentParser:
         '--unit', choices=['eV/Ang2', 'N/m'], default=None,
         help='Display unit for pFC values (default: eV/Ang2). '
              'N/m = multiply by 16.022.',
+    )
+
+    parser.add_argument(
+        '--lobster-dir', metavar='DIR',
+        help='Path to LOBSTER output directory.  If omitted, betapy looks for '
+             'a sibling *_lobster directory next to the phonopy directory.',
     )
 
     # Single-structure inputs
@@ -491,3 +508,6 @@ def _apply_cli_overrides(settings: Settings, args: argparse.Namespace):
         settings.stiffness_shift.structure_b = _structure_settings_from_arg(
             args.structure_b
         )
+
+    if getattr(args, 'lobster_dir', None):
+        settings.lobster_dir = args.lobster_dir
