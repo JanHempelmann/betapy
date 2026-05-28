@@ -616,7 +616,12 @@ class StructureView(QWidget):
         # --- Highlighted bond (individual mode) ---
         if highlight:
             i_1, j_1 = highlight
-            p1, p2   = cart[i_1 - 1], cart[j_1 - 1]
+            p1      = cart[i_1 - 1]
+            frac_i  = self._display_frac[i_1 - 1]
+            frac_j  = self._display_frac[j_1 - 1]
+            diff    = frac_j - frac_i
+            diff   -= np.floor(diff + 0.5)
+            p2      = p1 + diff @ sc.lattice
             tube = pv.Line(p1, p2).tube(
                 radius=HIGHLIGHT_BOND_RADIUS, n_sides=16
             )

@@ -511,24 +511,26 @@ def match_fc_pairs_direct(results_a, results_b, sc_a, sc_b,
                           refsite_a, refsite_b, tol=0.3):
     """
     Match off-site pFC pairs by scalar Cartesian fingerprint:
-    (species1, species2, atom1_ref_dist_Å, bond_length_Å).
+    (species1, species2, atom1_ref_dist_Å, atom2_ref_dist_Å, bond_length_Å).
 
-    Both quantities are already computed by find_refsite_pairs() and are
-    Cartesian distances in Å — invariant to cell origin, translation,
-    rotation, and inversion.  This makes the matching robust even when A
-    and B were relaxed with different cell settings or have significant
-    lattice-parameter differences (e.g., intercalation-induced c-axis
-    expansion).
+    All three distances are Cartesian (Å) and PBC-correct — invariant to
+    cell origin, translation, rotation, and inversion.  This makes matching
+    robust even when A and B were set up with different crystallographic
+    origins or have significant lattice-parameter changes (e.g. intercalation
+    c-axis expansion).
+
+    atom2_ref_dist is computed on the fly (not stored in results) to
+    discriminate pairs where atom2 is on opposite sides of the supercell
+    from the refsite — important for correct visual highlighting.
 
     Parameters
     ----------
     results_a, results_b : list of dicts from find_refsite_pairs()
-    sc_a, sc_b           : Supercell instances (kept for API compatibility)
-    refsite_a, refsite_b : array-like (3,) (kept for API compatibility)
-    tol                  : float, max RMS of (Δatom1_ref_dist, Δbond_length)
-                           in Å to accept as a match (default 0.3 Å).
-                           Correct intercalation pairs typically differ by
-                           <0.2 Å; wrong-bond candidates differ by >0.5 Å.
+    sc_a, sc_b           : Supercell instances
+    refsite_a, refsite_b : array-like (3,), fractional refsite coords
+    tol                  : float, max RMS of
+                           (Δatom1_ref_dist, Δatom2_ref_dist, Δbond_length)
+                           in Å (default 0.3 Å).
 
     Returns
     -------
@@ -537,22 +539,32 @@ def match_fc_pairs_direct(results_a, results_b, sc_a, sc_b,
     if not results_a or not results_b:
         return [], list(results_a), list(results_b)
 
-    # Group pairs by ordered species pair
+    refsite_a = np.asarray(refsite_a)
+    refsite_b = np.asarray(refsite_b)
+
+    # Group pairs by ordered species pair, pre-computing atom2_ref_dist
+    def _d2(sc, r, ref):
+        return sc.distance_to_point(r['atom2_idx'], ref)
+
     by_sp_a = {}
     for i, r in enumerate(results_a):
-        by_sp_a.setdefault((r['species1'], r['species2']), []).append((i, r))
+        d2 = _d2(sc_a, r, refsite_a)
+        by_sp_a.setdefault((r['species1'], r['species2']), []).append((i, r, d2))
     by_sp_b = {}
     for j, r in enumerate(results_b):
-        by_sp_b.setdefault((r['species1'], r['species2']), []).append((j, r))
+        d2 = _d2(sc_b, r, refsite_b)
+        by_sp_b.setdefault((r['species1'], r['species2']), []).append((j, r, d2))
 
     a_to_b = {}
     for key in set(by_sp_a) & set(by_sp_b):
         ag = by_sp_a[key]
         bg = by_sp_b[key]
-        # Fingerprint: [atom1_ref_dist (Å), bond_length (Å)]
-        fp_a = np.array([[r.get('atom1_ref_dist', 0.0), r['distance']] for _, r in ag])
-        fp_b = np.array([[r.get('atom1_ref_dist', 0.0), r['distance']] for _, r in bg])
-        diff = fp_b[None] - fp_a[:, None]   # (Na, Nb, 2)
+        # Fingerprint: [atom1_ref_dist (Å), atom2_ref_dist (Å), bond_length (Å)]
+        fp_a = np.array([[r.get('atom1_ref_dist', 0.0), d2, r['distance']]
+                         for _, r, d2 in ag])
+        fp_b = np.array([[r.get('atom1_ref_dist', 0.0), d2, r['distance']]
+                         for _, r, d2 in bg])
+        diff = fp_b[None] - fp_a[:, None]   # (Na, Nb, 3)
         cost = np.linalg.norm(diff, axis=2)  # (Na, Nb)
         ri, ci = linear_sum_assignment(cost)
         for r2, c2 in zip(ri.tolist(), ci.tolist()):
