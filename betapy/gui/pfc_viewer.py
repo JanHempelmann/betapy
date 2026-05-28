@@ -470,10 +470,11 @@ class PFCViewerWidget(QWidget):
         if self._selected_record is not None:
             sr = self._selected_record
             if (sr['species1'], sr['species2']) in active_pairs:
-                ax.scatter(
-                    [sr['distance']], [sr['mean_pfc'] * factor],
-                    s=140, facecolors='none', edgecolors='#c8a000',
-                    linewidths=2.5, zorder=5,
+                ax.plot(
+                    sr['distance'], sr['mean_pfc'] * factor,
+                    'o', markersize=16,
+                    markerfacecolor='none', markeredgecolor='#c8a000',
+                    markeredgewidth=2.5, zorder=5,
                 )
 
         ax.set_xlabel('Interatomic distance (Å)', fontsize=12)
@@ -623,11 +624,27 @@ class PFCViewerWidget(QWidget):
             pfc_std  = best_shell['pfc_std']  * factor
             pfc_min  = best_shell['pfc_min']  * factor
             pfc_max  = best_shell['pfc_max']  * factor
+            lobster_str = ''
+            if self._lobster_pairs is not None:
+                from betapy.core.lobster import lookup as _lob_lookup
+                lob_parts = []
+                for lkey, llabel in (('icobi', 'ICOBI'), ('icohp', 'ICOHP'), ('icoop', 'ICOOP')):
+                    val = _lob_lookup(self._lobster_pairs, sp1, sp2, d, key=lkey)
+                    if val is not None:
+                        lob_parts.append(f'{llabel} = {round(val, 5):.5f}')
+                if lob_parts:
+                    lobster_str = '   |   ' + '   '.join(lob_parts)
+
             self._selection_bar.setText(
                 f'Shell: {sp1}-{sp2}  d = {d:.4f} A  n = {n}  bonds drawn = {len(pairs)}  '
                 f'pFC = {pfc:.5f} +/- {pfc_std:.5f} {unit_lbl}  '
                 f'[{pfc_min:.5f} ... {pfc_max:.5f}]'
+                + lobster_str
             )
+
+            if self._lobster_dir is not None:
+                self._ensure_cohp_viewer().show_pair(sp1, sp2, d)
+
             self._refresh_plot()
 
         else:

@@ -130,12 +130,7 @@ def _parse_ilist(path) -> list:
 
     result = []
     for k, vals in sorted(buckets.items()):
-        spread = max(vals) - min(vals)
-        # None signals ambiguity: same (species, distance) but distinct LOBSTER
-        # values, meaning two structurally inequivalent bond environments happen
-        # to share the same interatomic distance.  lookup() returns None for
-        # these rather than an incorrect average.
-        value = None if spread > _VAL_TOL else sum(vals) / len(vals)
+        value = sum(vals) / len(vals)
         result.append({'sp1': k[0], 'sp2': k[1], 'distance': k[2], 'value': value})
     return result
 
