@@ -154,9 +154,8 @@ class COHPViewerWidget(QDialog):
 
         n = len(available)
         self.figure.clear()
-        axes = self.figure.subplots(1, n, sharey=True)
-        if n == 1:
-            axes = [axes]
+        _raw = self.figure.subplots(1, n, sharey=True)
+        axes = [_raw] if n == 1 else list(_raw)
 
         any_data = False
         icohp_summary = []
