@@ -122,8 +122,13 @@ class PFCViewerWidget(QWidget):
         self._btn_shell.clicked.connect(self._toggle_view_mode)
         self.chk_unique = QCheckBox('Show unique pFCs only')
         self.chk_unique.stateChanged.connect(self._refresh_plot)
+        self.chk_cohp = QCheckBox('Show COHP on click')
+        self.chk_cohp.setChecked(True)
+        self.chk_cohp.setEnabled(False)
+        self.chk_cohp.setToolTip('No LOBSTER directory found')
         bottom_row.addWidget(self._btn_shell)
         bottom_row.addWidget(self.chk_unique)
+        bottom_row.addWidget(self.chk_cohp)
         bottom_row.addStretch()
         left_layout.addLayout(bottom_row)
 
@@ -177,6 +182,9 @@ class PFCViewerWidget(QWidget):
         self._lobster_dir = lobster_dir
         if self._cohp_viewer is not None:
             self._cohp_viewer.set_lobster_dir(lobster_dir)
+        has = lobster_dir is not None
+        self.chk_cohp.setEnabled(has)
+        self.chk_cohp.setToolTip('' if has else 'No LOBSTER directory found')
 
     def _ensure_cohp_viewer(self):
         """Create the COHPViewerWidget on first use."""
@@ -642,7 +650,7 @@ class PFCViewerWidget(QWidget):
                 + lobster_str
             )
 
-            if self._lobster_dir is not None:
+            if self._lobster_dir is not None and self.chk_cohp.isChecked():
                 self._ensure_cohp_viewer().show_pair(sp1, sp2, d)
 
             self._refresh_plot()
@@ -691,7 +699,7 @@ class PFCViewerWidget(QWidget):
             )
             self.pair_selected.emit(a1, a2)
 
-            if self._lobster_dir is not None:
+            if self._lobster_dir is not None and self.chk_cohp.isChecked():
                 self._ensure_cohp_viewer().show_pair(sp1, sp2, d)
 
             self._refresh_plot()
