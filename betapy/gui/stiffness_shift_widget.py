@@ -71,7 +71,8 @@ class _StiffnessWorker(QThread):
         # Outputs — read by the main thread after finished emits
         self.sc_a         = None
         self.sc_b         = None
-        self.all_refsites = []
+        self.refsites_a   = []
+        self.refsites_b   = []
         self.offsite_a    = []
         self.offsite_b    = []
         self.matched      = []
@@ -92,7 +93,7 @@ class _StiffnessWorker(QThread):
             refsites_b = read_refpos(self._refpos_path_b)['positions']
             if not refsites_b:
                 raise ValueError(f'No positions found in {self._refpos_path_b}')
-            all_refsites = refsites_a  # used for 3D view markers (structure A frame)
+            # (all_refsites_a/b used separately for 3D view markers per structure)
 
             excl_sp = None
             if self._excl:
@@ -141,9 +142,10 @@ class _StiffnessWorker(QThread):
                 unmatched_a.extend(ua)
                 unmatched_b.extend(ub)
 
-            self.sc_a         = sc_a
-            self.sc_b         = sc_b
-            self.all_refsites = all_refsites
+            self.sc_a       = sc_a
+            self.sc_b       = sc_b
+            self.refsites_a = refsites_a
+            self.refsites_b = refsites_b
             self.offsite_a    = offsite_a
             self.offsite_b    = offsite_b
             self.matched      = matched
@@ -171,7 +173,8 @@ class StiffnessShiftWidget(QWidget):
         self._worker       = None
         self._sc_a         = None
         self._sc_b         = None
-        self._all_refsites = []
+        self._refsites_a   = []
+        self._refsites_b   = []
         self._offsite_a    = []
         self._offsite_b    = []
         self._matched      = []
@@ -615,17 +618,19 @@ class StiffnessShiftWidget(QWidget):
         w = self._worker
         sc_a        = w.sc_a
         sc_b        = w.sc_b
-        all_refsites = w.all_refsites
+        refsites_a  = w.refsites_a
+        refsites_b  = w.refsites_b
         matched      = w.matched
         unmatched_a  = w.unmatched_a
         unmatched_b  = w.unmatched_b
         excl_sp      = w.excl_sp
 
-        self._sc_a         = sc_a
-        self._sc_b         = sc_b
-        self._all_refsites = all_refsites
-        self._offsite_a    = w.offsite_a
-        self._offsite_b    = w.offsite_b
+        self._sc_a       = sc_a
+        self._sc_b       = sc_b
+        self._refsites_a = refsites_a
+        self._refsites_b = refsites_b
+        self._offsite_a  = w.offsite_a
+        self._offsite_b  = w.offsite_b
         self._matched      = matched
         self._unmatched_a  = unmatched_a
         self._unmatched_b  = unmatched_b
@@ -634,9 +639,9 @@ class StiffnessShiftWidget(QWidget):
         self._selected_ub   = None
 
         self._view_a.load_supercell(sc_a)
-        self._view_a.set_ref_sites(all_refsites)
+        self._view_a.set_ref_sites(refsites_a)
         self._view_b.load_supercell(sc_b)
-        self._view_b.set_ref_sites(all_refsites)
+        self._view_b.set_ref_sites(refsites_b)
 
         for btn, view in [(self._btn_conn_a, self._view_a),
                           (self._btn_conn_b, self._view_b)]:
