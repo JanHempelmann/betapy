@@ -21,10 +21,11 @@ Typical workflow
 
     # Energy-resolved curves (for the COHP plotter)
     hdr = lobster.parse_car_header(lobster_dir / 'COHPCAR.lobster')
-    result = lobster.load_car_curves(lobster_dir / 'COHPCAR.lobster',
+    groups = lobster.load_car_curves(lobster_dir / 'COHPCAR.lobster',
                                      hdr, 'Sc', 'F', 2.012)
-    if result:
-        energy, cohp, icohp = result
+    if groups:
+        g = groups[0]   # highest |ival_ef|
+        energy, cohp, icohp = g['energy'], g['curve'], g['icurve']
 
 Directory discovery
 -------------------
@@ -130,6 +131,16 @@ def _parse_ilist(path) -> list:
 
     result = []
     for k, vals in sorted(buckets.items()):
+        # Always average for now.  A spread check (max-min > _VAL_TOL) would
+        # detect genuinely inequivalent environments at the same distance
+        # (e.g. the two Sc-F shell types in rocksalt-related structures), but
+        # the LOBSTER release build has a translation-vector bug that produces
+        # artificially wrong values for some cell-translated interactions,
+        # creating false positives.  Threshold-based detection cannot
+        # distinguish the two cases without bond-direction information.
+        # TODO: restore ambiguity detection once direction-cosine matching is
+        # implemented (pairs matched by |cos θ| ≥ 0.99 rather than distance
+        # alone will land in separate buckets, making spread detection reliable).
         value = sum(vals) / len(vals)
         result.append({'sp1': k[0], 'sp2': k[1], 'distance': k[2], 'value': value})
     return result
@@ -376,12 +387,16 @@ def enrich_cobicar_distances(header: dict, poscar_lobster_path) -> None:
 
 def load_car_curves(path, header: dict,
                     sp1: str, sp2: str, distance: float,
-                    tol: float = 0.05):
+                    tol: float = 0.05) -> list:
     """
     Load energy-resolved curves for the given species pair from a *CAR.lobster.
 
-    All pairs in *header* that match (sp1, sp2, distance ± tol) are averaged
-    — within a symmetry shell they are identical, so averaging is safe.
+    Matching pairs are grouped by their integrated value at the Fermi level.
+    Pairs whose EF integral differs by more than _VAL_TOL are placed in
+    separate groups; otherwise they are averaged together.  This lets callers
+    expose the individual groups when the distance shell contains inequivalent
+    environments (or when a LOBSTER bug produces divergent values for
+    symmetry-equivalent pairs).
 
     Parameters
     ----------
@@ -393,50 +408,81 @@ def load_car_curves(path, header: dict,
 
     Returns
     -------
-    (energy, curve, icurve) as 1-D numpy arrays, or None if no match.
-    energy  — eV relative to Fermi level
-    curve   — COHP / COOP / COBI value (eV⁻¹ or dimensionless)
-    icurve  — integrated value up to each energy point
+    list of dicts sorted by |ival_ef| descending (strongest bonding first).
+    Each dict has:
+        energy   : 1-D ndarray (eV, Fermi = 0)
+        curve    : 1-D ndarray (COHP / COOP / COBI per eV or dimensionless)
+        icurve   : 1-D ndarray (integrated value up to each energy point)
+        n        : int   (number of pairs averaged into this group)
+        ival_ef  : float (group's mean integrated value at the Fermi level)
+    Returns an empty list if no matching pairs are found.
     """
     cs1, cs2 = _canonical(sp1, sp2)
-    matching_indices = []
-    for p in header['pairs']:
-        if p['distance'] is None:
-            continue
-        if _canonical(p['sp1'], p['sp2']) != (cs1, cs2):
-            continue
-        if abs(p['distance'] - distance) <= tol:
-            matching_indices.append(p['index'])
+    matching = [p for p in header['pairs']
+                if p['distance'] is not None
+                and _canonical(p['sp1'], p['sp2']) == (cs1, cs2)
+                and abs(p['distance'] - distance) <= tol]
 
-    if not matching_indices:
-        return None
+    if not matching:
+        return []
 
-    n_spins   = header['n_spins']
-    has_avg   = header['has_average']
+    n_spins = header['n_spins']
+    has_avg = header['has_average']
 
     def _entry_cols(pair_idx):
-        """0-based data column indices for pair No.pair_idx."""
         entry = pair_idx if has_avg else pair_idx - 1
         base  = 1 + entry * 2 * n_spins
         return base, base + 1
 
+    # Load all needed columns in one pass
     usecols  = [0]
-    slot_map = []  # [(curve_slot, icurve_slot), ...] into usecols
-    for idx in matching_indices:
-        c, ic = _entry_cols(idx)
-        slot_map.append((len(usecols), len(usecols) + 1))
+    slot_map = {}   # pair_index → (curve_slot, icurve_slot) in usecols
+    for p in matching:
+        c, ic = _entry_cols(p['index'])
+        slot_map[p['index']] = (len(usecols), len(usecols) + 1)
         usecols.extend([c, ic])
 
     try:
         data = np.loadtxt(path, skiprows=header['first_data_line'],
                           usecols=usecols)
     except Exception:
-        return None
+        return []
 
-    energy  = data[:, 0]
-    curves  = np.mean([data[:, s[0]] for s in slot_map], axis=0)
-    icurves = np.mean([data[:, s[1]] for s in slot_map], axis=0)
-    return energy, curves, icurves
+    energy = data[:, 0]
+    ef_idx = int(np.argmin(np.abs(energy)))
+
+    # Collect per-pair (ival_ef, curve, icurve) and sort by ival_ef
+    pair_data = []
+    for p in matching:
+        s_c, s_ic = slot_map[p['index']]
+        curve   = data[:, s_c]
+        icurve  = data[:, s_ic]
+        pair_data.append((float(icurve[ef_idx]), curve, icurve))
+    pair_data.sort(key=lambda x: x[0])
+
+    # Greedy consecutive clustering within _VAL_TOL
+    clusters = []
+    current  = [pair_data[0]]
+    for item in pair_data[1:]:
+        if abs(item[0] - current[-1][0]) <= _VAL_TOL:
+            current.append(item)
+        else:
+            clusters.append(current)
+            current = [item]
+    clusters.append(current)
+
+    result = []
+    for grp in clusters:
+        result.append({
+            'energy':  energy,
+            'curve':   np.mean([x[1] for x in grp], axis=0),
+            'icurve':  np.mean([x[2] for x in grp], axis=0),
+            'n':       len(grp),
+            'ival_ef': sum(x[0] for x in grp) / len(grp),
+        })
+
+    result.sort(key=lambda x: abs(x['ival_ef']), reverse=True)
+    return result
 
 
 def find_lobster_dir(ph_dir) -> 'Path | None':
