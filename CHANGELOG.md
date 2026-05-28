@@ -5,6 +5,29 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ---
 
+## [1.1.0] — 2026-05-28
+
+### Added
+- **LOBSTER integration** — `core/lobster.py` parses COHPCAR, COOPCAR, COBICAR,
+  ICOBILIST, ICOHPLIST, ICOOPLIST, and CHARGE.lobster output files; LOBSTER output
+  directory is discovered automatically from the sibling `{stem}_lobster` convention
+  next to a phonopy `{stem}_ph` directory
+- **Energy-resolved bonding popup** — clicking a bond or shell in the pFC Viewer
+  opens a persistent, non-modal window showing COHP/COOP/COBI vs Energy plots in
+  standard LOBSTER style (bonding fill in blue, antibonding in red); the popup
+  positions itself to the right of the main window on first open
+- **Group selector in bonding popup** — when a distance shell contains pairs with
+  divergent integrated values a combo box lets the user choose which subset to plot
+  rather than a blind average; an orange warning label "⚠ Divergent values in
+  distance shell" appears automatically when more than one group is detected
+- **Integrated bonding values in status bar** — clicking a bond or shell displays
+  the nearest-matching ICOBI/ICOHP/ICOOP value from the LOBSTER list files
+- **"Show COHP on click" toggle** — checkbox in the pFC Viewer toolbar
+  enables/disables the bonding popup; disabled with a tooltip when no LOBSTER
+  directory is found
+
+---
+
 ## [1.0.0] — 2026-05-26
 
 ### Added
@@ -19,10 +42,6 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   double-triggering; the GUI remains fully responsive throughout
 - **CITATION.cff** — GitHub "Cite this repository" metadata pointing to the 2021
   *Advanced Materials* paper that introduced projected force constants
-- **62 automated tests** — full test suite covering shell grouping, species
-  normalisation, reliability cutoff geometry, pair deduplication, progress
-  callbacks, and end-to-end GeTe pipeline integration
-
 ### Changed
 - Development status classifier updated from `4 - Beta` to `5 - Production/Stable`
 

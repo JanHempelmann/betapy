@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "betapy"
-version = "1.0.0"
+version = "1.1.0"
 description = "Projected force constant analysis for Phonopy supercells"
 readme = "README.md"
 requires-python = ">=3.8"

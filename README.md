@@ -16,6 +16,7 @@ betapy post-processes the force constants calculated by [Phonopy](https://phonop
 - **Bulk pFC analysis** - project force constants along all interatomic bond vectors; identify and tabulate unique pFC values per bond type
 - **Interactive GUI** — scatter plot of pFC vs bond length with click-to-highlight; 3D structure viewer with Jmol/VESTA colour presets (80+ elements covered), automatic bond drawing, per-species-pair bond toggles, and non-blocking refsite analysis with progress indicator; multi-tab layout with browser-style "+" button for opening additional viewers
 - **Shell view** — toggle the scatter plot between individual bond points and aggregated distance shells; each shell shows the mean pFC with a min/max range bar and is sized by bond count; clicking a shell highlights all bonds from the representative source atom in 3D
+- **LOBSTER integration** — overlay integrated COBI/COHP/COOP bonding values in the status bar and scatter plot; clicking a bond opens a persistent energy-resolved bonding popup (COHP/COOP/COBI vs Energy in standard LOBSTER style with bonding/antibonding fill); when a distance shell contains bonds with divergent integrated values a group selector lets you inspect each subset independently; LOBSTER output is discovered automatically from a sibling `{stem}_lobster` directory
 - **Unit toggle** — switch between eV/Å² (native) and N/m (×16.022) in the GUI toolbar; preference is remembered across sessions; `--unit` flag and `unit:` YAML key available for CLI and settings-file workflows
 - **Settings-file workflow** — YAML settings file with CLI flag overrides, following the Phonopy convention
 
@@ -90,6 +91,22 @@ Direct
 
 The reference site does not need to coincide with an atom — it can be a vacancy, interstitial, or any point of interest in the cell.
 
+### LOBSTER inputs
+
+betapy reads standard LOBSTER output files when a sibling `{stem}_lobster` directory
+is present next to the phonopy directory (`{stem}_ph`):
+
+| File | Description |
+|------|-------------|
+| `COHPCAR.lobster` | Energy-resolved COHP (crystal orbital Hamilton population) |
+| `COOPCAR.lobster` | Energy-resolved COOP (crystal orbital overlap population) |
+| `COBICAR.lobster` | Energy-resolved COBI (crystal orbital bond index) |
+| `ICOHPLIST.lobster` | Integrated COHP per bond |
+| `ICOOPLIST.lobster` | Integrated COOP per bond |
+| `ICOBILIST.lobster` | Integrated COBI per bond |
+| `CHARGE.lobster` | Mulliken/Löwdin charges per atom |
+| `POSCAR.lobster` | Structure file used by LOBSTER (required for COBI bond-length calculation) |
+
 ---
 
 ## Usage
@@ -159,6 +176,8 @@ Launch with `betapy-gui` from the directory containing your calculation files. b
 
 The **unit toggle** in the toolbar switches all displayed pFC values between eV/Å² and N/m; the preference is remembered between sessions.
 
+**LOBSTER integration** — if a sibling `{stem}_lobster` directory is found next to the phonopy directory (`{stem}_ph`), betapy loads LOBSTER output files automatically. ICOBI/ICOHP/ICOOP values appear in the status bar when a bond or shell is clicked. Enable the **Show COHP on click** checkbox in the toolbar to open a persistent energy-resolved bonding popup for each selected bond; the popup positions itself to the right of the main window. When a distance shell contains bonds with divergent integrated values, a group selector appears in the popup so you can inspect each subset independently.
+
 **pFC Viewer** — scatter plot of projected force constant vs interatomic distance, coloured by atom-pair species type. Click any data point to highlight the corresponding bond in the 3D structure view. A **reliability boundary** (two-zone shading at L/2) is drawn automatically when a SPOSCAR is loaded. Toggle to **shell view** to see one aggregated point per distance shell with pFC range bars; clicking a shell highlights all bonds from the representative source atom in the 3D view. Existing `unique_pFCs.csv` files can be loaded directly without re-running the analysis. For large datasets (full N×N force constant matrices), shell view is recommended for interactive use — individual view with hundreds of thousands of points will be slow.
 
 **Ref. Site Projection** - 3D structure viewer for placing a reference site and running the refsite pFC analysis. Snap the site to an atom by clicking in the 3D view or by typing in the searchable atom list. Analysis runs in a background thread so the GUI stays responsive. Results are shown as a scatter plot and sortable table; export to CSV or REFPOS directly from this tab.
@@ -213,11 +232,13 @@ betapy/
 │   │   ├── cache.py       # file-keyed result cache (~/.betapy_cache/)
 │   │   ├── constants.py   # shared constants (rounding precision, metal sets)
 │   │   ├── io.py          # file reading/writing (SPOSCAR, FORCE_CONSTANTS, REFPOS)
+│   │   ├── lobster.py     # LOBSTER output parser, energy-resolved bonding curves
 │   │   ├── structure.py   # Supercell class, PBC distance calculations
 │   │   ├── projection.py  # pFC mathematics, shell identification, stiffness shift
 │   │   └── settings.py    # Settings dataclass, YAML loading, CLI parser
 │   ├── gui/
 │   │   ├── app.py              # main window, auto-loading, tab assembly
+│   │   ├── cohp_viewer.py      # energy-resolved bonding popup (COHP/COOP/COBI)
 │   │   ├── pfc_viewer.py       # scatter plot + 3D view, click-to-highlight
 │   │   ├── refsite_viewer.py   # refsite scatter plot and sortable pair table
 │   │   ├── site_picker.py      # reference site placement and projection tool
