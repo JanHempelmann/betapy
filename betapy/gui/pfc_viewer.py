@@ -65,6 +65,8 @@ class PFCViewerWidget(QWidget):
         self._selected_shell       = None
         self._reliability_cutoff   = None  # half minimum perpendicular supercell width
         self._lobster_pairs        = None  # list of dicts from lobster.load_pairs()
+        self._lobster_dir          = None  # Path to LOBSTER output dir
+        self._cohp_viewer          = None  # COHPViewerWidget, created lazily
 
         self._build_ui()
 
@@ -169,6 +171,21 @@ class PFCViewerWidget(QWidget):
     def set_lobster_pairs(self, pairs):
         """Supply LOBSTER pair data for display on scatter-point click."""
         self._lobster_pairs = pairs if pairs else None
+
+    def set_lobster_dir(self, lobster_dir) -> None:
+        """Supply the LOBSTER directory so energy-resolved curves can be plotted."""
+        self._lobster_dir = lobster_dir
+        if self._cohp_viewer is not None:
+            self._cohp_viewer.set_lobster_dir(lobster_dir)
+
+    def _ensure_cohp_viewer(self):
+        """Create the COHPViewerWidget on first use."""
+        if self._cohp_viewer is None:
+            from betapy.gui.cohp_viewer import COHPViewerWidget
+            self._cohp_viewer = COHPViewerWidget(self)
+            if self._lobster_dir is not None:
+                self._cohp_viewer.set_lobster_dir(self._lobster_dir)
+        return self._cohp_viewer
 
     def set_unit(self, unit: str):
         """Switch display unit ('eV/Ang2' or 'N/m') and redraw."""
@@ -656,6 +673,10 @@ class PFCViewerWidget(QWidget):
                 + lobster_str
             )
             self.pair_selected.emit(a1, a2)
+
+            if self._lobster_dir is not None:
+                self._ensure_cohp_viewer().show_pair(sp1, sp2, d)
+
             self._refresh_plot()
 
     def _export_plot(self):

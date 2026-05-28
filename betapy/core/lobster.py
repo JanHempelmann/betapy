@@ -3,19 +3,28 @@ Parser and lookup utilities for LOBSTER output files.
 
 Supported files
 ---------------
-ICOBILIST.lobster  – integrated COBI per bond
-ICOHPLIST.lobster  – integrated COHP per bond
-ICOOPLIST.lobster  – integrated COOP per bond
-CHARGE.lobster     – Mulliken / Löwdin charges per atom
+ICOBILIST.lobster   – integrated COBI per bond
+ICOHPLIST.lobster   – integrated COHP per bond
+ICOOPLIST.lobster   – integrated COOP per bond
+CHARGE.lobster      – Mulliken / Löwdin charges per atom
+COBICAR.lobster     – energy-resolved COBI curves
+COHPCAR.lobster     – energy-resolved COHP curves
+COOPCAR.lobster     – energy-resolved COOP curves
 
 Typical workflow
 ----------------
     from betapy.core import lobster
 
+    # Integrated values (for CSV annotation / status bar)
     pairs = lobster.load_pairs(lobster_dir)
     val   = lobster.lookup(pairs, 'Sc', 'F', 2.012, key='icobi')
 
-    charges = lobster.parse_charges(lobster_dir / 'CHARGE.lobster')
+    # Energy-resolved curves (for the COHP plotter)
+    hdr = lobster.parse_car_header(lobster_dir / 'COHPCAR.lobster')
+    result = lobster.load_car_curves(lobster_dir / 'COHPCAR.lobster',
+                                     hdr, 'Sc', 'F', 2.012)
+    if result:
+        energy, cohp, icohp = result
 
 Directory discovery
 -------------------
@@ -28,10 +37,31 @@ shell are identical by symmetry; load_pairs deduplicates by
 (species1, species2, distance_rounded) and keeps the representative value.
 Species pairs are stored in canonical (alphabetical) order so lookup is
 order-independent.
+
+CAR file formats
+----------------
+COHPCAR / COOPCAR:
+    Line 1 : description
+    Line 2 : n_total  n_spins  n_E  E_min  E_max  E_Fermi
+             (n_total includes the "Average" entry)
+    Line 3 : "Average"
+    Lines 4…: No.k:sp1->sp2(distance_Å)
+    Data   : energy  avg_val  avg_ival  pair1_val  pair1_ival  …
+             (2 columns per entry per spin; stride = 2*n_spins)
+
+COBICAR:
+    Line 1 : description
+    Line 2 : n_total  n_spins  n_E  E_min  E_max  E_Fermi
+             (n_total does NOT include Average)
+    Lines 3…: No.k:sp1[u v w]->sp2[u' v' w']
+             (translation vectors, no distance — computed from POSCAR.lobster)
+    Data   : same column layout as COHPCAR but without the Average columns
 """
 
 import re
 from pathlib import Path
+
+import numpy as np
 
 
 _ILIST_FILES = {
@@ -206,6 +236,212 @@ def lookup(pairs: list, sp1: str, sp2: str, distance: float,
             best_dev = dev
             best_val = row[key]   # may be None if flagged as ambiguous
     return best_val if best_dev <= tol else None
+
+
+# ---------------------------------------------------------------------------
+# Energy-resolved CAR file parsing
+# ---------------------------------------------------------------------------
+
+_CAR_FILES = {
+    'cohp': 'COHPCAR.lobster',
+    'coop': 'COOPCAR.lobster',
+    'cobi': 'COBICAR.lobster',
+}
+
+
+def _parse_poscar_lobster(path) -> dict:
+    """
+    Parse POSCAR.lobster (standard POSCAR format).
+
+    Returns {lattice (3×3 ndarray, rows = lattice vectors),
+             positions_frac (N×3 ndarray),
+             species (list of str, one per atom)}
+    """
+    with open(Path(path)) as f:
+        lines = [l.rstrip('\n') for l in f]
+    scale = float(lines[1].split()[0])
+    lat = np.array([list(map(float, lines[i].split())) for i in range(2, 5)]) * scale
+    sp_names = lines[5].split()
+    sp_counts = list(map(int, lines[6].split()))
+    species = []
+    for sp, n in zip(sp_names, sp_counts):
+        species.extend([sp] * n)
+    # line 7 is "Direct" or "Cartesian"
+    n_atoms = sum(sp_counts)
+    fracs = np.array([list(map(float, lines[8 + i].split()[:3]))
+                      for i in range(n_atoms)])
+    return {'lattice': lat, 'positions_frac': fracs, 'species': species}
+
+
+def parse_car_header(path) -> dict:
+    """
+    Parse the header of any *CAR.lobster file (COHPCAR, COOPCAR, COBICAR).
+
+    Returns a dict:
+        n_spins       : int
+        n_e           : int
+        e_fermi       : float
+        has_average   : bool  (True for COHP/COOP, False for COBI)
+        n_pairs       : int
+        first_data_line: int (0-based index into file lines)
+        pairs         : list of dicts, each with:
+            index      : int (1-based, matches No.k label)
+            sp1, sp2   : str
+            distance   : float or None (None for COBICAR until enriched)
+            atm1, atm2 : str (full LOBSTER atom labels, e.g. 'Sc1')
+            cell1, cell2: list[int] or None (COBICAR translation vectors)
+    """
+    path = Path(path)
+    with open(path) as f:
+        lines = f.readlines()
+
+    meta = lines[1].split()
+    n_total = int(meta[0])
+    n_spins = int(meta[1])
+    n_e     = int(meta[2])
+    e_fermi = float(meta[5])
+
+    has_average = lines[2].strip() == 'Average'
+    hdr_start   = 3 if has_average else 2
+    n_pairs     = n_total - (1 if has_average else 0)
+
+    # Regex for COHPCAR/COOPCAR: No.k:Sc1->F2(2.01173)
+    _re_dist = re.compile(
+        r'No\.(\d+):([A-Za-z]+\d+)->([A-Za-z]+\d+)\(([\d.eE+\-]+)\)'
+    )
+    # Regex for COBICAR: No.k:Sc1[0 0 0]->F2[-1 0 0]
+    _re_cell = re.compile(
+        r'No\.(\d+):([A-Za-z]+\d+)\[([^\]]+)\]->([A-Za-z]+\d+)\[([^\]]+)\]'
+    )
+
+    pairs = []
+    for i in range(hdr_start, hdr_start + n_pairs):
+        line = lines[i].strip()
+        m = _re_dist.match(line)
+        if m:
+            sp1 = re.match(r'([A-Za-z]+)', m.group(2)).group(1)
+            sp2 = re.match(r'([A-Za-z]+)', m.group(3)).group(1)
+            pairs.append({
+                'index': int(m.group(1)), 'sp1': sp1, 'sp2': sp2,
+                'distance': float(m.group(4)),
+                'atm1': m.group(2), 'atm2': m.group(3),
+                'cell1': None, 'cell2': None,
+            })
+            continue
+        m = _re_cell.match(line)
+        if m:
+            if '->' in line[m.end():]:   # 3-centre COBI — skip
+                continue
+            sp1 = re.match(r'([A-Za-z]+)', m.group(2)).group(1)
+            sp2 = re.match(r'([A-Za-z]+)', m.group(4)).group(1)
+            pairs.append({
+                'index': int(m.group(1)), 'sp1': sp1, 'sp2': sp2,
+                'distance': None,
+                'atm1': m.group(2), 'atm2': m.group(4),
+                'cell1': list(map(int, m.group(3).split())),
+                'cell2': list(map(int, m.group(5).split())),
+            })
+
+    # Skip blank lines between header and data
+    first_data = hdr_start + n_pairs
+    while first_data < len(lines) and not lines[first_data].strip():
+        first_data += 1
+
+    return {
+        'n_spins': n_spins, 'n_e': n_e, 'e_fermi': e_fermi,
+        'has_average': has_average, 'n_total': n_total, 'n_pairs': n_pairs,
+        'first_data_line': first_data, 'pairs': pairs,
+    }
+
+
+def enrich_cobicar_distances(header: dict, poscar_lobster_path) -> None:
+    """
+    Compute and fill in distances for COBICAR pairs (in-place).
+
+    COBICAR headers carry translation vectors instead of distances.
+    This function uses POSCAR.lobster atom positions to compute each distance.
+    Call once after parse_car_header() for a COBICAR file.
+    """
+    pdata = _parse_poscar_lobster(poscar_lobster_path)
+    lat   = pdata['lattice']
+    fracs = pdata['positions_frac']
+
+    for p in header['pairs']:
+        if p['distance'] is not None or p['cell1'] is None:
+            continue
+        try:
+            _, idx1 = _parse_label(p['atm1'])
+            _, idx2 = _parse_label(p['atm2'])
+            pos1 = (fracs[idx1] + np.asarray(p['cell1'])) @ lat
+            pos2 = (fracs[idx2] + np.asarray(p['cell2'])) @ lat
+            p['distance'] = float(np.linalg.norm(pos2 - pos1))
+        except Exception:
+            pass
+
+
+def load_car_curves(path, header: dict,
+                    sp1: str, sp2: str, distance: float,
+                    tol: float = 0.05):
+    """
+    Load energy-resolved curves for the given species pair from a *CAR.lobster.
+
+    All pairs in *header* that match (sp1, sp2, distance ± tol) are averaged
+    — within a symmetry shell they are identical, so averaging is safe.
+
+    Parameters
+    ----------
+    path    : path to the *CAR.lobster file
+    header  : output of parse_car_header() (optionally enriched with distances)
+    sp1, sp2: species strings (order-independent)
+    distance: target bond length in Å
+    tol     : matching tolerance in Å
+
+    Returns
+    -------
+    (energy, curve, icurve) as 1-D numpy arrays, or None if no match.
+    energy  — eV relative to Fermi level
+    curve   — COHP / COOP / COBI value (eV⁻¹ or dimensionless)
+    icurve  — integrated value up to each energy point
+    """
+    cs1, cs2 = _canonical(sp1, sp2)
+    matching_indices = []
+    for p in header['pairs']:
+        if p['distance'] is None:
+            continue
+        if _canonical(p['sp1'], p['sp2']) != (cs1, cs2):
+            continue
+        if abs(p['distance'] - distance) <= tol:
+            matching_indices.append(p['index'])
+
+    if not matching_indices:
+        return None
+
+    n_spins   = header['n_spins']
+    has_avg   = header['has_average']
+
+    def _entry_cols(pair_idx):
+        """0-based data column indices for pair No.pair_idx."""
+        entry = pair_idx if has_avg else pair_idx - 1
+        base  = 1 + entry * 2 * n_spins
+        return base, base + 1
+
+    usecols  = [0]
+    slot_map = []  # [(curve_slot, icurve_slot), ...] into usecols
+    for idx in matching_indices:
+        c, ic = _entry_cols(idx)
+        slot_map.append((len(usecols), len(usecols) + 1))
+        usecols.extend([c, ic])
+
+    try:
+        data = np.loadtxt(path, skiprows=header['first_data_line'],
+                          usecols=usecols)
+    except Exception:
+        return None
+
+    energy  = data[:, 0]
+    curves  = np.mean([data[:, s[0]] for s in slot_map], axis=0)
+    icurves = np.mean([data[:, s[1]] for s in slot_map], axis=0)
+    return energy, curves, icurves
 
 
 def find_lobster_dir(ph_dir) -> 'Path | None':
