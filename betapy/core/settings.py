@@ -72,7 +72,7 @@ class StiffnessShiftSettings:
     # Shared fallback REFPOS used when a structure does not specify its own.
     refpos:         str            = 'REFPOS'
     # Angstrom cutoff radius around the reference site.
-    cutoff:          float = 6.0
+    cutoff:          float = 4.0
     # Minimum distance from ref site for atom inclusion.
     # Excludes the site-occupying atom in the intercalated structure.
     min_site_dist:           float = 0.1
@@ -83,7 +83,7 @@ class StiffnessShiftSettings:
     # Maximum Cartesian distance (Å) for atom position matching.
     # Atoms further apart than this are considered unmatched and trigger
     # the equal-count fallback for their species pair.
-    match_tolerance: float = 0.3
+    match_tolerance: float = 1.5
 
 
 # ---------------------------------------------------------------------------
@@ -213,10 +213,10 @@ class Settings:
                 structure_a             = _dict_to_structure(sd.get('structure_a', {})),
                 structure_b             = _dict_to_structure(sd.get('structure_b', {})),
                 refpos                  = sd.get('refpos',                  StiffnessShiftSettings.refpos),
-                cutoff                  = sd.get('cutoff',                  6.0),
+                cutoff                  = sd.get('cutoff',                  4.0),
                 min_site_dist           = sd.get('min_site_dist',           0.1),
                 exclude_refsite_species = sd.get('exclude_refsite_species', True),
-                match_tolerance         = sd.get('match_tolerance',         0.3),
+                match_tolerance         = sd.get('match_tolerance',         1.5),
             )
 
         return s
@@ -310,9 +310,9 @@ class Settings:
             #   #   sposcar: path/to/intercalated/SPOSCAR
             #   #   force_constants: path/to/intercalated/FORCE_CONSTANTS
             #   #   refpos:           # optional per-structure REFPOS override
-            #   cutoff: 6.0         # Angstrom radius around reference site
+            #   cutoff: 4.0         # Angstrom radius around reference site
             #   min_site_dist: 0.1    # exclude atoms closer than this to ref site
-            #   match_tolerance: 0.3  # Angstrom tolerance for atom position matching
+            #   match_tolerance: 1.5  # Angstrom tolerance for pair fingerprint matching
         """)
         with open(path, 'w') as f:
             f.write(template)

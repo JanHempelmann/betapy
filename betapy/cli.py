@@ -18,8 +18,7 @@ from betapy.core.structure import Supercell
 from betapy.core.projection import (
     compute_bulk_pfcs, unique_pfcs,
     find_refsite_pairs, refsite_results_to_dataframes,
-    match_atoms_across_structures, match_fc_pairs,
-    stiffness_shift_from_pairs, fallback_equal_count_shift,
+    match_fc_pairs_direct, stiffness_shift_from_pairs,
 )
 
 
@@ -115,10 +114,14 @@ def _resolve_refpos(structure_settings, fallback_path):
 def run_stiffness_shift(settings):
     """
     Load two structures, run refsite projection on each, match equivalent
-    force-constant pairs by atom position, and compute the stiffness shift.
+    force-constant pairs by fractional-coordinate fingerprint, and compute
+    the stiffness shift.
 
-    Falls back to equal-count truncation (with a warning) if position
-    matching fails for any species pair.
+    The cutoff is enforced only on structure A; structure B uses twice the
+    cutoff to ensure all equivalent pairs are found even when intercalation
+    expands the cell significantly.  Matching uses a purely fractional
+    fingerprint so it works even when A and B have different crystallographic
+    origins (e.g. pnnm intercalation pairs).
     """
     ss = settings.stiffness_shift
 
@@ -134,7 +137,6 @@ def run_stiffness_shift(settings):
     )
     print(f'    {sc_b}  |  {len(fc_b["atomic_pairs"])} pairs')
 
-    # Resolve REFPOS paths
     refpos_path_a = _resolve_refpos(ss.structure_a, ss.refpos)
     refpos_path_b = _resolve_refpos(ss.structure_b, ss.refpos)
     try:
@@ -148,10 +150,7 @@ def run_stiffness_shift(settings):
         print(f'  Error: REFPOS for structure B not found at {refpos_path_b}')
         return None
 
-    # --- Determine intercalated species from structure B (for exclusion filter) ---
-    # Find the atom in B that sits within min_site_dist of each refsite position.
-    # That species is then excluded from both A and B so the analysis reflects
-    # only the host-framework contributions.
+    # Determine intercalated species from structure B (for exclusion filter)
     intercalated_species = set()
     if ss.exclude_refsite_species:
         for frac_pos in refpos_b['positions']:
@@ -161,80 +160,53 @@ def run_stiffness_shift(settings):
             if dists[near_idx] < ss.min_site_dist:
                 intercalated_species.add(sc_b.species(near_idx + 1))
     excl_arg = intercalated_species if intercalated_species else None
-
-    # --- Refsite projection ---
-    print(f'  Projecting in structure A (cutoff {ss.cutoff} Å) ...')
-    offsite_a = []
-    for frac_pos in refpos_a['positions']:
-        offsite, _ = find_refsite_pairs(
-            sc_a, fc_a['atomic_pairs'], fc_a['force_matrices'],
-            frac_pos, cutoff=ss.cutoff, min_distance=0.0,
-            exclude_species=excl_arg,
-        )
-        offsite_a.extend(offsite)
     excl_note = f', excl. {"/".join(sorted(intercalated_species))} pairs' if excl_arg else ''
-    print(f'    {len(offsite_a)} off-site pairs{excl_note}')
 
-    print(f'  Projecting in structure B (cutoff {ss.cutoff} Å) ...')
-    offsite_b = []
-    for frac_pos in refpos_b['positions']:
-        offsite, _ = find_refsite_pairs(
-            sc_b, fc_b['atomic_pairs'], fc_b['force_matrices'],
-            frac_pos, cutoff=ss.cutoff, min_distance=ss.min_site_dist,
+    # Species present in both structures
+    sp_set = set(sc_a.chem_symbols) & set(sc_b.chem_symbols)
+
+    # B uses a generous cutoff so equivalent pairs are found even after
+    # significant cell expansion on intercalation.
+    cutoff_b = ss.cutoff * 1.5
+
+    all_matched     = []
+    all_unmatched_a = []
+    all_unmatched_b = []
+
+    for idx, (ref_a, ref_b) in enumerate(zip(refpos_a['positions'], refpos_b['positions'])):
+        print(f'  Site {idx}: projecting A (cutoff {ss.cutoff} Å) ...')
+        res_a, _ = find_refsite_pairs(
+            sc_a, fc_a['atomic_pairs'], fc_a['force_matrices'],
+            ref_a, cutoff=ss.cutoff, min_distance=0.0,
             exclude_species=excl_arg,
         )
-        offsite_b.extend(offsite)
-    print(f'    {len(offsite_b)} off-site pairs (site-occupying atom + {"/".join(sorted(intercalated_species or {"none"}))} pairs excluded)')
-
-    # --- Atom position matching ---
-    print('  Matching atoms across structures by fractional position ...')
-    all_species = sorted(set(sc_a.chem_symbols) & set(sc_b.chem_symbols))
-    atom_matches  = {}   # idx_a -> idx_b, covering all matchable species
-    matching_failed = []
-
-    for sp in all_species:
-        if sp not in sc_b.chem_symbols:
-            print(f'    {sp}: absent in structure B — pairs skipped')
-            continue
-        matches, unmatched = match_atoms_across_structures(
-            sc_a, sc_b, sp, tolerance=ss.match_tolerance
+        print(f'  Site {idx}: projecting B (cutoff {cutoff_b:.1f} Å) ...')
+        res_b, _ = find_refsite_pairs(
+            sc_b, fc_b['atomic_pairs'], fc_b['force_matrices'],
+            ref_b, cutoff=cutoff_b, min_distance=ss.min_site_dist,
+            exclude_species=excl_arg,
         )
-        atom_matches.update(matches)
-        if unmatched:
-            print(f'    WARNING: {sp}: {len(unmatched)} atom(s) unmatched '
-                  f'within {ss.match_tolerance} Å.')
-            print(f'    → Try increasing match_tolerance (current: {ss.match_tolerance} Å)')
-            print(f'      or verify both structures share the same cell origin.')
-            print(f'      Falling back to equal-count truncation for {sp}.')
-            matching_failed.append(sp)
-        else:
-            print(f'    {sp}: {len(matches)} atoms matched')
 
-    # --- Pair matching and shift computation ---
-    if not matching_failed:
-        # Primary path: explicit pair matching
-        print('  Matching force-constant pairs ...')
-        matched, unmatched_pairs, _ = match_fc_pairs(offsite_a, offsite_b, atom_matches, sc_a)
-        print(f'    {len(matched)} pairs matched, '
-              f'{len(unmatched_pairs)} unmatched (species absent in B or missing FC)')
+        sub_a = [r for r in res_a if r['species1'] in sp_set and r['species2'] in sp_set]
+        sub_b = [r for r in res_b if r['species1'] in sp_set and r['species2'] in sp_set]
+        print(f'    {len(sub_a)} A pairs, {len(sub_b)} B pairs{excl_note}')
 
-        df, total = stiffness_shift_from_pairs(matched)
-        method = 'position-matched pairs'
+        m, ua, ub = match_fc_pairs_direct(
+            sub_a, sub_b, sc_a, sc_b, ref_a, ref_b, tol=ss.match_tolerance
+        )
+        all_matched.extend(m)
+        all_unmatched_a.extend(ua)
+        all_unmatched_b.extend(ub)
+        print(f'    {len(m)} matched, {len(ua)} unmatched A, {len(ub)} unmatched B')
 
-    else:
-        # Fallback: equal-count truncation by distance
-        print()
-        print('  WARNING: Atom matching failed for one or more species.')
-        print('  WARNING: Falling back to equal-count truncation ordered by atom-atom distance.')
-        print('  WARNING: This pairs atoms by sorted distance rank, not by position —')
-        print('  WARNING: results are approximate. Fix matching for reliable shifts.')
-        print()
-        df, total, n = fallback_equal_count_shift(offsite_a, offsite_b)
-        method = f'equal-count fallback ({n} pairs)'
+    df, total = stiffness_shift_from_pairs(all_matched)
 
     factor = EV_ANG2_TO_N_M if settings.unit == 'N/m' else 1.0
     unit_label = UNIT_LABEL.get(settings.unit, settings.unit)
-    print(f'\n Method: {method}')
+    print(f'\n Method: fractional-fingerprint matching')
+    print(f'  Matched: {len(all_matched)}   '
+          f'Unmatched A: {len(all_unmatched_a)}   '
+          f'Unmatched B: {len(all_unmatched_b)}')
     print(f'  Total stiffness shift (B − A): {total * factor:+.6f} {unit_label}')
 
     if settings.store:

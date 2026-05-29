@@ -10,8 +10,7 @@ import numpy as np
 from betapy.core.structure import Supercell
 from betapy.core.projection import (
     compute_bulk_pfcs, find_refsite_pairs, unique_pfcs,
-    match_atoms_across_structures, match_fc_pairs,
-    stiffness_shift_from_pairs, fallback_equal_count_shift,
+    match_fc_pairs_direct, stiffness_shift_from_pairs,
 )
 
 
@@ -166,120 +165,138 @@ def test_unique_pfcs_same_value_different_species_not_merged():
 
 
 # ---------------------------------------------------------------------------
-# match_atoms_across_structures
+# match_fc_pairs_direct
 # ---------------------------------------------------------------------------
 
-def _make_sc(species, positions, a=8.0):
-    n = len(positions)
-    return Supercell({
-        'skal': 1.0,
-        'lattice': [[a, 0, 0], [0, a, 0], [0, 0, a]],
-        'chem_symbols': [species],
-        'chem_atoms': [n],
-        'positions': positions,
-    })
-
-
-def test_match_atoms_exact():
-    positions = [[0.0, 0.0, 0.0], [0.5, 0.5, 0.5]]
-    sc_a = _make_sc('Li', positions)
-    sc_b = _make_sc('Li', positions)
-    matches, unmatched = match_atoms_across_structures(sc_a, sc_b, 'Li')
-    assert matches == {1: 1, 2: 2}
-    assert unmatched == []
-
-
-def test_match_atoms_small_shift_within_tolerance():
-    sc_a = _make_sc('Li', [[0.0, 0.0, 0.0]])
-    sc_b = _make_sc('Li', [[0.005, 0.0, 0.0]])  # 0.04 Å shift in 8 Å cell
-    matches, unmatched = match_atoms_across_structures(sc_a, sc_b, 'Li', tolerance=0.3)
-    assert 1 in matches
-    assert unmatched == []
-
-
-def test_match_atoms_large_shift_beyond_tolerance():
-    sc_a = _make_sc('Li', [[0.0, 0.0, 0.0]])
-    sc_b = _make_sc('Li', [[0.1, 0.0, 0.0]])   # 0.1 fractional shift (0.8 Å in 8 Å cell)
-    # tolerance is in fractional units; 0.1 shift > 0.05 tolerance → no match
-    matches, unmatched = match_atoms_across_structures(sc_a, sc_b, 'Li', tolerance=0.05)
-    assert matches == {}
-    assert 1 in unmatched
-
-
-def test_match_atoms_absent_species_in_b():
-    sc_a = _make_sc('Li', [[0.0, 0.0, 0.0]])
-    sc_b = _make_sc('O',  [[0.0, 0.0, 0.0]])  # no Li in sc_b
-    matches, unmatched = match_atoms_across_structures(sc_a, sc_b, 'Li')
-    assert matches == {}
-    assert 1 in unmatched
-
-
-def test_match_atoms_no_double_match():
-    # Two sc_a atoms near the same sc_b atom — greedy: only one can match
-    sc_a = _make_sc('Li', [[0.0, 0.0, 0.0], [0.005, 0.0, 0.0]])
-    sc_b = _make_sc('Li', [[0.0, 0.0, 0.0]])
-    matches, unmatched = match_atoms_across_structures(sc_a, sc_b, 'Li', tolerance=1.0)
-    assert len(matches) == 1
-    assert len(unmatched) == 1
-
-
-# ---------------------------------------------------------------------------
-# match_fc_pairs
-# ---------------------------------------------------------------------------
-
-def _refsite_result(a1, a2, sp1, sp2, dist, pfc, ref_dist=1.0):
+def _make_refsite_result(sc, atom1, atom2, refsite, pfc):
+    """Build a result dict as find_refsite_pairs would produce."""
     return {
-        'atom1_idx': a1, 'atom2_idx': a2,
-        'species1': sp1, 'species2': sp2,
-        'distance': dist, 'mean_pfc': pfc,
-        'atom1_ref_dist': ref_dist,
+        'atom1_idx':      atom1,
+        'atom2_idx':      atom2,
+        'species1':       sc.species(atom1),
+        'species2':       sc.species(atom2),
+        'atom1_ref_dist': sc.distance_to_point(atom1, refsite),
+        'distance':       sc.atom_distance(atom1, atom2),
+        'mean_pfc':       pfc,
+        'rms_pfc':        pfc,
     }
 
 
-def test_match_fc_pairs_basic_delta():
+def test_match_fc_pairs_direct_basic():
+    """Identical pair in A and B matches; delta_pfc is the difference."""
     sc = make_simple_supercell()
-    results_a = [_refsite_result(1, 2, 'Li', 'O', 3.0, 1.0)]
-    results_b = [_refsite_result(1, 2, 'Li', 'O', 3.0, 2.0)]
-    matched, _, _ = match_fc_pairs(results_a, results_b, {1: 1, 2: 2}, sc)
+    ref = [0.25, 0.25, 0.25]
+    results_a = [_make_refsite_result(sc, 1, 2, ref, 1.0)]
+    results_b = [_make_refsite_result(sc, 1, 2, ref, 2.5)]
+
+    matched, ua, ub = match_fc_pairs_direct(
+        results_a, results_b, sc, sc, ref, ref, tol=0.3
+    )
     assert len(matched) == 1
-    assert matched[0]['delta_pfc'] == pytest.approx(1.0)
+    assert len(ua) == 0
+    assert len(ub) == 0
+    assert matched[0]['delta_pfc'] == pytest.approx(1.5)
 
 
-def test_match_fc_pairs_incomplete_match_goes_to_unmatched():
+def test_match_fc_pairs_direct_empty_inputs():
     sc = make_simple_supercell()
-    results_a = [_refsite_result(1, 2, 'Li', 'O', 3.0, 1.0)]
-    results_b = [_refsite_result(1, 2, 'Li', 'O', 3.0, 1.0)]
-    # atom 2 has no entry in atom_matches → pair cannot be fully matched
-    matched, unmatched_a, _ = match_fc_pairs(results_a, results_b, {1: 1}, sc)
+    ref = [0.0, 0.0, 0.0]
+    matched, ua, ub = match_fc_pairs_direct([], [], sc, sc, ref, ref)
+    assert matched == []
+    assert ua == []
+    assert ub == []
+
+
+def test_match_fc_pairs_direct_no_counterpart_in_b():
+    """A pair with no equivalent in B goes to unmatched_a."""
+    sc = make_simple_supercell()
+    ref = [0.25, 0.25, 0.25]
+    results_a = [_make_refsite_result(sc, 1, 2, ref, 1.0)]
+    matched, ua, ub = match_fc_pairs_direct(
+        results_a, [], sc, sc, ref, ref, tol=0.3
+    )
     assert len(matched) == 0
-    assert len(unmatched_a) == 1  # incomplete pair surfaces in unmatched_a
+    assert len(ua) == 1
 
 
-def test_match_fc_pairs_no_counterpart_in_b():
-    sc = make_simple_supercell()
-    results_a = [_refsite_result(1, 2, 'Li', 'O', 3.0, 1.0)]
-    results_b = []  # empty — no counterpart
-    matched, unmatched_a, _ = match_fc_pairs(results_a, results_b, {1: 1, 2: 2}, sc)
+def test_match_fc_pairs_direct_origin_shifted():
+    """
+    Pairs should match even when refsite positions differ by (0.5, 0.5, 0.5)
+    in fractional space — this is the pnnm case where A and B use different
+    crystallographic origins.
+    """
+    # Structure A: Li at [0.1, 0, 0], O at [0.4, 0, 0]; refsite near origin
+    sc_a = Supercell({
+        'skal': 1.0,
+        'lattice': [[8.0, 0, 0], [0, 8.0, 0], [0, 0, 8.0]],
+        'chem_symbols': ['Li', 'O'],
+        'chem_atoms': [1, 1],
+        'positions': [[0.1, 0.0, 0.0], [0.4, 0.0, 0.0]],
+    })
+    refsite_a = [0.0, 0.0, 0.0]
+
+    # Structure B: same geometry but with origin shifted by 0.5 along x.
+    # Li at [0.6, 0, 0], O at [0.9, 0, 0]; refsite at [0.5, 0, 0].
+    # Local displacements from refsite are identical to A.
+    sc_b = Supercell({
+        'skal': 1.0,
+        'lattice': [[8.0, 0, 0], [0, 8.0, 0], [0, 0, 8.0]],
+        'chem_symbols': ['Li', 'O'],
+        'chem_atoms': [1, 1],
+        'positions': [[0.6, 0.0, 0.0], [0.9, 0.0, 0.0]],
+    })
+    refsite_b = [0.5, 0.0, 0.0]
+
+    results_a = [_make_refsite_result(sc_a, 1, 2, refsite_a, 1.5)]
+    results_b = [_make_refsite_result(sc_b, 1, 2, refsite_b, 2.0)]
+
+    matched, ua, ub = match_fc_pairs_direct(
+        results_a, results_b, sc_a, sc_b, refsite_a, refsite_b, tol=0.5
+    )
+    assert len(matched) == 1
+    assert len(ua) == 0
+    assert matched[0]['delta_pfc'] == pytest.approx(0.5)
+
+
+def test_match_fc_pairs_direct_tol_rejection():
+    """Pairs with a fingerprint distance above tol are not matched."""
+    # Two structures: same lattice but atom positions differ significantly
+    sc_a = Supercell({
+        'skal': 1.0,
+        'lattice': [[8.0, 0, 0], [0, 8.0, 0], [0, 0, 8.0]],
+        'chem_symbols': ['Li', 'O'],
+        'chem_atoms': [1, 1],
+        'positions': [[0.1, 0.0, 0.0], [0.4, 0.0, 0.0]],
+    })
+    sc_b = Supercell({
+        'skal': 1.0,
+        'lattice': [[8.0, 0, 0], [0, 8.0, 0], [0, 0, 8.0]],
+        'chem_symbols': ['Li', 'O'],
+        'chem_atoms': [1, 1],
+        'positions': [[0.3, 0.0, 0.0], [0.45, 0.0, 0.0]],  # very different positions
+    })
+    ref_a = [0.0, 0.0, 0.0]
+    ref_b = [0.0, 0.0, 0.0]
+
+    results_a = [_make_refsite_result(sc_a, 1, 2, ref_a, 1.0)]
+    results_b = [_make_refsite_result(sc_b, 1, 2, ref_b, 2.0)]
+
+    matched, ua, ub = match_fc_pairs_direct(
+        results_a, results_b, sc_a, sc_b, ref_a, ref_b, tol=0.05
+    )
     assert len(matched) == 0
-    assert len(unmatched_a) == 1
-
-
-def test_match_fc_pairs_unmatched_b():
-    sc = make_simple_supercell()
-    results_a = []
-    results_b = [_refsite_result(1, 2, 'Li', 'O', 3.0, 1.0)]
-    _, _, unmatched_b = match_fc_pairs(results_a, results_b, {}, sc)
-    assert len(unmatched_b) == 1
+    assert len(ua) == 1
+    assert len(ub) == 1
 
 
 # ---------------------------------------------------------------------------
 # stiffness_shift_from_pairs
 # ---------------------------------------------------------------------------
 
-def _matched_pair(a1a, a2a, a1b, a2b, pfc_a, pfc_b):
+def _matched_pair(pfc_a, pfc_b):
     return {
-        'atom1_idx_a': a1a, 'atom2_idx_a': a2a,
-        'atom1_idx_b': a1b, 'atom2_idx_b': a2b,
+        'atom1_idx_a': 1, 'atom2_idx_a': 2,
+        'atom1_idx_b': 1, 'atom2_idx_b': 2,
         'species1': 'Li', 'species2': 'O',
         'distance_a': 3.0, 'distance_b': 3.0,
         'atom1_ref_dist_a': 1.0, 'atom1_ref_dist_b': 1.0,
@@ -289,8 +306,7 @@ def _matched_pair(a1a, a2a, a1b, a2b, pfc_a, pfc_b):
 
 
 def test_stiffness_shift_total():
-    pairs = [_matched_pair(1, 2, 1, 2, 1.0, 2.0),
-             _matched_pair(1, 3, 1, 3, 0.5, 1.0)]
+    pairs = [_matched_pair(1.0, 2.0), _matched_pair(0.5, 1.0)]
     df, total = stiffness_shift_from_pairs(pairs)
     assert total == pytest.approx(1.5)
     assert len(df) == 2
@@ -300,26 +316,3 @@ def test_stiffness_shift_empty():
     df, total = stiffness_shift_from_pairs([])
     assert total == pytest.approx(0.0)
     assert df.empty
-
-
-# ---------------------------------------------------------------------------
-# fallback_equal_count_shift
-# ---------------------------------------------------------------------------
-
-def test_fallback_equal_count_delta():
-    results_a = [_refsite_result(1, 2, 'Li', 'O', 3.0, 1.0)]
-    results_b = [_refsite_result(1, 2, 'Li', 'O', 3.0, 2.0)]
-    df, total, n = fallback_equal_count_shift(results_a, results_b)
-    assert n == 1
-    assert total == pytest.approx(1.0)
-
-
-def test_fallback_truncates_to_shorter():
-    results_a = [
-        _refsite_result(1, 2, 'Li', 'O', 3.0, 1.0),
-        _refsite_result(1, 3, 'Li', 'O', 4.0, 1.0),
-    ]
-    results_b = [_refsite_result(1, 2, 'Li', 'O', 3.0, 2.0)]
-    df, total, n = fallback_equal_count_shift(results_a, results_b)
-    assert n == 1
-    assert len(df) == 1

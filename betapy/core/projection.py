@@ -379,164 +379,43 @@ def refsite_results_to_dataframes(offsite_results, onsite_results, ref_label):
     return df_offsite, df_onsite
 
 
-# ---------------------------------------------------------------------------
-# Atom matching across structures for stiffness-shift comparison
-# ---------------------------------------------------------------------------
-
-def match_atoms_across_structures(sc_a, sc_b, species, tolerance=0.1):
-    """
-    For each atom of `species` in sc_a, find the closest atom of the
-    same species in sc_b by fractional-coordinate distance (PBC-aware).
-    Each atom in sc_b can only be matched once (greedy nearest-neighbour).
-
-    Parameters
-    ----------
-    sc_a, sc_b  : Supercell instances
-    species     : str, chemical symbol to match (e.g. 'V', 'O')
-    tolerance   : float, maximum fractional-coordinate distance (dimensionless,
-                  default 0.1) to accept as a valid match.
-                  Using fractional rather than Cartesian distance makes the
-                  criterion invariant to cell-parameter changes between A and B
-                  (e.g. cell expansion on intercalation).
-
-    Returns
-    -------
-    matches   : dict {idx_a (1-based): idx_b (1-based)}
-    unmatched : list of idx_a (1-based) that had no match within tolerance
-    """
-    atoms_a = [(i + 1, sc_a.positions[i])
-               for i in range(sc_a.n_atoms)
-               if sc_a.species(i + 1) == species]
-    atoms_b = [(i + 1, sc_b.positions[i])
-               for i in range(sc_b.n_atoms)
-               if sc_b.species(i + 1) == species]
-
-    if not atoms_b:
-        # Species entirely absent in sc_b (e.g. Li in deintercalated)
-        return {}, [idx for idx, _ in atoms_a]
-
-    # Build cost matrix (fractional distances) and use optimal assignment
-    # (Hungarian algorithm) to avoid greedy artifacts when atom counts match.
-    pa = np.array([p for _, p in atoms_a])   # (Na, 3)
-    pb = np.array([p for _, p in atoms_b])   # (Nb, 3)
-    diff = pb[None, :, :] - pa[:, None, :]   # (Na, Nb, 3)
-    diff -= np.floor(diff + 0.5)
-    cost = np.linalg.norm(diff, axis=2)       # (Na, Nb)
-
-    row_ind, col_ind = linear_sum_assignment(cost)
-    row_to_col = dict(zip(row_ind.tolist(), col_ind.tolist()))
-
-    matches   = {}
-    unmatched = []
-    for i, (idx_a, _) in enumerate(atoms_a):
-        if i not in row_to_col:
-            unmatched.append(idx_a)
-        else:
-            j = row_to_col[i]
-            if cost[i, j] <= tolerance:
-                matches[idx_a] = atoms_b[j][0]
-            else:
-                unmatched.append(idx_a)
-
-    return matches, unmatched
-
-
-def match_atoms_local(offsite_a, offsite_b, sc_a, sc_b,
-                      refsite_a, refsite_b, tolerance=0.05):
-    """
-    Match atoms appearing in offsite_a to atoms in offsite_b using their
-    LOCAL fractional displacement from the respective reference sites.
-
-    This is origin-independent: it works even when A and B were computed
-    with different unit-cell origins (common for intercalation pairs), because
-    it compares displacement RELATIVE to the refsite rather than absolute
-    fractional coordinates.  The same fractional tolerance applies to all
-    three axes but is harmless: within the small local neighbourhood of the
-    refsite (typically ≤ cutoff/cell_param ≈ 0.25), correct atom pairs
-    are separated by <<0.05 and wrong candidates are ≥0.1 away.
-
-    Parameters
-    ----------
-    offsite_a, offsite_b : list of dicts from find_refsite_pairs()
-    sc_a, sc_b           : Supercell instances for structures A and B
-    refsite_a, refsite_b : array-like (3,), fractional refsite coords in A / B
-    tolerance            : float, max fractional displacement distance for a
-                           valid match (default 0.05)
-
-    Returns
-    -------
-    matches : dict {atom_idx_a (1-based): atom_idx_b (1-based)}
-    """
-    refsite_a = np.asarray(refsite_a)
-    refsite_b = np.asarray(refsite_b)
-
-    # Collect unique atoms from each offsite list and compute local displacements
-    def _local_disps(offsite, sc, refsite):
-        atoms = {}
-        for r in offsite:
-            for idx in (r['atom1_idx'], r['atom2_idx']):
-                if idx not in atoms:
-                    pos = np.asarray(sc.positions[idx - 1])
-                    d = pos - refsite
-                    d -= np.floor(d + 0.5)
-                    atoms[idx] = d
-        return atoms
-
-    a_atoms = _local_disps(offsite_a, sc_a, refsite_a)
-    b_atoms = _local_disps(offsite_b, sc_b, refsite_b)
-
-    if not a_atoms or not b_atoms:
-        return {}
-
-    a_ids = list(a_atoms.keys())
-    b_ids = list(b_atoms.keys())
-
-    # Build cost matrix of pairwise fractional displacement distances
-    a_arr = np.array([a_atoms[i] for i in a_ids])   # (Na, 3)
-    b_arr = np.array([b_atoms[j] for j in b_ids])   # (Nb, 3)
-    diff = b_arr[None, :, :] - a_arr[:, None, :]    # (Na, Nb, 3)
-    diff -= np.floor(diff + 0.5)
-    cost = np.linalg.norm(diff, axis=2)              # (Na, Nb)
-
-    row_ind, col_ind = linear_sum_assignment(cost)
-    matches = {}
-    for r, c in zip(row_ind.tolist(), col_ind.tolist()):
-        if cost[r, c] <= tolerance:
-            matches[a_ids[r]] = b_ids[c]
-
-    return matches
-
 
 def match_fc_pairs_direct(results_a, results_b, sc_a, sc_b,
-                          refsite_a, refsite_b, tol=0.3):
+                          refsite_a, refsite_b, tol=1.5):
     """
-    Match off-site pFC pairs by scalar Cartesian fingerprint:
-    (species1, species2, atom1_ref_dist_Å, atom2_ref_dist_Å, bond_length_Å).
+    Match off-site pFC pairs by a 5-component fractional-coordinate fingerprint:
+    (atom1_disp_x, atom1_disp_y, atom1_disp_z, atom2_ref_dist, bond_frac_norm) × L_avg.
 
-    The fingerprint is (atom1_ref_dist, atom2_ref_dist, bond_length), all
-    PBC-correct and invariant to cell origin, translation, rotation, and
-    inversion.  Atom-to-refsite distances use supercell fractional-space norms
-    scaled by the average cell length, making them nearly identical for
-    equivalent atoms regardless of anisotropic lattice changes (e.g. a 12%
-    c-axis contraction on intercalant removal).  Bond lengths use Cartesian Å
-    as they change little due to fractional-coordinate relaxation.
+    The first three components are the full 3D fractional displacement vector
+    from the refsite to atom1, PBC-wrapped in supercell space.  This encodes
+    both distance AND direction, so bonds that sit at the same distance from
+    the refsite but point in different directions get distinct fingerprints.
+    atom2_ref_dist and bond_frac_norm remain as scalars.
+
+    All components are origin-independent: the displacement (atom - refsite)
+    is the same for equivalent atoms even when A and B use different
+    crystallographic origins (pnnm case).  The fractional representation also
+    makes the fingerprint invariant to anisotropic cell expansion — only small
+    fractional relaxation (~0.01–0.03) shifts equivalent bonds, giving well
+    below 1 Å of fingerprint noise for correct matches vs. several Å separation
+    for wrong ones.  The higher discrimination power allows a generous tolerance
+    (default 1.5 Å) that absorbs relaxation without accepting wrong matches.
 
     atom2_ref_dist is computed on the fly (not stored in results) to
     discriminate pairs where atom2 is on opposite sides of the supercell
-    from the refsite — important for correct visual highlighting.
+    from the refsite.
 
     Parameters
     ----------
     results_a, results_b : list of dicts from find_refsite_pairs()
     sc_a, sc_b           : Supercell instances
     refsite_a, refsite_b : array-like (3,), fractional refsite coords
-    tol                  : float, max RMS of
-                           (Δatom1_ref_dist, Δatom2_ref_dist, Δbond_length)
-                           in Å (default 0.3 Å).
+    tol                  : float, max L2 norm of fingerprint difference
+                           in Å (default 1.5 Å).
 
     Returns
     -------
-    matched_pairs, unmatched_a, unmatched_b  (same format as match_fc_pairs)
+    matched_pairs, unmatched_a, unmatched_b
     """
     if not results_a or not results_b:
         return [], list(results_a), list(results_b)
@@ -544,18 +423,22 @@ def match_fc_pairs_direct(results_a, results_b, sc_a, sc_b,
     refsite_a = np.asarray(refsite_a)
     refsite_b = np.asarray(refsite_b)
 
-    # Atom-to-refsite distances are computed as supercell fractional-space
-    # norms (nearly identical for equivalent atoms regardless of how
-    # anisotropically the lattice has changed), then scaled by the average
-    # cell length so that tol retains its Å interpretation.  Bond lengths
-    # stay in Cartesian Å — they change little since fractional coordinates
-    # relax to compensate lattice changes.
+    # Scale factor: average cell length so tol keeps its Å interpretation.
     L_avg = 0.5 * (abs(np.linalg.det(sc_a.lattice)) ** (1.0 / 3.0)
                    + abs(np.linalg.det(sc_b.lattice)) ** (1.0 / 3.0))
 
-    def _frac_norm(sc, atom_idx, ref):
+    def _frac_disp(sc, atom_idx, ref):
+        """3D fractional displacement from ref to atom, PBC-wrapped."""
         pos = sc.positions[atom_idx - 1]
-        return float(np.linalg.norm(sc.frac_diff(pos, ref)))
+        return sc.frac_diff(pos, ref)  # shape (3,)
+
+    def _frac_norm(sc, atom_idx, ref):
+        return float(np.linalg.norm(_frac_disp(sc, atom_idx, ref)))
+
+    def _frac_norm_pair(sc, idx1, idx2):
+        pos1 = sc.positions[idx1 - 1]
+        pos2 = sc.positions[idx2 - 1]
+        return float(np.linalg.norm(sc.frac_diff(pos1, pos2)))
 
     # Group pairs by ordered species pair, pre-computing atom2 frac norms
     by_sp_a = {}
@@ -571,12 +454,19 @@ def match_fc_pairs_direct(results_a, results_b, sc_a, sc_b,
     for key in set(by_sp_a) & set(by_sp_b):
         ag = by_sp_a[key]
         bg = by_sp_b[key]
-        # Fingerprint: (atom1_ref_dist_frac*L, atom2_ref_dist_frac*L, bond_length_Å)
-        fp_a = np.array([[_frac_norm(sc_a, r['atom1_idx'], refsite_a) * L_avg,
-                          d2 * L_avg, r['distance']]
+        # 5-component fingerprint:
+        #   [d1_x, d1_y, d1_z]  — full 3D local displacement of atom1 from refsite
+        #   [d2_norm]            — scalar distance of atom2 from refsite
+        #   [bond_norm]          — scalar fractional bond length atom1→atom2
+        # Encoding both distance and direction for atom1 breaks degeneracies
+        # between bonds at the same distance but pointing in different directions.
+        fp_a = np.array([[*(_frac_disp(sc_a, r['atom1_idx'], refsite_a) * L_avg),
+                          d2 * L_avg,
+                          _frac_norm_pair(sc_a, r['atom1_idx'], r['atom2_idx']) * L_avg]
                          for _, r, d2 in ag])
-        fp_b = np.array([[_frac_norm(sc_b, r['atom1_idx'], refsite_b) * L_avg,
-                          d2 * L_avg, r['distance']]
+        fp_b = np.array([[*(_frac_disp(sc_b, r['atom1_idx'], refsite_b) * L_avg),
+                          d2 * L_avg,
+                          _frac_norm_pair(sc_b, r['atom1_idx'], r['atom2_idx']) * L_avg]
                          for _, r, d2 in bg])
         diff = fp_b[None] - fp_a[:, None]   # (Na, Nb, 3)
         cost = np.linalg.norm(diff, axis=2)  # (Na, Nb)
@@ -617,86 +507,6 @@ def match_fc_pairs_direct(results_a, results_b, sc_a, sc_b,
     return matched_pairs, unmatched_a, unmatched_b
 
 
-def match_fc_pairs(results_a, results_b, atom_matches, sc_a):
-    """
-    Match off-site force-constant pairs across two structures using
-    pre-computed atom-index matches.
-
-    For each pair (i, j) in results_a, look for the pair (i', j') in
-    results_b where i' = atom_matches[i] and j' = atom_matches[j].
-    Only pairs where both atoms have a valid match are included.
-    Pairs involving species absent in sc_b (e.g. Li-containing pairs
-    in the intercalated → deintercalated direction) are skipped silently.
-
-    Parameters
-    ----------
-    results_a    : list of dicts from find_refsite_pairs() for structure A
-    results_b    : list of dicts from find_refsite_pairs() for structure B
-    atom_matches : dict {idx_a: idx_b} from match_atoms_across_structures()
-                   covering all relevant species
-    sc_a         : Supercell for structure A (used for distance lookup)
-
-    Returns
-    -------
-    matched_pairs : list of dicts, each with keys:
-        atom1_idx_a, atom2_idx_a, atom1_idx_b, atom2_idx_b,
-        species1, species2, distance_a, distance_b,
-        atom1_ref_dist_a, atom1_ref_dist_b,
-        mean_pfc_a, mean_pfc_b, delta_pfc
-    unmatched_a   : list of dicts from results_a with no counterpart in B
-    unmatched_b   : list of dicts from results_b with no counterpart in A
-    """
-    # Build a fast lookup for results_b: (idx1, idx2) -> result dict
-    lookup_b = {}
-    for r in results_b:
-        lookup_b[(r['atom1_idx'], r['atom2_idx'])] = r
-
-    matched_pairs = []
-    unmatched_a   = []
-
-    for r in results_a:
-        i, j = r['atom1_idx'], r['atom2_idx']
-
-        if i not in atom_matches or j not in atom_matches:
-            unmatched_a.append(r)
-            continue
-
-        i_b = atom_matches[i]
-        j_b = atom_matches[j]
-
-        counterpart = lookup_b.get((i_b, j_b))
-        if counterpart is None:
-            unmatched_a.append(r)
-            continue
-
-        dist_a = r['distance']
-        dist_b = counterpart['distance']
-        pfc_a  = r['mean_pfc']
-        pfc_b  = counterpart['mean_pfc']
-
-        matched_pairs.append({
-            'atom1_idx_a':      i,
-            'atom2_idx_a':      j,
-            'atom1_idx_b':      i_b,
-            'atom2_idx_b':      j_b,
-            'species1':         r['species1'],
-            'species2':         r['species2'],
-            'distance_a':       dist_a,
-            'distance_b':       dist_b,
-            'atom1_ref_dist_a': r.get('atom1_ref_dist', 0.0),
-            'atom1_ref_dist_b': counterpart.get('atom1_ref_dist', 0.0),
-            'mean_pfc_a':       pfc_a,
-            'mean_pfc_b':       pfc_b,
-            'delta_pfc':        pfc_b - pfc_a,
-        })
-
-    matched_b_keys = {(m['atom1_idx_b'], m['atom2_idx_b']) for m in matched_pairs}
-    unmatched_b = [r for r in results_b
-                   if (r['atom1_idx'], r['atom2_idx']) not in matched_b_keys]
-
-    return matched_pairs, unmatched_a, unmatched_b
-
-
 def stiffness_shift_from_pairs(matched_pairs):
     """
     Compute total and per-species-pair stiffness shift from matched pairs.
@@ -718,34 +528,3 @@ def stiffness_shift_from_pairs(matched_pairs):
     return df, total_shift
 
 
-def fallback_equal_count_shift(results_a, results_b):
-    """
-    Fallback stiffness shift when atom matching fails.
-    Sorts both result sets by atom-atom distance and truncates to equal
-    length, then subtracts pFC sums. Returns (df, total_shift, n_pairs).
-    This is the original workaround — called only when position matching
-    fails and the program warns the user.
-    """
-    def sorted_pfcs(results):
-        return sorted(results, key=lambda r: r['distance'])
-
-    sorted_a = sorted_pfcs(results_a)
-    sorted_b = sorted_pfcs(results_b)
-    n = min(len(sorted_a), len(sorted_b))
-
-    rows = []
-    for ra, rb in zip(sorted_a[:n], sorted_b[:n]):
-        pfc_a = ra['mean_pfc']
-        pfc_b = rb['mean_pfc']
-        rows.append({
-            'species1':   ra['species1'],
-            'species2':   ra['species2'],
-            'distance_a': ra['distance'],
-            'distance_b': rb['distance'],
-            'mean_pfc_a': pfc_a,
-            'mean_pfc_b': pfc_b,
-            'delta_pfc':  pfc_b - pfc_a,
-        })
-
-    df = pd.DataFrame(rows)
-    return df, float(df['delta_pfc'].sum()), n

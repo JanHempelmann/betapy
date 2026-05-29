@@ -27,7 +27,7 @@ from PyQt5.QtWidgets import (
     QAbstractItemView, QFrame, QScrollArea, QGridLayout,
     QTabWidget, QProgressBar,
 )
-from PyQt5.QtCore import Qt, QThread, pyqtSignal, QSettings
+from PyQt5.QtCore import Qt, QThread, pyqtSignal, QSettings, QTimer
 from PyQt5.QtWidgets import QApplication
 from PyQt5.QtGui import QColor
 
@@ -148,7 +148,7 @@ class _StiffnessWorker(QThread):
                 )
                 res_b, _ = find_refsite_pairs(
                     sc_b, fc_b['atomic_pairs'], fc_b['force_matrices'],
-                    ref_b, cutoff=self._cutoff, min_distance=self._msd,
+                    ref_b, cutoff=self._cutoff * 1.5, min_distance=self._msd,
                     exclude_species=excl_sp, show_progress=False,
                 )
 
@@ -339,7 +339,7 @@ class StiffnessShiftWidget(QWidget):
         self._spin_cutoff.setRange(0.5, 30.0)
         self._spin_cutoff.setSingleStep(0.5)
         self._spin_cutoff.setDecimals(2)
-        self._spin_cutoff.setValue(6.0)
+        self._spin_cutoff.setValue(4.0)
         self._spin_cutoff.setFixedWidth(72)
         srow.addWidget(self._spin_cutoff)
 
@@ -354,20 +354,20 @@ class StiffnessShiftWidget(QWidget):
 
         _tol_lbl = QLabel('Match tol (Å):')
         _tol_lbl.setToolTip(
-            'Maximum RMS of (Δatom1_ref_dist, Δbond_length) in Å for two pairs\n'
-            'to be considered equivalent across structures.\n'
-            'Uses Cartesian distances only — invariant to cell origin, rotation,\n'
-            'and inversion — so it works even when A and B were set up with\n'
-            'different crystallographic origins or have significant lattice changes.\n'
-            'Correct intercalation pairs differ by <0.2 Å; wrong pairs by >0.5 Å.\n'
-            'Default 0.3 Å gives a safe margin for typical intercalation.'
+            'Maximum L2 norm of the fingerprint difference for two pairs to be\n'
+            'considered equivalent across structures. The fingerprint encodes the\n'
+            'full 3D direction of atom1 from the refsite (fractional space) plus\n'
+            'atom2 ref-distance and bond length — all scaled by avg. cell length.\n'
+            'Correct pairs differ by <1 Å (atomic relaxation noise only);\n'
+            'wrong pairs in different directions differ by several Å.\n'
+            'Default 1.5 Å comfortably absorbs relaxation while rejecting mismatches.'
         )
         srow.addWidget(_tol_lbl)
         self._spin_tol = QDoubleSpinBox()
-        self._spin_tol.setRange(0.01, 2.0)
-        self._spin_tol.setSingleStep(0.05)
+        self._spin_tol.setRange(0.1, 5.0)
+        self._spin_tol.setSingleStep(0.1)
         self._spin_tol.setDecimals(2)
-        self._spin_tol.setValue(0.3)
+        self._spin_tol.setValue(1.5)
         self._spin_tol.setToolTip(_tol_lbl.toolTip())
         self._spin_tol.setFixedWidth(72)
         srow.addWidget(self._spin_tol)
@@ -384,6 +384,12 @@ class StiffnessShiftWidget(QWidget):
         self._btn_run.setFixedWidth(110)
         self._btn_run.clicked.connect(self._run_analysis)
         srow.addWidget(self._btn_run)
+
+        self._btn_clear_cache = QPushButton('Clear cache')
+        self._btn_clear_cache.setFixedWidth(90)
+        self._btn_clear_cache.setToolTip('Delete all cached stiffness-shift results.')
+        self._btn_clear_cache.clicked.connect(self._clear_cache)
+        srow.addWidget(self._btn_clear_cache)
 
         self._progress_bar = QProgressBar()
         self._progress_bar.setFixedWidth(120)
@@ -597,6 +603,10 @@ class StiffnessShiftWidget(QWidget):
     # Analysis
     # ------------------------------------------------------------------
 
+    def _clear_cache(self):
+        n = _cache.clear()
+        QMessageBox.information(self, 'Cache cleared', f'Removed {n} cached result(s).')
+
     def _run_analysis(self):
         if self._worker is not None and self._worker.isRunning():
             return
@@ -694,6 +704,12 @@ class StiffnessShiftWidget(QWidget):
         self._total_raw = total
         self._excl_note = f'  excl. {next(iter(excl_sp))} pairs\n' if excl_sp else ''
         self._update_result_label()
+
+        # Defer a final synchronous draw until Qt has settled the layout from
+        # _rebuild_checkboxes and the other widget updates above. Without this,
+        # draw_idle() runs before the canvas has reached its final size and
+        # leaves a white rectangle that only clears on a window resize.
+        QTimer.singleShot(0, self._canvas.draw)
 
     def _on_analysis_error(self, msg):
         self._progress_bar.hide()
@@ -814,19 +830,9 @@ class StiffnessShiftWidget(QWidget):
                 for i, r in um_a_indexed
             ]
 
-        # Unmatched B
-        um_b_indexed = [(i, r) for i, r in enumerate(self._unmatched_b)
-                        if (r['species1'], r['species2']) in active]
-        if um_b_indexed:
-            ax.scatter(
-                [r.get('atom1_ref_dist', 0.0) for _, r in um_b_indexed],
-                [r['mean_pfc'] * factor for _, r in um_b_indexed],
-                s=22, color='#aaaaaa', marker='s', edgecolors='none', zorder=2,
-            )
-            self._um_b_pts = [
-                {'x': r.get('atom1_ref_dist', 0.0), 'y': r['mean_pfc'] * factor, 'ridx': i}
-                for i, r in um_b_indexed
-            ]
+        # Unmatched B — data and table remain available; hidden from plot to
+        # keep the scatter readable. Re-enable scatter here for a future debug mode.
+        um_b_indexed = []
 
         # Gold rings on selected points
         if self._selected_midx is not None and self._selected_midx < len(self._matched):
