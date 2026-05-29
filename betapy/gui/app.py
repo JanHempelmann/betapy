@@ -717,6 +717,8 @@ class MainWindow(QMainWindow):
 
 def main(cli_args=None):
     app = QApplication(sys.argv)
+    app.setApplicationName('betapy')
+    app.setApplicationDisplayName('betapy')
     app.setStyle('Fusion')
 
     _icon_path = Path(__file__).parent.parent / 'data' / 'icon.png'

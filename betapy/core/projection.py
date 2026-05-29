@@ -513,11 +513,13 @@ def match_fc_pairs_direct(results_a, results_b, sc_a, sc_b,
     Match off-site pFC pairs by scalar Cartesian fingerprint:
     (species1, species2, atom1_ref_dist_Å, atom2_ref_dist_Å, bond_length_Å).
 
-    All three distances are Cartesian (Å) and PBC-correct — invariant to
-    cell origin, translation, rotation, and inversion.  This makes matching
-    robust even when A and B were set up with different crystallographic
-    origins or have significant lattice-parameter changes (e.g. intercalation
-    c-axis expansion).
+    The fingerprint is (atom1_ref_dist, atom2_ref_dist, bond_length), all
+    PBC-correct and invariant to cell origin, translation, rotation, and
+    inversion.  Atom-to-refsite distances use supercell fractional-space norms
+    scaled by the average cell length, making them nearly identical for
+    equivalent atoms regardless of anisotropic lattice changes (e.g. a 12%
+    c-axis contraction on intercalant removal).  Bond lengths use Cartesian Å
+    as they change little due to fractional-coordinate relaxation.
 
     atom2_ref_dist is computed on the fly (not stored in results) to
     discriminate pairs where atom2 is on opposite sides of the supercell
@@ -542,27 +544,39 @@ def match_fc_pairs_direct(results_a, results_b, sc_a, sc_b,
     refsite_a = np.asarray(refsite_a)
     refsite_b = np.asarray(refsite_b)
 
-    # Group pairs by ordered species pair, pre-computing atom2_ref_dist
-    def _d2(sc, r, ref):
-        return sc.distance_to_point(r['atom2_idx'], ref)
+    # Atom-to-refsite distances are computed as supercell fractional-space
+    # norms (nearly identical for equivalent atoms regardless of how
+    # anisotropically the lattice has changed), then scaled by the average
+    # cell length so that tol retains its Å interpretation.  Bond lengths
+    # stay in Cartesian Å — they change little since fractional coordinates
+    # relax to compensate lattice changes.
+    L_avg = 0.5 * (abs(np.linalg.det(sc_a.lattice)) ** (1.0 / 3.0)
+                   + abs(np.linalg.det(sc_b.lattice)) ** (1.0 / 3.0))
 
+    def _frac_norm(sc, atom_idx, ref):
+        pos = sc.positions[atom_idx - 1]
+        return float(np.linalg.norm(sc.frac_diff(pos, ref)))
+
+    # Group pairs by ordered species pair, pre-computing atom2 frac norms
     by_sp_a = {}
     for i, r in enumerate(results_a):
-        d2 = _d2(sc_a, r, refsite_a)
+        d2 = _frac_norm(sc_a, r['atom2_idx'], refsite_a)
         by_sp_a.setdefault((r['species1'], r['species2']), []).append((i, r, d2))
     by_sp_b = {}
     for j, r in enumerate(results_b):
-        d2 = _d2(sc_b, r, refsite_b)
+        d2 = _frac_norm(sc_b, r['atom2_idx'], refsite_b)
         by_sp_b.setdefault((r['species1'], r['species2']), []).append((j, r, d2))
 
     a_to_b = {}
     for key in set(by_sp_a) & set(by_sp_b):
         ag = by_sp_a[key]
         bg = by_sp_b[key]
-        # Fingerprint: [atom1_ref_dist (Å), atom2_ref_dist (Å), bond_length (Å)]
-        fp_a = np.array([[r.get('atom1_ref_dist', 0.0), d2, r['distance']]
+        # Fingerprint: (atom1_ref_dist_frac*L, atom2_ref_dist_frac*L, bond_length_Å)
+        fp_a = np.array([[_frac_norm(sc_a, r['atom1_idx'], refsite_a) * L_avg,
+                          d2 * L_avg, r['distance']]
                          for _, r, d2 in ag])
-        fp_b = np.array([[r.get('atom1_ref_dist', 0.0), d2, r['distance']]
+        fp_b = np.array([[_frac_norm(sc_b, r['atom1_idx'], refsite_b) * L_avg,
+                          d2 * L_avg, r['distance']]
                          for _, r, d2 in bg])
         diff = fp_b[None] - fp_a[:, None]   # (Na, Nb, 3)
         cost = np.linalg.norm(diff, axis=2)  # (Na, Nb)

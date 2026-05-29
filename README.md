@@ -4,6 +4,10 @@
 
 # betapy
 
+![Python](https://img.shields.io/badge/python-3.8%2B-blue)
+![Platform](https://img.shields.io/badge/platform-Linux%20|%20macOS%20|%20Windows-lightgrey)
+![License](https://img.shields.io/badge/license-MIT-green)
+
 **betapy — phonon-based bonding analysis for crystalline materials**
 
 betapy post-processes the force constants calculated by [Phonopy](https://phonopy.github.io/phonopy/) to extract projected force constants (pFCs) along interatomic bond vectors which can serve as descriptors for bond stiffness or strength. It provides a complementary way of bonding analysis to wavefunction-based approaches and has been used successfully to detect longer range multicenter bonding effects in phase-change materials and beyond.
@@ -64,6 +68,8 @@ pip install -e ".[gui]"
 > conda install -c conda-forge pyvista pyvistaqt
 > pip install -e ".[gui]"
 > ```
+
+> **PyVista on Windows (pip):** If you install via pip rather than conda and the 3D structure viewer fails to launch, install the [Microsoft Visual C++ Redistributable (x64)](https://learn.microsoft.com/en-us/cpp/windows/latest-supported-vc-redist) — it is required by VTK and may not be present on fresh Windows installs. The conda route above avoids this entirely.
 
 If GUI dependencies are not installed, `betapy-gui` will print a friendly error and exit. The `betapy` CLI works without any GUI packages.
 
