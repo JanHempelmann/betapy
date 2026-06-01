@@ -11,6 +11,7 @@ from betapy.core.structure import Supercell
 from betapy.core.projection import (
     compute_bulk_pfcs, find_refsite_pairs, unique_pfcs,
     match_fc_pairs_direct, stiffness_shift_from_pairs,
+    _project_fc_lt,
 )
 
 
@@ -287,6 +288,64 @@ def test_match_fc_pairs_direct_tol_rejection():
     assert len(matched) == 0
     assert len(ua) == 1
     assert len(ub) == 1
+
+
+# ---------------------------------------------------------------------------
+# _project_fc_lt: longitudinal / transverse decomposition
+# ---------------------------------------------------------------------------
+
+def test_project_fc_lt_diagonal_along_x():
+    # Bond along x; diagonal FC matrix with different eigenvalues
+    fc = np.diag([3.0, 1.0, 1.0])
+    e  = np.array([1.0, 0.0, 0.0])
+    phi_l, phi_t = _project_fc_lt(fc, e)
+    assert phi_l == pytest.approx(3.0)
+    assert phi_t == pytest.approx(1.0)   # (Tr=5 - 3) / 2
+
+
+def test_project_fc_lt_coulomb_ratio():
+    # Pure Coulomb pair along x: Φ = diag(-2, 1, 1) * (C/d³), C/d³ = 1
+    # Expected: A = phi_t / phi_l = 1 / (-2) = -0.5
+    fc = np.diag([-2.0, 1.0, 1.0])
+    e  = np.array([1.0, 0.0, 0.0])
+    phi_l, phi_t = _project_fc_lt(fc, e)
+    assert phi_l == pytest.approx(-2.0)
+    assert phi_t == pytest.approx(1.0)   # (Tr=0 - (-2)) / 2
+    assert phi_t / phi_l == pytest.approx(-0.5)
+
+
+def test_project_fc_lt_isotropic():
+    # Isotropic FC: phi_l == phi_t (A = 1), independent of bond direction
+    k  = 5.0
+    fc = k * np.eye(3)
+    for e in [np.array([1, 0, 0]), np.array([0, 1, 0]),
+              np.array([1, 1, 0]) / np.sqrt(2)]:
+        phi_l, phi_t = _project_fc_lt(fc, e)
+        assert phi_l == pytest.approx(k)
+        assert phi_t == pytest.approx(k)
+
+
+def test_project_fc_lt_transpose_invariance():
+    # phi_l and phi_t must be identical for Φ and Φᵀ (no symmetrization needed)
+    rng = np.random.default_rng(42)
+    fc  = rng.standard_normal((3, 3))
+    e   = np.array([1.0, 0.0, 0.0])
+    phi_l,   phi_t   = _project_fc_lt(fc,   e)
+    phi_l_T, phi_t_T = _project_fc_lt(fc.T, e)
+    assert phi_l == pytest.approx(phi_l_T)
+    assert phi_t == pytest.approx(phi_t_T)
+
+
+def test_compute_bulk_pfcs_offsite_has_phi_lt():
+    sc = make_simple_supercell()
+    pairs  = [[1, 2]]
+    fc_mat = [np.diag([-2.0, 1.0, 1.0]).tolist()]
+    results, _, _ = compute_bulk_pfcs(sc, pairs, fc_mat, show_progress=False)
+    assert 'phi_l' in results[0]
+    assert 'phi_t' in results[0]
+    # Existing keys must still be present
+    assert 'mean_pfc' in results[0]
+    assert 'rms_pfc'  in results[0]
 
 
 # ---------------------------------------------------------------------------

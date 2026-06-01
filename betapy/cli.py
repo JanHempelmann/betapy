@@ -19,6 +19,7 @@ from betapy.core.projection import (
     compute_bulk_pfcs, unique_pfcs,
     find_refsite_pairs, refsite_results_to_dataframes,
     match_fc_pairs_direct, stiffness_shift_from_pairs,
+    structural_disturbance, sum_intercalant_pfcs,
 )
 
 
@@ -200,14 +201,41 @@ def run_stiffness_shift(settings):
         print(f'    {len(m)} matched, {len(ua)} unmatched A, {len(ub)} unmatched B')
 
     df, total = stiffness_shift_from_pairs(all_matched)
+    dist      = structural_disturbance(all_matched)
 
-    factor = EV_ANG2_TO_N_M if settings.unit == 'N/m' else 1.0
+    # Intercalant contribution: framework → intercalant bonds in B only.
+    # Use the standard cutoff (not 1.5×) and min_distance=0 so the intercalant
+    # atom sitting at the refsite is also counted as atom2.
+    intercalant_species = set(sc_b.chem_symbols) - set(sc_a.chem_symbols)
+    intercalant_total = 0.0
+    if intercalant_species:
+        for ref_b in refpos_b['positions']:
+            res_b_ic, _ = find_refsite_pairs(
+                sc_b, fc_b['atomic_pairs'], fc_b['force_matrices'],
+                ref_b, cutoff=ss.cutoff, min_distance=0.0,
+                exclude_species=None, show_progress=False,
+            )
+            ic_sum, _ = sum_intercalant_pfcs(res_b_ic, intercalant_species)
+            intercalant_total += ic_sum
+
+    factor     = EV_ANG2_TO_N_M if settings.unit == 'N/m' else 1.0
     unit_label = UNIT_LABEL.get(settings.unit, settings.unit)
+    u          = unit_label
+
     print(f'\n Method: fractional-fingerprint matching')
-    print(f'  Matched: {len(all_matched)}   '
-          f'Unmatched A: {len(all_unmatched_a)}   '
+    print(f'  Unmatched A: {len(all_unmatched_a)}   '
           f'Unmatched B: {len(all_unmatched_b)}')
-    print(f'  Total stiffness shift (B − A): {total * factor:+.6f} {unit_label}')
+    print(f'\n  ── Stiffness shift (B − A) {"─" * 24}')
+    print(f'  Matched pairs   : {dist["n_pairs"]}')
+    print(f'  Σ ΔpFC          : {total * factor:+.6f}  {u}')
+    print(f'  Min ΔpFC        : {dist["min_delta"] * factor:+.6f}  {u}  ({dist["min_species"]})')
+    print(f'\n  ── Structural disturbance {"─" * 26}')
+    print(f'  Total |ΔpFC|    : {dist["total_abs"] * factor:.6f}  {u}  over {dist["n_pairs"]} bonds')
+    print(f'  Mean  |ΔpFC|    : {dist["mean_abs"]  * factor:.6f}  {u}')
+    if intercalant_species:
+        sp_str = '/'.join(sorted(intercalant_species))
+        print(f'\n  ── Intercalant contribution ({sp_str}) {"─" * 14}')
+        print(f'  Σ pFC (B only)  : {intercalant_total * factor:+.6f}  {u}')
 
     if settings.store:
         out = Path('stiffness_shift.csv')

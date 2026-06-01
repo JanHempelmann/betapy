@@ -25,7 +25,7 @@ from PyQt5.QtWidgets import (
     QGroupBox, QFileDialog, QMessageBox, QCheckBox,
     QTableWidget, QTableWidgetItem, QHeaderView,
     QAbstractItemView, QFrame, QScrollArea, QGridLayout,
-    QTabWidget, QProgressBar,
+    QTabWidget, QProgressBar, QPlainTextEdit,
 )
 from PyQt5.QtCore import Qt, QThread, pyqtSignal, QSettings, QTimer
 from PyQt5.QtWidgets import QApplication
@@ -44,6 +44,8 @@ from betapy.core.projection import (
     find_refsite_pairs,
     match_fc_pairs_direct,
     stiffness_shift_from_pairs,
+    structural_disturbance,
+    sum_intercalant_pfcs,
 )
 from betapy.core import cache as _cache
 from betapy.gui.structure_view import StructureView
@@ -70,16 +72,18 @@ class _StiffnessWorker(QThread):
         self._tol          = tol
         self._excl         = excl
         # Outputs — read by the main thread after finished emits
-        self.sc_a         = None
-        self.sc_b         = None
-        self.refsites_a   = []
-        self.refsites_b   = []
-        self.offsite_a    = []
-        self.offsite_b    = []
-        self.matched      = []
-        self.unmatched_a  = []
-        self.unmatched_b  = []
-        self.excl_sp      = None
+        self.sc_a                = None
+        self.sc_b                = None
+        self.refsites_a          = []
+        self.refsites_b          = []
+        self.offsite_a           = []
+        self.offsite_b           = []
+        self.matched             = []
+        self.unmatched_a         = []
+        self.unmatched_b         = []
+        self.excl_sp             = None
+        self.intercalant_contrib = 0.0
+        self.intercalant_species = set()
 
     def run(self):
         try:
@@ -94,16 +98,18 @@ class _StiffnessWorker(QThread):
             )
             _hit = _cache.load(_key)
             if _hit is not None:
-                self.sc_a       = _hit['sc_a']
-                self.sc_b       = _hit['sc_b']
-                self.refsites_a = _hit['refsites_a']
-                self.refsites_b = _hit['refsites_b']
-                self.offsite_a  = _hit['offsite_a']
-                self.offsite_b  = _hit['offsite_b']
-                self.matched    = _hit['matched']
-                self.unmatched_a = _hit['unmatched_a']
-                self.unmatched_b = _hit['unmatched_b']
-                self.excl_sp    = _hit['excl_sp']
+                self.sc_a                = _hit['sc_a']
+                self.sc_b                = _hit['sc_b']
+                self.refsites_a          = _hit['refsites_a']
+                self.refsites_b          = _hit['refsites_b']
+                self.offsite_a           = _hit['offsite_a']
+                self.offsite_b           = _hit['offsite_b']
+                self.matched             = _hit['matched']
+                self.unmatched_a         = _hit['unmatched_a']
+                self.unmatched_b         = _hit['unmatched_b']
+                self.excl_sp             = _hit['excl_sp']
+                self.intercalant_contrib = _hit.get('intercalant_contrib', 0.0)
+                self.intercalant_species = _hit.get('intercalant_species', set())
                 self.finished.emit()
                 return
 
@@ -165,16 +171,33 @@ class _StiffnessWorker(QThread):
                 unmatched_a.extend(ua)
                 unmatched_b.extend(ub)
 
-            self.sc_a       = sc_a
-            self.sc_b       = sc_b
-            self.refsites_a = refsites_a
-            self.refsites_b = refsites_b
-            self.offsite_a  = offsite_a
-            self.offsite_b  = offsite_b
-            self.matched    = matched
-            self.unmatched_a = unmatched_a
-            self.unmatched_b = unmatched_b
-            self.excl_sp    = excl_sp
+            # Intercalant contribution: framework → intercalant bonds in B.
+            # Use standard cutoff (not 1.5×) and min_distance=0 so the
+            # intercalant atom at the refsite is included as atom2.
+            intercalant_species = set(sc_b.chem_symbols) - set(sc_a.chem_symbols)
+            intercalant_contrib = 0.0
+            if intercalant_species:
+                for ref_b in refsites_b:
+                    res_b_ic, _ = find_refsite_pairs(
+                        sc_b, fc_b['atomic_pairs'], fc_b['force_matrices'],
+                        ref_b, cutoff=self._cutoff, min_distance=0.0,
+                        exclude_species=None, show_progress=False,
+                    )
+                    ic_sum, _ = sum_intercalant_pfcs(res_b_ic, intercalant_species)
+                    intercalant_contrib += ic_sum
+
+            self.sc_a                = sc_a
+            self.sc_b                = sc_b
+            self.refsites_a          = refsites_a
+            self.refsites_b          = refsites_b
+            self.offsite_a           = offsite_a
+            self.offsite_b           = offsite_b
+            self.matched             = matched
+            self.unmatched_a         = unmatched_a
+            self.unmatched_b         = unmatched_b
+            self.excl_sp             = excl_sp
+            self.intercalant_contrib = intercalant_contrib
+            self.intercalant_species = intercalant_species
 
             _cache.save(_key, {
                 'sc_a': sc_a, 'sc_b': sc_b,
@@ -182,6 +205,8 @@ class _StiffnessWorker(QThread):
                 'offsite_a': offsite_a, 'offsite_b': offsite_b,
                 'matched': matched, 'unmatched_a': unmatched_a,
                 'unmatched_b': unmatched_b, 'excl_sp': excl_sp,
+                'intercalant_contrib': intercalant_contrib,
+                'intercalant_species': intercalant_species,
             })
             self.finished.emit()
         except Exception as e:
@@ -224,12 +249,15 @@ class StiffnessShiftWidget(QWidget):
         self._um_a_pts    = []   # [{x,y,ridx}, ...] visible unmatched A
         self._um_b_pts    = []   # [{x,y,ridx}, ...] visible unmatched B
 
-        self._pair_types  = []
-        self._checkboxes  = {}
-        self._ax          = None
-        self._unit        = UNIT_EV
-        self._total_raw   = None
-        self._excl_note   = ''
+        self._pair_types          = []
+        self._checkboxes          = {}
+        self._ax                  = None
+        self._unit                = UNIT_EV
+        self._total_raw           = None
+        self._excl_note           = ''
+        self._intercalant_contrib = 0.0
+        self._intercalant_species = set()
+        self._disturbance         = {}
         self._build_ui()
 
     # ------------------------------------------------------------------
@@ -244,18 +272,25 @@ class StiffnessShiftWidget(QWidget):
             self._refresh_table()
             self._refresh_unmatched_table()
             self._update_result_label()
+            self._refresh_summary()
 
     def _update_result_label(self):
         if self._total_raw is None:
             return
         factor = EV_ANG2_TO_N_M if self._unit == 'N/m' else 1.0
         unit_lbl = UNIT_LABEL[self._unit]
+        ic_line = ''
+        if self._intercalant_species:
+            sp_str = '/'.join(sorted(self._intercalant_species))
+            ic_line = (f'\nIntercalant contribution ({sp_str}): '
+                       f'{self._intercalant_contrib * factor:+.5f} {unit_lbl}')
         self._result_lbl.setText(
             f'Matched: {len(self._matched)}   '
             f'Unmatched A: {len(self._unmatched_a)}   '
             f'Unmatched B: {len(self._unmatched_b)}\n'
             f'{self._excl_note}'
             f'Σ ΔpFC (B-A): {self._total_raw * factor:+.5f} {unit_lbl}'
+            f'{ic_line}'
         )
         self._btn_copy_shift.setEnabled(True)
 
@@ -540,6 +575,19 @@ class StiffnessShiftWidget(QWidget):
         ul.addWidget(self._table_um)
         self._bottom_tabs.addTab(um_w, 'Unmatched (0)')
 
+        # Tab 2 — Summary
+        sum_w = QWidget()
+        sl2 = QVBoxLayout(sum_w)
+        sl2.setContentsMargins(4, 4, 4, 4)
+        self._summary_text = QPlainTextEdit()
+        self._summary_text.setReadOnly(True)
+        self._summary_text.setFont(
+            __import__('PyQt5.QtGui', fromlist=['QFont']).QFont('Monospace', 10)
+        )
+        self._summary_text.setPlaceholderText('Run analysis to see summary.')
+        sl2.addWidget(self._summary_text)
+        self._bottom_tabs.addTab(sum_w, 'Summary')
+
         rl.addWidget(self._bottom_tabs)
 
         self._sel_bar = QLabel('')
@@ -701,9 +749,13 @@ class StiffnessShiftWidget(QWidget):
         self._refresh_unmatched_table()
 
         _, total = stiffness_shift_from_pairs(matched)
-        self._total_raw = total
-        self._excl_note = f'  excl. {next(iter(excl_sp))} pairs\n' if excl_sp else ''
+        self._total_raw           = total
+        self._excl_note           = f'  excl. {next(iter(excl_sp))} pairs\n' if excl_sp else ''
+        self._intercalant_contrib = w.intercalant_contrib
+        self._intercalant_species = w.intercalant_species
+        self._disturbance         = structural_disturbance(matched)
         self._update_result_label()
+        self._refresh_summary()
 
         # Defer a final synchronous draw until Qt has settled the layout from
         # _rebuild_checkboxes and the other widget updates above. Without this,
@@ -753,6 +805,47 @@ class StiffnessShiftWidget(QWidget):
             row_l.addStretch()
             self._filter_layout.addWidget(row_w)
             self._checkboxes[pt] = cb
+
+    # ------------------------------------------------------------------
+    # Summary tab
+    # ------------------------------------------------------------------
+
+    def _refresh_summary(self):
+        if self._total_raw is None:
+            return
+        factor   = EV_ANG2_TO_N_M if self._unit == 'N/m' else 1.0
+        u        = UNIT_LABEL[self._unit]
+        d        = self._disturbance
+        n        = d.get('n_pairs', 0)
+        sep      = '─' * 44
+
+        lines = [
+            f'── Stiffness shift (B − A) {sep[:20]}',
+            f'  Matched pairs   : {n}',
+            f'  Unmatched A     : {len(self._unmatched_a)}',
+            f'  Unmatched B     : {len(self._unmatched_b)}',
+        ]
+        if self._excl_note.strip():
+            lines.append(f'  {self._excl_note.strip()}')
+        lines += [
+            f'  Σ ΔpFC          : {self._total_raw * factor:+.5f}  {u}',
+            f'  Min ΔpFC        : {d.get("min_delta", 0.0) * factor:+.5f}  {u}'
+            + (f'  ({d["min_species"]})' if d.get('min_species') else ''),
+            '',
+            f'── Structural disturbance {sep[:21]}',
+            f'  Total |ΔpFC|    : {d.get("total_abs", 0.0) * factor:.5f}  {u}  over {n} bonds',
+            f'  Mean  |ΔpFC|    : {d.get("mean_abs",  0.0) * factor:.5f}  {u}',
+        ]
+
+        if self._intercalant_species:
+            sp_str = '/'.join(sorted(self._intercalant_species))
+            lines += [
+                '',
+                f'── Intercalant contribution ({sp_str}) {sep[:14]}',
+                f'  Σ pFC (B only)  : {self._intercalant_contrib * factor:+.5f}  {u}',
+            ]
+
+        self._summary_text.setPlainText('\n'.join(lines))
 
     # ------------------------------------------------------------------
     # Scatter plot

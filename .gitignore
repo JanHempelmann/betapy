@@ -49,3 +49,9 @@ vasprun.xml
 .coverage
 htmlcov/
 internaltesting_examples/
+
+# Re-track phonopy input files that are intentionally part of the examples
+!examples/**/SPOSCAR
+!examples/**/POSCAR
+!examples/**/FORCE_CONSTANTS
+!examples/**/REFPOS

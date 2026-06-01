@@ -43,6 +43,26 @@ def _project_fc_matrix(fc_matrix, direction):
     return mean, rms
 
 
+def _project_fc_lt(fc_matrix, direction):
+    """
+    Decompose a 3×3 FC matrix into longitudinal and transverse components.
+
+    Returns
+    -------
+    phi_l : float
+        Longitudinal (bond-stretching): êᵀΦê.
+        Negative for a bonding/restoring pair (phonopy off-diagonal convention).
+    phi_t : float
+        Average transverse (bending): (Tr(Φ) − phi_l) / 2.
+        Both quantities are invariant under Φ ↔ Φᵀ, so no symmetrization needed.
+    """
+    fc = np.asarray(fc_matrix, dtype=float)
+    e  = np.asarray(direction,  dtype=float)
+    phi_l = float(e @ fc @ e)
+    phi_t = float((np.trace(fc) - phi_l) / 2.0)
+    return phi_l, phi_t
+
+
 def _onsite_norm(fc_matrix):
     """
     For on-site (self-interaction) terms, return row norms and their mean.
@@ -113,6 +133,7 @@ def compute_bulk_pfcs(supercell, atomic_pairs, force_matrices,
             direction = _unit_vector(cart_vec)
 
             mean_pfc, rms_pfc = _project_fc_matrix(fc_mat, direction)
+            phi_l, phi_t      = _project_fc_lt(fc_mat, direction)
             results.append({
                 'atom1_idx': i,
                 'atom2_idx': j,
@@ -121,6 +142,9 @@ def compute_bulk_pfcs(supercell, atomic_pairs, force_matrices,
                 'distance':  dist,
                 'mean_pfc':  mean_pfc,
                 'rms_pfc':   rms_pfc,
+                'phi_l':     phi_l,
+                'phi_t':     phi_t,
+                'direction': direction.tolist(),
             })
             distances.append(dist)
 
@@ -220,8 +244,11 @@ def group_by_shells(results, dist_precision=0.01, max_distance=None):
 
     shells = []
     for (sp1, sp2, _), records in bins.items():
-        pfcs  = np.array([rec['mean_pfc'] for rec in records])
-        dists = np.array([rec['distance']  for rec in records])
+        pfcs   = np.array([rec['mean_pfc'] for rec in records])
+        dists  = np.array([rec['distance']  for rec in records])
+        phi_ls = np.array([rec.get('phi_l', np.nan) for rec in records])
+        phi_ts = np.array([rec.get('phi_t', np.nan) for rec in records])
+        has_lt = not np.all(np.isnan(phi_ls))
         shells.append({
             'species1':      sp1,
             'species2':      sp2,
@@ -231,6 +258,10 @@ def group_by_shells(results, dist_precision=0.01, max_distance=None):
             'pfc_std':       float(np.std(pfcs)),
             'pfc_min':       float(np.min(pfcs)),
             'pfc_max':       float(np.max(pfcs)),
+            'phi_l_mean':    float(np.nanmean(phi_ls)) if has_lt else float('nan'),
+            'phi_l_std':     float(np.nanstd(phi_ls))  if has_lt else float('nan'),
+            'phi_t_mean':    float(np.nanmean(phi_ts)) if has_lt else float('nan'),
+            'phi_t_std':     float(np.nanstd(phi_ts))  if has_lt else float('nan'),
             'count':         len(records),
             'records':       records,
         })
@@ -526,5 +557,68 @@ def stiffness_shift_from_pairs(matched_pairs):
     df = pd.DataFrame(matched_pairs)
     total_shift = float(df['delta_pfc'].sum())
     return df, total_shift
+
+
+def structural_disturbance(matched_pairs):
+    """
+    Compute structural-disturbance metrics from matched pairs.
+
+    Unlike the signed stiffness shift, these metrics use absolute values so
+    that stiffening and softening contributions do not cancel — appropriate
+    when the goal is to quantify the total bond rearrangement per cycle.
+
+    Parameters
+    ----------
+    matched_pairs : list of dicts from match_fc_pairs_direct()
+
+    Returns
+    -------
+    dict with keys:
+        n_pairs     : int
+        total_abs   : float, Σ |ΔpFC|
+        mean_abs    : float, Σ |ΔpFC| / n_pairs
+        min_delta   : float, most negative ΔpFC (most softened bond)
+        min_species : str, species pair of that bond (e.g. 'V–O')
+    """
+    if not matched_pairs:
+        return {'n_pairs': 0, 'total_abs': 0.0, 'mean_abs': 0.0,
+                'min_delta': 0.0, 'min_species': ''}
+    deltas    = [p['delta_pfc'] for p in matched_pairs]
+    abs_deltas = [abs(d) for d in deltas]
+    min_idx   = int(np.argmin(deltas))
+    total_abs = float(sum(abs_deltas))
+    n         = len(matched_pairs)
+    return {
+        'n_pairs':    n,
+        'total_abs':  total_abs,
+        'mean_abs':   total_abs / n,
+        'min_delta':  float(deltas[min_idx]),
+        'min_species': (f"{matched_pairs[min_idx]['species1']}"
+                        f"–{matched_pairs[min_idx]['species2']}"),
+    }
+
+
+def sum_intercalant_pfcs(results, intercalant_species):
+    """
+    Sum pFCs for framework → intercalant bonds from refsite-projection results.
+
+    Filters to pairs where atom2 belongs to an intercalant species (atom1 is
+    the framework atom whose FC is projected toward the reference site).
+    Pairs where atom1 is the intercalant (sitting at the refsite) are excluded
+    because their projection direction is degenerate (~zero vector).
+
+    Parameters
+    ----------
+    results             : list of dicts from find_refsite_pairs()
+    intercalant_species : set of str
+
+    Returns
+    -------
+    total   : float, sum of mean_pfc for intercalant pairs
+    records : list of matching result dicts
+    """
+    records = [r for r in results if r['species2'] in intercalant_species]
+    total   = sum(r['mean_pfc'] for r in records)
+    return total, records
 
 

@@ -201,12 +201,14 @@ class MainWindow(QMainWindow):
         from betapy.gui.pfc_viewer             import PFCViewerWidget
         from betapy.gui.site_picker            import SitePickerWidget
         from betapy.gui.stiffness_shift_widget import StiffnessShiftWidget
+        from betapy.gui.lt_viewer              import LTDecompositionWidget
 
         # Instantiate all widgets upfront; only *add* them to the tab bar
         # selectively via _update_tab_visibility().
         self.pfc_viewer      = PFCViewerWidget()
         self.site_picker     = SitePickerWidget()
         self.stiffness_shift = StiffnessShiftWidget()
+        self.lt_viewer       = LTDecompositionWidget()
 
         # pFC Viewer is always present; track permanent tabs (no close button).
         self.tabs.addTab(self.pfc_viewer, 'pFC Viewer')
@@ -347,6 +349,7 @@ class MainWindow(QMainWindow):
                 w.set_unit(unit)
         self.site_picker.set_unit(unit)
         self.stiffness_shift.set_unit(unit)
+        self.lt_viewer.set_unit(unit)
 
     # ------------------------------------------------------------------
     # Tab bar — "+" overlay button and close handling
@@ -400,7 +403,7 @@ class MainWindow(QMainWindow):
         self.tabs.removeTab(idx)
         # Optional singleton tabs are kept alive for re-adding; extra pFC
         # viewers are independent instances and can be destroyed.
-        if widget not in (self.site_picker, self.stiffness_shift):
+        if widget not in (self.site_picker, self.stiffness_shift, self.lt_viewer):
             widget.deleteLater()
         QTimer.singleShot(0, self._reposition_plus_btn)
 
@@ -412,14 +415,18 @@ class MainWindow(QMainWindow):
 
         has_refsite = self.tabs.indexOf(self.site_picker)     != -1
         has_shift   = self.tabs.indexOf(self.stiffness_shift) != -1
+        has_lt      = self.tabs.indexOf(self.lt_viewer)       != -1
 
         label_ref   = ('• ' if has_refsite else '  ') + 'Ref. Site Projection'
         label_shift = ('• ' if has_shift   else '  ') + 'Stiffness Shift'
+        label_lt    = ('• ' if has_lt      else '  ') + 'LT Decomposition  (β)'
 
         menu.addAction(label_ref,   lambda: self._add_optional_tab(
             self.site_picker, 'Ref. Site Projection'))
         menu.addAction(label_shift, lambda: self._add_optional_tab(
             self.stiffness_shift, 'Stiffness Shift'))
+        menu.addAction(label_lt,    lambda: self._add_optional_tab(
+            self.lt_viewer, 'LT Decomposition  (β)'))
 
         menu.exec_(pos)
 
@@ -702,6 +709,11 @@ class MainWindow(QMainWindow):
         if self._lobster_dir is not None:
             self.pfc_viewer.set_lobster_dir(self._lobster_dir)
         self.site_picker.load_supercell(self.supercell, self.fc_data)
+
+        self.lt_viewer.load_data(
+            results,
+            reliability_cutoff=self.pfc_viewer._reliability_cutoff,
+        )
 
         self.status.showMessage(
             f'Analysis complete — {len(results)} off-site pairs, '
