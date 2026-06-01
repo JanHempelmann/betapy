@@ -44,6 +44,68 @@ def _annotate_lobster(df_unique, lobster_pairs):
         df_unique[col_name] = [_lob_val(row) for _, row in df_unique.iterrows()]
 
 
+def run_multicenter(supercell, bulk_results, lobster_dir, args):
+    """
+    Detect anomalous pFCs, trace multicenter chains, and print cobiBetween
+    directives.  Called after run_bulk_analysis so bulk_results are available.
+    """
+    import math
+    from betapy.core.multicenter import suggest_cobi_directives, append_cobi_directives
+
+    poscar_path = Path(lobster_dir) / 'POSCAR'
+    if not poscar_path.exists():
+        print(f'  Error: {poscar_path} not found.  Provide a POSCAR in the '
+              'LOBSTER directory for coordinate mapping.')
+        return
+
+    result = suggest_cobi_directives(
+        bulk_results, supercell, poscar_path,
+        n_sigma=args.mc_sigma,
+        max_order=args.mc_max_order,
+        min_angle_deg=args.mc_angle,
+    )
+
+    flagged    = result['flagged_pairs']
+    chains     = result['chains']
+    directives = result['directives']
+
+    print(f'\n  Flagged pairs   : {len(flagged)}')
+    for f in flagged:
+        sig = f'{f["n_sigma"]:.1f}σ' if not math.isnan(f['n_sigma']) else 'monotone'
+        print(f'    {f["species1"]}-{f["species2"]}  '
+              f'd={f["distance"]:.3f} Å  '
+              f'pFC={f["mean_pfc"]:.4f}  [{f["method"]}, {sig}]')
+
+    if not directives:
+        print('  No multicenter chains found at this threshold.')
+        return
+
+    print(f'\n  Chains found    : {len(chains)}')
+    for chain in chains:
+        sp = '-'.join(chain['species_chain'])
+        print(f'\n  Chain  {sp}  ({chain["total_distance"]:.2f} Å end-to-end)')
+        for sub in chain['sub_chains']:
+            d = sub["directive"] or '(mapping failed)'
+            print(f'    {sub["order"]}-center:  {d}')
+
+    print(f'\n  Unique directives ({len(directives)}):')
+    for d in directives:
+        print(f'    {d}')
+
+    if args.store:
+        out = Path('multicenter_directives.txt')
+        out.write_text('\n'.join(directives) + '\n')
+        print(f'\n  Written: {out}')
+
+        lobsterin = Path(lobster_dir) / 'lobsterin'
+        if lobsterin.exists():
+            n = append_cobi_directives(lobsterin, directives)
+            if n:
+                print(f'  Appended {n} directive(s) to {lobsterin}')
+            else:
+                print(f'  lobsterin already contains all directives — nothing added')
+
+
 def run_bulk_analysis(supercell, fc_data, settings, lobster_pairs=None):
     t0 = timeit.default_timer()
     results, onsite, _ = compute_bulk_pfcs(
@@ -295,7 +357,15 @@ def main():
                   f'{len(lobster_pairs)} pair shells)')
 
     print('\n[Bulk pFC analysis]')
-    run_bulk_analysis(supercell, fc_data, settings, lobster_pairs=lobster_pairs)
+    bulk_results, _ = run_bulk_analysis(supercell, fc_data, settings, lobster_pairs=lobster_pairs)
+
+    if args.multicenter:
+        if _ldir is None:
+            print('\n[Multicenter analysis]')
+            print('  Error: no LOBSTER directory found.  Use --lobster-dir to specify one.')
+        else:
+            print(f'\n[Multicenter bonding analysis]')
+            run_multicenter(supercell, bulk_results, _ldir, args)
 
     if settings.refsite is not None:
         print(f'\n[Reference-site analysis — cutoff {settings.refsite.cutoff} Å]')

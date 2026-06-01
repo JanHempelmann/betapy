@@ -83,7 +83,8 @@ class PreferencesDialog(QDialog):
             '  Ref. Site Projection — REFPOS present in working directory, '
             'or --refsite flag used\n'
             '  Stiffness Shift — settings file contains stiffness_shift: section, '
-            'or --stiffness-shift flag used'
+            'or --stiffness-shift flag used\n'
+            '  Multicenter Bonding  (β) — must be opened manually via the + menu'
         )
         note.setWordWrap(True)
         note.setStyleSheet('color: #666; font-size: 11px; padding: 4px 0 8px 0;')
@@ -94,8 +95,10 @@ class PreferencesDialog(QDialog):
 
         self._refsite_combo = self._make_combo('tab/refsite')
         self._shift_combo   = self._make_combo('tab/stiffness_shift')
+        self._mc_combo      = self._make_combo('tab/multicenter')
         form.addRow('Ref. Site Projection:', self._refsite_combo)
         form.addRow('Stiffness Shift:',      self._shift_combo)
+        form.addRow('Multicenter Bonding  (β):',  self._mc_combo)
         layout.addLayout(form)
 
         btns = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
@@ -115,6 +118,8 @@ class PreferencesDialog(QDialog):
                           self._refsite_combo.currentText().lower())
         self._qs.setValue('tab/stiffness_shift',
                           self._shift_combo.currentText().lower())
+        self._qs.setValue('tab/multicenter',
+                          self._mc_combo.currentText().lower())
         self.accept()
 
 
@@ -154,11 +159,12 @@ class MainWindow(QMainWindow):
         self.setWindowTitle('betapy — Projected Force Constant Analysis')
         self.resize(1200, 800)
 
-        self.settings       = Settings()
-        self.supercell      = None
-        self.fc_data        = None
-        self._lobster_pairs = None
-        self._lobster_dir   = None
+        self.settings        = Settings()
+        self.supercell       = None
+        self.fc_data         = None
+        self._lobster_pairs  = None
+        self._lobster_dir    = None
+        self._bulk_results   = None
 
         if self._splash:
             self._splash.set_status('Initializing interface…')
@@ -202,6 +208,7 @@ class MainWindow(QMainWindow):
         from betapy.gui.site_picker            import SitePickerWidget
         from betapy.gui.stiffness_shift_widget import StiffnessShiftWidget
         from betapy.gui.lt_viewer              import LTDecompositionWidget
+        from betapy.gui.multicenter_viewer     import MulticenterWidget
 
         # Instantiate all widgets upfront; only *add* them to the tab bar
         # selectively via _update_tab_visibility().
@@ -209,6 +216,7 @@ class MainWindow(QMainWindow):
         self.site_picker     = SitePickerWidget()
         self.stiffness_shift = StiffnessShiftWidget()
         self.lt_viewer       = LTDecompositionWidget()
+        self.multicenter     = MulticenterWidget()
 
         # pFC Viewer is always present; track permanent tabs (no close button).
         self.tabs.addTab(self.pfc_viewer, 'pFC Viewer')
@@ -290,8 +298,9 @@ class MainWindow(QMainWindow):
     def _update_tab_visibility(self):
         """Add or remove optional tabs based on preferences + auto-detection."""
         qs = QSettings(_ORG, _APP)
-        pref_refsite = qs.value('tab/refsite',          _AUTO)
-        pref_shift   = qs.value('tab/stiffness_shift',  _AUTO)
+        pref_refsite = qs.value('tab/refsite',         _AUTO)
+        pref_shift   = qs.value('tab/stiffness_shift', _AUTO)
+        pref_mc      = qs.value('tab/multicenter',     _AUTO)
 
         show_refsite = (
             pref_refsite == _ALWAYS or
@@ -301,9 +310,14 @@ class MainWindow(QMainWindow):
             pref_shift == _ALWAYS or
             (pref_shift == _AUTO and self._should_show_stiffness_tab())
         )
+        show_mc = (
+            pref_mc == _ALWAYS or
+            (pref_mc == _AUTO and self._should_show_multicenter_tab())
+        )
 
-        self._set_tab_visible(self.site_picker,     'Ref. Site Projection', 1, show_refsite)
-        self._set_tab_visible(self.stiffness_shift, 'Stiffness Shift',      2, show_shift)
+        self._set_tab_visible(self.multicenter,     'Multicenter Bonding  (β)',  1, show_mc)
+        self._set_tab_visible(self.site_picker,     'Ref. Site Projection', 2, show_refsite)
+        self._set_tab_visible(self.stiffness_shift, 'Stiffness Shift',      3, show_shift)
         self._sync_close_buttons()
 
     def _should_show_refsite_tab(self):
@@ -320,6 +334,10 @@ class MainWindow(QMainWindow):
             return True
         if self.settings.stiffness_shift is not None:
             return True
+        return False
+
+    def _should_show_multicenter_tab(self):
+        """Auto condition: disabled — tab must be opened manually (beta feature)."""
         return False
 
     def _set_tab_visible(self, widget, label, preferred_idx, show):
@@ -403,7 +421,8 @@ class MainWindow(QMainWindow):
         self.tabs.removeTab(idx)
         # Optional singleton tabs are kept alive for re-adding; extra pFC
         # viewers are independent instances and can be destroyed.
-        if widget not in (self.site_picker, self.stiffness_shift, self.lt_viewer):
+        if widget not in (self.site_picker, self.stiffness_shift,
+                          self.lt_viewer, self.multicenter):
             widget.deleteLater()
         QTimer.singleShot(0, self._reposition_plus_btn)
 
@@ -416,11 +435,15 @@ class MainWindow(QMainWindow):
         has_refsite = self.tabs.indexOf(self.site_picker)     != -1
         has_shift   = self.tabs.indexOf(self.stiffness_shift) != -1
         has_lt      = self.tabs.indexOf(self.lt_viewer)       != -1
+        has_mc      = self.tabs.indexOf(self.multicenter)     != -1
 
         label_ref   = ('• ' if has_refsite else '  ') + 'Ref. Site Projection'
         label_shift = ('• ' if has_shift   else '  ') + 'Stiffness Shift'
         label_lt    = ('• ' if has_lt      else '  ') + 'LT Decomposition  (β)'
+        label_mc    = ('• ' if has_mc      else '  ') + 'Multicenter Bonding  (β)'
 
+        menu.addAction(label_mc,    lambda: self._add_optional_tab(
+            self.multicenter, 'Multicenter Bonding  (β)'))
         menu.addAction(label_ref,   lambda: self._add_optional_tab(
             self.site_picker, 'Ref. Site Projection'))
         menu.addAction(label_shift, lambda: self._add_optional_tab(
@@ -714,6 +737,12 @@ class MainWindow(QMainWindow):
             results,
             reliability_cutoff=self.pfc_viewer._reliability_cutoff,
         )
+
+        self._bulk_results = results
+        self.multicenter.load_data(
+            results, self.supercell, lobster_dir=self._lobster_dir
+        )
+        self._update_tab_visibility()
 
         self.status.showMessage(
             f'Analysis complete — {len(results)} off-site pairs, '

@@ -1,0 +1,10 @@
+COHPstartEnergy  -20
+COHPendEnergy     10
+basisSet pbevaspfit2015
+
+!loadProjectionFromFile
+saveProjectionToFile
+skipMadelungEnergy
+
+cohpGenerator from 1.0 to 4.0
+

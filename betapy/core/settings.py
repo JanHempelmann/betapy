@@ -395,6 +395,27 @@ def _build_parser() -> argparse.ArgumentParser:
         help='Path to LOBSTER output directory.  If omitted, betapy looks for '
              'a sibling *_lobster directory next to the phonopy directory.',
     )
+    parser.add_argument(
+        '--multicenter', action='store_true',
+        help='Detect anomalously large pFCs that may indicate multicenter bonding '
+             'and generate cobiBetween directives for LOBSTER COBI(N) analysis. '
+             'Requires a POSCAR in the LOBSTER directory (auto-discovered or via '
+             '--lobster-dir).',
+    )
+    parser.add_argument(
+        '--mc-sigma', type=float, default=2.0, metavar='N',
+        help='Detection threshold in standard deviations (default: 2.0). '
+             'Lower values flag more shells; raise to reduce false positives.',
+    )
+    parser.add_argument(
+        '--mc-max-order', type=int, default=5, metavar='N',
+        help='Maximum number of atoms in a multicenter chain (default: 5).',
+    )
+    parser.add_argument(
+        '--mc-angle', type=float, default=150.0, metavar='DEG',
+        help='Minimum bond angle for chain extension in degrees (default: 150). '
+             'Use ~130 for slightly off-linear chains such as Sb2Te3.',
+    )
 
     # Single-structure inputs
     io_group = parser.add_argument_group('input files')

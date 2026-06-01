@@ -67,6 +67,7 @@ class StructureView(QWidget):
         self.supercell        = None
         self._highlight_pair  = None   # single pair (i, j) for individual mode
         self._highlight_pairs = []     # list of (i, j) for shell mode
+        self._highlight_pairs_gold = False  # if True, shell atoms also get gold spheres
         # bond_pairs: list of (i_1based, j_1based, sp_i, sp_j)
         self._bond_pairs      = []
         self._colours        = {}
@@ -251,26 +252,31 @@ class StructureView(QWidget):
 
     def highlight_bond(self, atom1_idx_1based, atom2_idx_1based):
         """Select a pair: center atom1, dim background, highlight bond."""
-        self._highlight_pair  = (atom1_idx_1based, atom2_idx_1based)
-        self._highlight_pairs = []
+        self._highlight_pair       = (atom1_idx_1based, atom2_idx_1based)
+        self._highlight_pairs      = []
+        self._highlight_pairs_gold = False
         if self._refsite_bonds_cutoff is None:
             self._update_display_frac(atom1_idx_1based)
         self._redraw()
 
-    def highlight_bonds(self, pairs, center_on=None):
+    def highlight_bonds(self, pairs, center_on=None, highlight_atoms=False):
         """
         Highlight a set of bonds (shell mode).
 
         Parameters
         ----------
-        pairs     : list of (atom1_idx_1based, atom2_idx_1based)
-        center_on : int or None — if given, center the display on this
-                    1-based atom index (same convention as highlight_bond).
-                    Pass the representative atom1 so all bonds radiate
-                    cleanly from the cell center with no broken edges.
+        pairs           : list of (atom1_idx_1based, atom2_idx_1based)
+        center_on       : int or None — if given, center the display on this
+                          1-based atom index (same convention as highlight_bond).
+        highlight_atoms : bool — if True, atoms at bond endpoints also receive
+                          gold spheres (same as single-pair mode).  Use this for
+                          multicenter chains where every atom in the chain should
+                          be visually prominent.  Default False preserves the
+                          original shell-view behaviour (full species color).
         """
-        self._highlight_pairs = list(pairs)
-        self._highlight_pair  = None
+        self._highlight_pairs      = list(pairs)
+        self._highlight_pair       = None
+        self._highlight_pairs_gold = highlight_atoms
         if self.supercell is not None:
             if center_on is not None:
                 self._update_display_frac(center_on)
@@ -280,8 +286,9 @@ class StructureView(QWidget):
 
     def clear_highlight(self):
         """Remove highlight and restore original view."""
-        self._highlight_pair  = None
-        self._highlight_pairs = []
+        self._highlight_pair       = None
+        self._highlight_pairs      = []
+        self._highlight_pairs_gold = False
         if self.supercell is not None:
             self._display_frac = self.supercell.positions.copy()
         self._redraw()
@@ -475,8 +482,11 @@ class StructureView(QWidget):
                                              self._refsite_bonds_cutoff)
         active_refsite_idxs = {idx for idx, _ in refsite_nearby}
 
-        # Choose bond background opacity depending on highlight mode
-        if selected_idxs or active_refsite_idxs:
+        # Choose bond background opacity depending on highlight mode.
+        # Chain-gold mode (highlight_atoms=True) uses the same deep dim as
+        # single-pair mode so chain atoms pop out clearly against the background.
+        chain_gold_active = shell_atom_idxs and self._highlight_pairs_gold
+        if selected_idxs or active_refsite_idxs or chain_gold_active:
             bg_bond_opacity = DIM_OPACITY
         elif shell_atom_idxs:
             bg_bond_opacity = SHELL_DIM_OPACITY
@@ -531,6 +541,9 @@ class StructureView(QWidget):
             idx = i + 1
             if idx in selected_idxs:
                 continue   # drawn separately as gold below
+            # When highlight_atoms is set, chain atoms are also drawn as gold
+            if shell_atom_idxs and self._highlight_pairs_gold and idx in shell_atom_idxs:
+                continue   # drawn separately as gold below
             sp  = sc.species(idx)
             pos = cart[i]
             if active_refsite_idxs:
@@ -538,7 +551,8 @@ class StructureView(QWidget):
                     full_groups.setdefault(sp, []).append(pos)
                 else:
                     dim_groups.setdefault(sp, []).append(pos)
-            elif selected_idxs:
+            elif selected_idxs or chain_gold_active:
+                # Single-pair or chain-gold: background atoms strongly dimmed
                 dim_groups.setdefault(sp, []).append(pos)
             elif shell_atom_idxs:
                 if idx in shell_atom_idxs:
@@ -598,6 +612,19 @@ class StructureView(QWidget):
                 name=f'selected_{idx_1}',
                 opacity=FULL_OPACITY, render=False,
             )
+
+        # --- Chain atoms (gold, larger) — shell mode with highlight_atoms=True ---
+        if self._highlight_pairs_gold:
+            for idx_1 in shell_atom_idxs:
+                sp     = sc.species(idx_1)
+                r      = display_radius(sp) * HIGHLIGHT_ATOM_FACTOR
+                sphere = pv.Sphere(radius=r, center=cart[idx_1 - 1],
+                                   theta_resolution=18, phi_resolution=18)
+                self.plotter.add_mesh(
+                    sphere, color=HIGHLIGHT_COLOUR,
+                    name=f'chain_atom_{idx_1}',
+                    opacity=FULL_OPACITY, render=False,
+                )
 
         # --- Highlighted bond (individual mode) ---
         if highlight:

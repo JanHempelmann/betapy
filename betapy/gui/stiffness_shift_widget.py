@@ -581,9 +581,10 @@ class StiffnessShiftWidget(QWidget):
         sl2.setContentsMargins(4, 4, 4, 4)
         self._summary_text = QPlainTextEdit()
         self._summary_text.setReadOnly(True)
-        self._summary_text.setFont(
-            __import__('PyQt5.QtGui', fromlist=['QFont']).QFont('Monospace', 10)
-        )
+        from PyQt5.QtGui import QFontDatabase as _QFD
+        _mono = _QFD.systemFont(_QFD.FixedFont)
+        _mono.setPointSize(10)
+        self._summary_text.setFont(_mono)
         self._summary_text.setPlaceholderText('Run analysis to see summary.')
         sl2.addWidget(self._summary_text)
         self._bottom_tabs.addTab(sum_w, 'Summary')
