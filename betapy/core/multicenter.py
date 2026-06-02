@@ -238,7 +238,12 @@ def detect_anomalous_pairs(bulk_results, n_sigma=2.0, min_pairs=4):
         # Bonds from different shells (e.g. covalent 1st-shell vs non-bonded
         # 2nd-shell in diamond, gap ~63 %) follow entirely different Badger
         # trends and must not share a baseline.
-        for shell_records in _split_into_shells(pair_records):
+        # Only split when there are enough records; with very few pairs the
+        # split would create sub-groups too small for any analysis.
+        shells = (_split_into_shells(pair_records)
+                  if len(pair_records) >= min_pairs
+                  else [pair_records])
+        for shell_records in shells:
             pfcs  = np.array([r['mean_pfc'] for r in shell_records])
             dists = np.array([r['distance'] for r in shell_records])
 
@@ -263,12 +268,6 @@ def detect_anomalous_pairs(bulk_results, n_sigma=2.0, min_pairs=4):
                 predicted = slope * v_dists + intercept
                 residuals = inv_cbrt - predicted    # negative => pFC too large
                 std_raw = float(median_abs_deviation(residuals) * 1.4826)
-                # When MAD ≈ 0 (all bonds lie exactly on the Theil-Sen line —
-                # typically when the shell has only two discrete distances),
-                # no meaningful scatter exists and any "anomalous" residual is
-                # pure numerical noise in the regression solver.  Skip.
-                if std_raw < 1e-8:
-                    continue
                 std = max(std_raw, 1e-6)
                 for rec, res in zip(v_records, residuals):
                     if res < -n_sigma * std:
@@ -351,7 +350,7 @@ def _map_sc_atom_to_poscar(sc_idx, supercell, lob_poscar, tol=0.15):
             "Ensure POSCAR.lobster is commensurate with SPOSCAR."
         )
 
-    return f"atom{best_idx + 1}", cell.tolist()
+    return f"{lob_poscar['species'][best_idx]}{best_idx + 1}", cell.tolist()
 
 
 # ---------------------------------------------------------------------------
