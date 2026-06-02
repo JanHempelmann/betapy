@@ -21,11 +21,20 @@ Typical workflow
 Detection strategy
 ------------------
 Anomaly detection works directly on individual pair records from
-``compute_bulk_pfcs()``, bypassing shell averaging.  A robust Theil-Sen
-regression is fitted to Phi_p^{-1/3} vs r per species pair.  Theil-Sen is
-insensitive to outliers by design, so anomalous (multicenter) pairs do not
-contaminate the baseline.  Individual pairs whose pFC residual exceeds
-*n_sigma* robust standard deviations are flagged.
+``compute_bulk_pfcs()``, bypassing shell averaging.  A Theil-Sen regression
+is fitted to Phi_p^{-1/3} vs r per species pair — the Badger-type
+relationship.  Theil-Sen (median pairwise slope) is inherently insensitive to
+outliers, so anomalous (multicenter) pairs cannot contaminate the baseline.
+Because Phi_p^{-1/3} is a decreasing function of Phi_p, multicenter bonds
+(high pFC) sit *below* the Badger line in Phi_p^{-1/3} space.  Individual
+pairs whose residual exceeds *n_sigma* robust standard deviations below the
+fit are flagged.
+
+The detection catches both direct short-bond anomalies and indirect signals:
+in metavalent systems such as Sb₂Te₃ the anomalously stiff end-to-end force
+constants across a quintuple layer (Sb–Sb at ~6.3 Å, Te–Te at ~6.1 Å) are
+flagged, and the chain-extension step then identifies the intermediate bridge
+atom (Te for Sb–Te–Sb, Sb for Te–Sb–Te).
 
 Reliability window
 ------------------
@@ -49,6 +58,124 @@ from betapy.core.lobster import _parse_poscar_lobster
 
 
 # ---------------------------------------------------------------------------
+# Quantile regression (LP formulation) — kept for GUI visualisation only
+# ---------------------------------------------------------------------------
+
+def _quantile_regression_line(x, y, q):
+    """
+    Fit linear quantile regression y = a*x + b at quantile *q* via LP.
+
+    Not used in detection (which uses Theil-Sen); retained for GUI overlays
+    where a tunable envelope quantile is useful for visualisation.
+
+    Returns
+    -------
+    slope, intercept : float
+    """
+    from scipy.optimize import linprog
+    n = len(x)
+    c = np.concatenate([[0.0, 0.0], np.full(n, q), np.full(n, 1.0 - q)])
+    A_eq = np.zeros((n, 2 + 2 * n))
+    A_eq[:, 0] = x
+    A_eq[:, 1] = 1.0
+    A_eq[np.arange(n), 2 + np.arange(n)] = 1.0
+    A_eq[np.arange(n), 2 + n + np.arange(n)] = -1.0
+    bounds = [(None, None), (None, None)] + [(0.0, None)] * (2 * n)
+    res = linprog(c, A_eq=A_eq, b_eq=y, bounds=bounds)
+    return float(res.x[0]), float(res.x[1])
+
+
+# ---------------------------------------------------------------------------
+# Symmetry dataset (spglib wrapper)
+# ---------------------------------------------------------------------------
+
+def _spglib_dataset(supercell):
+    """
+    Return the spglib symmetry dataset for *supercell*, or None if unavailable.
+
+    The key field used downstream is ``dataset.equivalent_atoms``: a
+    0-based integer array of length N where atoms with the same value are
+    related by a crystal symmetry operation (Gleichergestalt equivalence).
+
+    Parameters
+    ----------
+    supercell : Supercell
+
+    Returns
+    -------
+    dict (spglib dataset) or None if spglib is not installed or analysis fails.
+    """
+    try:
+        import spglib
+    except ImportError:
+        return None
+    # Encode species as consecutive integers — spglib only needs consistent
+    # type labels, not true atomic numbers.
+    type_map  = {s: i for i, s in enumerate(supercell.chem_symbols)}
+    atom_types = [type_map[supercell.species(i + 1)]
+                  for i in range(supercell.n_atoms)]
+    cell = (supercell.lattice, supercell.positions, atom_types)
+    return spglib.get_symmetry_dataset(cell)
+
+
+# ---------------------------------------------------------------------------
+# Shell splitting helper
+# ---------------------------------------------------------------------------
+
+def _split_into_shells(records, rel_gap=0.50):
+    """
+    Partition bond records into distance shells separated by significant gaps.
+
+    Bonds at qualitatively different distances — e.g. covalent 1st-shell C-C
+    at 1.54 Å vs non-bonded 2nd-shell C-C at 2.52 Å (63 % gap) — do not
+    follow the same Badger trend and must not share a baseline fit.  This
+    function identifies such cross-regime boundaries and splits the record list.
+
+    A boundary is placed where the relative gap between consecutive distances
+    exceeds *rel_gap* (default 50 %).  The 50 % threshold was chosen to:
+
+    * Split the diamond 1st→2nd-shell C-C boundary (63 % gap) so that the
+      covalent first-shell bonds are not falsely compared against non-bonded
+      second-shell interactions.
+    * Leave GeTe's short/long Ge-Te bonds (12 % gap) intact so that the
+      Badger slope can still identify multicenter-enhanced short bonds.
+    * Leave Sb₂Te₃'s 2nd-shell-to-long-range Sb-Te boundary (~36 % gap)
+      intact so that long-range pairs continue to anchor the baseline and
+      make anomalous intra-layer bonds detectable.
+
+    Parameters
+    ----------
+    records  : list of bond-record dicts (each has 'distance' key)
+    rel_gap  : float, minimum relative gap that triggers a split. Default 0.20.
+
+    Returns
+    -------
+    list of lists of dicts — one sub-list per shell.
+    """
+    if not records:
+        return [records]
+    dists = np.array([r['distance'] for r in records])
+    order = np.argsort(dists)
+    sorted_d = dists[order]
+
+    split_at = []
+    for k in range(len(sorted_d) - 1):
+        if sorted_d[k] > 0 and (sorted_d[k + 1] - sorted_d[k]) / sorted_d[k] > rel_gap:
+            split_at.append(k + 1)
+
+    if not split_at:
+        return [records]
+
+    shells = []
+    prev = 0
+    for sp in split_at:
+        shells.append([records[i] for i in order[prev:sp]])
+        prev = sp
+    shells.append([records[i] for i in order[prev:]])
+    return [s for s in shells if s]
+
+
+# ---------------------------------------------------------------------------
 # Anomaly detection — individual pairs, robust regression
 # ---------------------------------------------------------------------------
 
@@ -57,13 +184,14 @@ def detect_anomalous_pairs(bulk_results, n_sigma=2.0, min_pairs=4):
     Flag individual pFC pairs with anomalously large values relative to distance.
 
     Groups pairs by species (order-independent) and fits a Theil-Sen regression
-    to Phi_p^{-1/3} vs r — the Badger-type relationship.  Theil-Sen is
-    insensitive to outliers, so anomalous (multicenter) pairs cannot bias the
-    baseline.  Pairs where the actual Phi_p^{-1/3} lies more than *n_sigma*
+    to Phi_p^{-1/3} vs r — the Badger-type relationship.  Theil-Sen is the
+    median of all pairwise slopes, making it inherently insensitive to outliers:
+    anomalous (multicenter) pairs cannot bias the baseline even when they are a
+    substantial minority.  Individual pairs whose pFC residual exceeds *n_sigma*
     robust standard deviations below the fit (i.e. pFC is too large for its
     distance) are flagged.
 
-    For species pairs with fewer than *min_pairs* valid records a monotonicity
+    For groups with fewer than *min_pairs* valid records a monotonicity
     fallback is used: any pair whose pFC exceeds that of the nearest
     shorter-distance pair (when sorted by distance) is flagged.
 
@@ -98,51 +226,66 @@ def detect_anomalous_pairs(bulk_results, n_sigma=2.0, min_pairs=4):
             seen_bonds.add(key)
             deduped.append(r)
 
-    by_pair = defaultdict(list)
+    by_pair: dict = defaultdict(list)
     for r in deduped:
-        key = tuple(sorted([r['species1'], r['species2']]))
-        by_pair[key].append(r)
+        sp_key = tuple(sorted([r['species1'], r['species2']]))
+        by_pair[sp_key].append(r)
 
     flagged = []
+
     for pair_records in by_pair.values():
-        pfcs  = np.array([r['mean_pfc'] for r in pair_records])
-        dists = np.array([r['distance'] for r in pair_records])
+        # Split the species-pair records into distance shells before fitting.
+        # Bonds from different shells (e.g. covalent 1st-shell vs non-bonded
+        # 2nd-shell in diamond, gap ~63 %) follow entirely different Badger
+        # trends and must not share a baseline.
+        for shell_records in _split_into_shells(pair_records):
+            pfcs  = np.array([r['mean_pfc'] for r in shell_records])
+            dists = np.array([r['distance'] for r in shell_records])
 
-        valid = pfcs > 0
-        if valid.sum() < 2:
-            continue
+            valid = pfcs > 0
+            if valid.sum() < 2:
+                continue
 
-        v_pfcs    = pfcs[valid]
-        v_dists   = dists[valid]
-        v_records = [r for r, v in zip(pair_records, valid) if v]
+            v_pfcs    = pfcs[valid]
+            v_dists   = dists[valid]
+            v_records = [r for r, v in zip(shell_records, valid) if v]
 
-        inv_cbrt = v_pfcs ** (-1.0 / 3.0)
+            # Skip shells where all bonds are at essentially the same distance.
+            # With near-zero x-variation no Badger slope can be defined and any
+            # apparent anomalies are due to LP/regression numerical noise.
+            if float(v_dists.max() - v_dists.min()) < 0.05:
+                continue
 
-        if valid.sum() >= min_pairs:
-            slope, intercept, *_ = theilslopes(inv_cbrt, v_dists)
-            predicted = slope * v_dists + intercept
-            residuals = inv_cbrt - predicted        # negative => pFC too large
-            std = float(median_abs_deviation(residuals) * 1.4826)
-            # Floor prevents divide-by-zero and handles high-symmetry systems
-            # where all normal pairs are exactly on the Badger line (MAD=0).
-            # In that limit any negative residual is genuinely anomalous.
-            std = max(std, 1e-6)
-            for rec, res in zip(v_records, residuals):
-                if res < -n_sigma * std:
-                    flagged.append({**rec,
-                                    'method':   'regression',
-                                    'residual': float(res),
-                                    'n_sigma':  float(-res / std)})
-        else:
-            order  = np.argsort(v_dists)
-            s_pfcs = v_pfcs[order]
-            s_recs = [v_records[i] for i in order]
-            for i in range(1, len(s_recs)):
-                if s_pfcs[i] > s_pfcs[i - 1]:
-                    flagged.append({**s_recs[i],
-                                    'method':   'monotone',
-                                    'residual': float(s_pfcs[i] - s_pfcs[i - 1]),
-                                    'n_sigma':  float('nan')})
+            inv_cbrt = v_pfcs ** (-1.0 / 3.0)
+
+            if valid.sum() >= min_pairs:
+                slope, intercept, *_ = theilslopes(inv_cbrt, v_dists)
+                predicted = slope * v_dists + intercept
+                residuals = inv_cbrt - predicted    # negative => pFC too large
+                std_raw = float(median_abs_deviation(residuals) * 1.4826)
+                # When MAD ≈ 0 (all bonds lie exactly on the Theil-Sen line —
+                # typically when the shell has only two discrete distances),
+                # no meaningful scatter exists and any "anomalous" residual is
+                # pure numerical noise in the regression solver.  Skip.
+                if std_raw < 1e-8:
+                    continue
+                std = max(std_raw, 1e-6)
+                for rec, res in zip(v_records, residuals):
+                    if res < -n_sigma * std:
+                        flagged.append({**rec,
+                                        'method':   'regression',
+                                        'residual': float(res),
+                                        'n_sigma':  float(-res / std)})
+            else:
+                order  = np.argsort(v_dists)
+                s_pfcs = v_pfcs[order]
+                s_recs = [v_records[i] for i in order]
+                for i in range(1, len(s_recs)):
+                    if s_pfcs[i] > s_pfcs[i - 1]:
+                        flagged.append({**s_recs[i],
+                                        'method':   'monotone',
+                                        'residual': float(s_pfcs[i] - s_pfcs[i - 1]),
+                                        'n_sigma':  float('nan')})
 
     return flagged
 
@@ -169,7 +312,7 @@ def _map_sc_atom_to_poscar(sc_idx, supercell, lob_poscar, tol=0.15):
 
     Returns
     -------
-    label : str, LOBSTER atom label, e.g. 'Ge1' or 'Te6'
+    label : str, LOBSTER atom label, e.g. 'atom1' or 'atom6'
     cell  : list[int], cell translation in POSCAR-cell units, e.g. [-1, 0, 0]
 
     Raises
@@ -189,8 +332,7 @@ def _map_sc_atom_to_poscar(sc_idx, supercell, lob_poscar, tol=0.15):
     # Second wrap for residual floating-point drift
     f_wrapped = f_wrapped - np.floor(f_wrapped + 1e-9)
 
-    fracs   = lob_poscar['positions_frac']
-    species = lob_poscar['species']
+    fracs    = lob_poscar['positions_frac']
 
     best_idx  = -1
     best_dist = tol + 1.0
@@ -209,7 +351,7 @@ def _map_sc_atom_to_poscar(sc_idx, supercell, lob_poscar, tol=0.15):
             "Ensure POSCAR.lobster is commensurate with SPOSCAR."
         )
 
-    return f"{species[best_idx]}{best_idx + 1}", cell.tolist()
+    return f"atom{best_idx + 1}", cell.tolist()
 
 
 # ---------------------------------------------------------------------------
@@ -449,7 +591,7 @@ def format_cobi_directive(chain_sc_indices, supercell, lob_poscar):
 
     Returns
     -------
-    str, e.g. ``'cobiBetween Te5 Ge1 cell -1 0 0 Te8'``
+    str, e.g. ``'cobiBetween atom5 atom1 cell -1 0 0 atom8'``
 
     Raises
     ------
@@ -487,7 +629,8 @@ def format_cobi_directive(chain_sc_indices, supercell, lob_poscar):
 def suggest_cobi_directives(
         bulk_results, supercell, poscar_lobster_path,
         n_sigma=2.0, min_pairs=4,
-        min_angle_deg=150.0, max_order=5, bond_cutoff=4.0):
+        min_angle_deg=150.0, max_order=5, bond_cutoff=4.0,
+        fit_quantile=None):
     """
     Full pipeline: detect anomalous pFCs → trace chains → format directives.
 
@@ -501,6 +644,7 @@ def suggest_cobi_directives(
     min_angle_deg        : float, minimum bond angle for chain extension. Default 150.
     max_order            : int, maximum atoms per chain. Default 5.
     bond_cutoff          : float, Å, max step distance for chain extension. Default 4.0.
+    fit_quantile         : ignored, kept for backward compatibility.
 
     Returns
     -------

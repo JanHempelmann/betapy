@@ -47,8 +47,10 @@ dependencies = [
 Repository = "https://github.com/JanHempelmann/betapy"
 
 [project.optional-dependencies]
-gui  = ["matplotlib", "pyqt5", "pyvista", "pyvistaqt"]
-test = ["pytest"]
+gui      = ["matplotlib", "pyqt5", "pyvista", "pyvistaqt"]
+symmetry = ["spglib"]
+full     = ["matplotlib", "pyqt5", "pyvista", "pyvistaqt", "spglib"]
+test     = ["pytest"]
 
 [project.scripts]
 # These become terminal commands after `pip install -e .`

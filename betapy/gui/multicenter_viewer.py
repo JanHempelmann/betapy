@@ -23,7 +23,7 @@ import numpy as np
 from PyQt5.QtWidgets import (
     QWidget, QHBoxLayout, QVBoxLayout, QSplitter,
     QPushButton, QLabel, QDoubleSpinBox, QSpinBox,
-    QGroupBox, QTextEdit, QProgressBar, QApplication,
+    QGroupBox, QListWidget, QProgressBar, QApplication,
     QMessageBox, QCheckBox, QScrollArea, QFrame,
 )
 from PyQt5.QtCore import Qt, QThread, pyqtSignal
@@ -72,6 +72,7 @@ class _MulticenterWorker(QThread):
 
     def run(self):
         try:
+            from betapy.core.multicenter import _split_into_shells
             from scipy.stats import theilslopes, median_abs_deviation
 
             reliability_limit = (
@@ -90,44 +91,72 @@ class _MulticenterWorker(QThread):
                     seen.add(key)
                     deduped.append(r)
 
-            # Badger fit per species pair (natural coordinates)
+            # Group by species pair, split into distance shells, fit Theil-Sen.
+            # Single-distance shells (x_range < 0.05 Å) and perfect-fit shells
+            # (MAD ≈ 0) appear in the scatter but receive no Badger curve.
             by_pair: dict = defaultdict(list)
             for r in deduped:
-                k = tuple(sorted([r['species1'], r['species2']]))
-                by_pair[k].append(r)
+                sp_key = tuple(sorted([r['species1'], r['species2']]))
+                by_pair[sp_key].append(r)
 
+            sp_acc: dict = defaultdict(lambda: {'records': [], 'badger_lines': []})
+
+            for sp_key, records in by_pair.items():
+                for shell_records in _split_into_shells(records):
+                    pfcs  = np.array([r['mean_pfc'] for r in shell_records])
+                    dists = np.array([r['distance']  for r in shell_records])
+                    valid = pfcs > 0
+                    if valid.sum() < 2:
+                        continue
+                    v_pfcs    = pfcs[valid]
+                    v_dists   = dists[valid]
+                    v_records = [shell_records[i]
+                                 for i in range(len(shell_records)) if valid[i]]
+
+                    acc = sp_acc[sp_key]
+                    acc['records'].extend(v_records)
+
+                    if float(v_dists.max() - v_dists.min()) < 0.05:
+                        continue
+
+                    inv_cbrt = v_pfcs ** (-1.0 / 3.0)
+                    if valid.sum() >= 4:
+                        slope, intercept, *_ = theilslopes(inv_cbrt, v_dists)
+                        residuals = inv_cbrt - (slope * v_dists + intercept)
+                        std_raw = float(median_abs_deviation(residuals) * 1.4826)
+                        if std_raw < 1e-8:
+                            continue  # perfect fit, no meaningful scatter
+                        std = max(std_raw, 1e-6)
+                    else:
+                        slope = intercept = std = float('nan')
+
+                    acc['badger_lines'].append({
+                        'slope':     float(slope),
+                        'intercept': float(intercept),
+                        'std':       float(std),
+                        'x_min':     float(v_dists.min()),
+                        'x_max':     float(v_dists.max()),
+                    })
+
+            # Build final badger_data keyed by species pair
             badger_data: dict = {}
-            for pair_key, records in by_pair.items():
-                pfcs  = np.array([r['mean_pfc'] for r in records])
-                dists = np.array([r['distance']  for r in records])
-                valid = pfcs > 0
-                if valid.sum() < 2:
-                    continue
-                v_pfcs    = pfcs[valid]
-                v_dists   = dists[valid]
-                v_records = [records[i] for i in range(len(records)) if valid[i]]
-                inv_cbrt  = v_pfcs ** (-1.0 / 3.0)
-
-                if valid.sum() >= 4:
-                    slope, intercept, *_ = theilslopes(inv_cbrt, v_dists)
-                    predicted = slope * v_dists + intercept
-                    residuals = inv_cbrt - predicted
-                    std = float(median_abs_deviation(residuals) * 1.4826)
-                    std = max(std, 1e-6)
-                    flagged = residuals < -self._sigma * std
-                else:
-                    slope = intercept = std = float('nan')
-                    flagged = np.zeros(len(v_dists), dtype=bool)
-
-                badger_data[pair_key] = {
-                    'distances': v_dists,
-                    'pfcs':      v_pfcs,
-                    'flagged':   flagged,
-                    'slope':     float(slope),
-                    'intercept': float(intercept),
-                    'std':       float(std),
-                    'n_flagged': int(flagged.sum()),
-                    'records':   v_records,
+            for sp_key, acc in sp_acc.items():
+                v_recs  = acc['records']
+                v_dists = np.array([r['distance'] for r in v_recs])
+                v_pfcs  = np.array([r['mean_pfc']  for r in v_recs])
+                lines   = acc['badger_lines']
+                first   = lines[0] if lines else {}
+                badger_data[sp_key] = {
+                    'distances':   v_dists,
+                    'pfcs':        v_pfcs,
+                    'flagged':     np.zeros(len(v_recs), dtype=bool),
+                    'n_flagged':   0,
+                    'records':     v_recs,
+                    'badger_lines': lines,
+                    # Legacy scalar fields kept for backward compatibility
+                    'slope':       first.get('slope',     float('nan')),
+                    'intercept':   first.get('intercept', float('nan')),
+                    'std':         first.get('std',       float('nan')),
                 }
 
             # Directive pipeline (needs POSCAR for chain detection)
@@ -181,10 +210,10 @@ class MulticenterWidget(QWidget):
         self._pair_keys       = []   # sorted list of pair_keys from badger_data
         # flat list of (dist, pfc, record_dict, is_flagged, pair_key) for click lookup
         self._plot_points     = []
-        # (min_idx, max_idx) -> chain dict, built from detect result
-        self._chain_lookup    = {}
-        self._selected_record = None
-        self._ax              = None
+        self._directive_lookup  = {}   # directive string → list of SPOSCAR indices
+        self._directive_trigger = {}   # directive string → trigger pair record
+        self._selected_record   = None
+        self._ax                = None
         self._build_ui()
 
     # ------------------------------------------------------------------ build
@@ -277,13 +306,13 @@ class MulticenterWidget(QWidget):
         self._lbl_count.setStyleSheet('font-size: 10px; color: #444;')
         dv.addWidget(self._lbl_count)
 
-        self._txt_directives = QTextEdit()
-        self._txt_directives.setReadOnly(True)
+        self._directive_list = QListWidget()
         mono = QFontDatabase.systemFont(QFontDatabase.FixedFont)
         mono.setPointSize(9)
-        self._txt_directives.setFont(mono)
-        self._txt_directives.setPlaceholderText('Directives appear here after detection.')
-        dv.addWidget(self._txt_directives, stretch=1)
+        self._directive_list.setFont(mono)
+        self._directive_list.setToolTip('Click a directive to highlight its chain in 3D.')
+        self._directive_list.itemClicked.connect(self._on_directive_clicked)
+        dv.addWidget(self._directive_list, stretch=1)
 
         btn_row = QHBoxLayout()
         self._btn_copy = QPushButton('Copy')
@@ -403,32 +432,35 @@ class MulticenterWidget(QWidget):
         self._btn_run.setEnabled(True)
         self._result = result
 
-        # Build chain lookup: for each grown chain register sub-chains for
-        # every pair (chain[0], chain[k]) with k >= 1.  This covers cases where
-        # the scatter-point trigger direction is flipped by the minimum-image
-        # convention (e.g. pairs at exactly half the cell length store direction
-        # [-x] so _grow_chain finds nothing, but the correct chain is still
-        # reachable via a shorter-distance trigger from the same start atom).
-        #   chain[0]→chain[1]: sub [0:2] → 2 atoms  → falls back to pair highlight
-        #   chain[0]→chain[2]: sub [0:3] → 3-center chain
-        #   chain[0]→chain[3]: sub [0:4] → 4-center chain
-        #   chain[0]→chain[4]: sub [0:5] → 5-center chain
-        self._chain_lookup = {}
+        # Override the worker's independent per-pair flagging with the
+        # authoritative result from detect_anomalous_pairs.  The worker has no
+        # monotone fallback (used when a species pair has < min_pairs valid
+        # records), so bonds caught only by that path would otherwise appear in
+        # the directives but not be coloured red in the scatter plot.
+        flagged_keys = {
+            (min(int(r['atom1_idx']), int(r['atom2_idx'])),
+             max(int(r['atom1_idx']), int(r['atom2_idx'])))
+            for r in result.get('flagged_pairs', [])
+        }
+        for bd in result['badger_data'].values():
+            corrected = np.array([
+                (min(int(rec['atom1_idx']), int(rec['atom2_idx'])),
+                 max(int(rec['atom1_idx']), int(rec['atom2_idx']))) in flagged_keys
+                for rec in bd['records']
+            ])
+            bd['flagged']   = corrected
+            bd['n_flagged'] = int(corrected.sum())
+
+        # directive string → SPOSCAR atom indices + trigger pair record
+        self._directive_lookup  = {}
+        self._directive_trigger = {}
         for chain in result.get('chains', []):
-            full_chain = chain.get('full_chain', [])
-            if len(full_chain) < 2:
-                continue
-            for k in range(1, len(full_chain)):
-                a_start   = full_chain[0]
-                a_end     = full_chain[k]
-                sub_chain = full_chain[:k + 1]
-                key       = (min(int(a_start), int(a_end)),
-                             max(int(a_start), int(a_end)))
-                # Prefer longer sub-chain if key already exists (edge case where
-                # two chains share a start/end pair in different directions).
-                existing = self._chain_lookup.get(key)
-                if existing is None or len(sub_chain) > len(existing['highlight_chain']):
-                    self._chain_lookup[key] = {**chain, 'highlight_chain': sub_chain}
+            trigger = chain.get('trigger_pair', {})
+            for sub in chain.get('sub_chains', []):
+                d = sub.get('directive', '')
+                if d and not d.startswith('#') and d not in self._directive_lookup:
+                    self._directive_lookup[d]  = sub['indices']
+                    self._directive_trigger[d] = trigger
 
         self._rebuild_checkboxes(result['badger_data'])
         self._refresh_plot()
@@ -530,6 +562,7 @@ class MulticenterWidget(QWidget):
         checked_pairs = {pk for pk, cb in self._checkboxes.items()
                          if cb.isChecked()}
         n_sigma = self._spin_sigma.value()
+        _effective_n = n_sigma
 
         self._figure.clear()
         ax = self._figure.add_subplot(111)
@@ -574,39 +607,30 @@ class MulticenterWidget(QWidget):
         for pk in self._pair_keys:
             if pk not in checked_pairs or pk not in badger_data:
                 continue
-            bd                     = badger_data[pk]
-            slope, intercept, std  = bd['slope'], bd['intercept'], bd['std']
-            if math.isnan(slope) or math.isnan(std):
-                continue
-
-            dists = bd['distances']
+            bd = badger_data[pk]
             sp1, sp2 = pk
             c1, _ = (self.structure_view.pair_colours_hex(sp1, sp2)
                      if self._supercell is not None else ('#888888', '#888888'))
 
-            x_line   = np.linspace(dists.min(), dists.max(), 400)
-            lin_base = slope * x_line + intercept
-
-            # Badger curve: Φ(r) = (slope·r + intercept)^{-3}
-            valid_curve = lin_base > 0
-            if valid_curve.any():
-                xc = x_line[valid_curve]
-                yc = lin_base[valid_curve] ** -3
-                ax.plot(xc, yc, color=c1, lw=1.5, alpha=_CURVE_ALPHA,
-                        linestyle='--', zorder=3)
-
-                # ±n_sigma band in natural pFC coordinates
-                lin_lo   = lin_base[valid_curve] + n_sigma * std   # → lower pFC
-                lin_hi   = lin_base[valid_curve] - n_sigma * std   # → upper pFC threshold
-                v_band   = lin_hi > 0
-                if v_band.any():
-                    y_lo = np.where(lin_lo > 0,
-                                    lin_lo ** -3,
-                                    np.full_like(lin_lo, np.nan))
-                    y_hi = np.where(lin_hi > 0,
-                                    lin_hi ** -3,
-                                    np.full_like(lin_hi, np.nan))
-                    ax.fill_between(xc[v_band], y_lo[v_band], y_hi[v_band],
+            for bl in bd.get('badger_lines', []):
+                slope, intercept, std = bl['slope'], bl['intercept'], bl['std']
+                if math.isnan(slope) or math.isnan(std):
+                    continue
+                x_line   = np.linspace(bl['x_min'], bl['x_max'], 200)
+                lin_base = slope * x_line + intercept
+                # Clip to the x-range where both the Badger curve AND the
+                # detection-band upper edge are positive.  Where lin_hi ≤ 0
+                # the threshold maps to infinite pFC and is undefined.
+                lin_hi_full = lin_base - _effective_n * std
+                valid = (lin_base > 0) & (lin_hi_full > 0)
+                if valid.any():
+                    xc     = x_line[valid]
+                    yc     = lin_base[valid] ** -3
+                    lin_lo = lin_base[valid] + _effective_n * std
+                    lin_hi = lin_hi_full[valid]
+                    ax.plot(xc, yc, color=c1, lw=1.5, alpha=_CURVE_ALPHA,
+                            linestyle='--', zorder=3)
+                    ax.fill_between(xc, lin_lo ** -3, lin_hi ** -3,
                                     color=c1, alpha=_BAND_ALPHA, zorder=2)
 
         # Layer 3: checked-pair normal points (species color)
@@ -665,7 +689,10 @@ class MulticenterWidget(QWidget):
 
         ax.set_xlabel('Interatomic distance (Å)', fontsize=12)
         ax.set_ylabel('Projected force constant (eV/Å²)', fontsize=12)
-        ax.set_title('Multicenter bonding — pFC vs r  (dashed: Badger fit)', fontsize=12)
+        ax.set_title(
+            'Multicenter bonding — pFC vs r  '
+            '(dashed: Theil-Sen Badger fit, ±σ band)',
+            fontsize=12)
         ax.grid(True, linestyle='--', alpha=0.4)
 
         if colored or flag_xs:
@@ -709,33 +736,13 @@ class MulticenterWidget(QWidget):
         pfc = rec['mean_pfc']
 
         if self._supercell is not None:
-            ck    = (min(a1, a2), max(a1, a2))
-            chain = self._chain_lookup.get(ck)
-            idxs  = chain.get('highlight_chain') if chain else None
-            if idxs and len(idxs) >= 3:
-                chain_pairs = [(idxs[i], idxs[i + 1])
-                               for i in range(len(idxs) - 1)]
-                self.structure_view.highlight_bonds(
-                    chain_pairs, center_on=idxs[0], highlight_atoms=True)
-                self._selection_bar.setText(
-                    f'Multicenter:  atom {a1} ({sp1}) – {a2} ({sp2})   '
-                    f'd = {d:.4f} Å   pFC = {pfc:.6f} eV/Å²   '
-                    f'{len(idxs)}-center chain  '
-                    f'[{" – ".join(str(x) for x in idxs)}]'
-                )
-            else:
-                self.structure_view.highlight_bond(a1, a2)
-                info = ('Multicenter (no chain found)'
-                        if is_flagged else 'Selected')
-                self._selection_bar.setText(
-                    f'{info}:  atom {a1} ({sp1}) – atom {a2} ({sp2})   '
-                    f'd = {d:.4f} Å   pFC = {pfc:.6f} eV/Å²'
-                )
-        else:
-            self._selection_bar.setText(
-                f'atom {a1} ({sp1}) – atom {a2} ({sp2})   '
-                f'd = {d:.4f} Å   pFC = {pfc:.6f} eV/Å²'
-            )
+            self.structure_view.highlight_bond(a1, a2)
+
+        info = 'Multicenter' if is_flagged else 'Selected'
+        self._selection_bar.setText(
+            f'{info}:  atom {a1} ({sp1}) – atom {a2} ({sp2})   '
+            f'd = {d:.4f} Å   pFC = {pfc:.6f} eV/Å²'
+        )
 
         self._refresh_plot()
 
@@ -746,7 +753,22 @@ class MulticenterWidget(QWidget):
         flagged_pairs = result.get('flagged_pairs', [])
         chains        = result.get('chains',        [])
 
-        self._txt_directives.setPlainText('\n'.join(directives))
+        self._directive_list.clear()
+        for d in directives:
+            from PyQt5.QtWidgets import QListWidgetItem
+            item = QListWidgetItem(d)
+            # Tooltip: show order and species chain if known
+            idxs = self._directive_lookup.get(d, [])
+            if idxs and self._supercell is not None:
+                try:
+                    sp = [self._supercell.species(i) for i in idxs]
+                    item.setToolTip(
+                        f'{len(idxs)}-center: {" – ".join(sp)}\n'
+                        f'SPOSCAR indices: {idxs}'
+                    )
+                except Exception:
+                    pass
+            self._directive_list.addItem(item)
 
         parts = [
             f'{len(flagged_pairs)} flagged pair(s)',
@@ -761,8 +783,46 @@ class MulticenterWidget(QWidget):
         self._btn_copy.setEnabled(has)
         self._btn_save.setEnabled(has)
 
+    def _on_directive_clicked(self, item):
+        directive = item.text()
+        idxs = self._directive_lookup.get(directive)
+        if not idxs:
+            self._selection_bar.setText(f'No chain data for: {directive}')
+            return
+
+        if self._supercell is not None:
+            try:
+                sp = [self._supercell.species(i) for i in idxs]
+            except Exception:
+                sp = ['?'] * len(idxs)
+            label = '  →  '.join(f'{s}({i})' for s, i in zip(sp, idxs))
+            self._selection_bar.setText(
+                f'Directive ({len(idxs)}-center):  {label}'
+            )
+
+        if self._supercell is not None and len(idxs) >= 2:
+            chain_pairs = [(idxs[i], idxs[i + 1]) for i in range(len(idxs) - 1)]
+            self.structure_view.highlight_bonds(
+                chain_pairs, center_on=idxs[0], highlight_atoms=True)
+
+        # Highlight the trigger pair in the pFC scatter plot
+        trigger = self._directive_trigger.get(directive)
+        if trigger and self._plot_points:
+            tkey = (min(int(trigger['atom1_idx']), int(trigger['atom2_idx'])),
+                    max(int(trigger['atom1_idx']), int(trigger['atom2_idx'])))
+            for pt in self._plot_points:
+                rec = pt[2]
+                rkey = (min(int(rec['atom1_idx']), int(rec['atom2_idx'])),
+                        max(int(rec['atom1_idx']), int(rec['atom2_idx'])))
+                if rkey == tkey:
+                    self._selected_record = rec
+                    break
+            self._refresh_plot()
+
     def _copy_directives(self):
-        text = self._txt_directives.toPlainText().strip()
+        lines = [self._directive_list.item(i).text()
+                 for i in range(self._directive_list.count())]
+        text = '\n'.join(lines).strip()
         if text:
             QApplication.clipboard().setText(text)
 
@@ -774,6 +834,6 @@ class MulticenterWidget(QWidget):
             'Text files (*.txt);;All files (*)',
         )
         if path:
-            Path(path).write_text(
-                self._txt_directives.toPlainText().strip() + '\n'
-            )
+            lines = [self._directive_list.item(i).text()
+                     for i in range(self._directive_list.count())]
+            Path(path).write_text('\n'.join(lines).strip() + '\n')
