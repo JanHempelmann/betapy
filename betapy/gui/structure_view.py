@@ -18,7 +18,7 @@ from scipy.spatial import cKDTree
 from PyQt5.QtWidgets import (
     QWidget, QHBoxLayout, QVBoxLayout,
     QPushButton, QLabel, QColorDialog,
-    QGroupBox, QScrollArea, QCheckBox, QComboBox,
+    QGroupBox, QScrollArea, QCheckBox, QComboBox, QDoubleSpinBox,
 )
 from PyQt5.QtGui import QColor
 from PyQt5.QtCore import Qt, pyqtSignal
@@ -73,8 +73,10 @@ class StructureView(QWidget):
         self._colours        = {}
         self._display_frac   = None
         # enabled bond types: set of frozenset({sp_i, sp_j})
-        self._enabled_bond_types = set()
-        self._bond_checkboxes    = {}   # frozenset -> QCheckBox
+        self._enabled_bond_types  = set()
+        self._bond_checkboxes     = {}   # frozenset -> QCheckBox
+        self._bond_factors        = {}   # frozenset -> float (per-pair stretch factor)
+        self._expanded_bond_types = set()  # which rows are expanded in the UI
         # Reference site state (None = not set)
         self._refsite_frac        = None
         self._refsite_fracs       = []     # all positions for multi-site
@@ -177,14 +179,85 @@ class StructureView(QWidget):
             key=lambda s: '-'.join(sorted(s))
         )
         for bt in bond_types:
-            label = '-'.join(sorted(bt))
+            label      = '-'.join(sorted(bt))
+            is_open    = bt in self._expanded_bond_types
+
+            container  = QWidget()
+            cl         = QVBoxLayout(container)
+            cl.setContentsMargins(0, 0, 0, 0)
+            cl.setSpacing(0)
+
+            # Top row: checkbox + expand toggle
+            top_row = QWidget()
+            tl      = QHBoxLayout(top_row)
+            tl.setContentsMargins(2, 1, 2, 1)
             cb = QCheckBox(label)
             cb.setChecked(bt in self._enabled_bond_types)
             cb.stateChanged.connect(
                 lambda state, b=bt: self._on_bond_toggle(b, state)
             )
-            self._bond_layout.addWidget(cb)
+            expand_btn = QPushButton('▼' if is_open else '▶')
+            expand_btn.setFixedSize(18, 18)
+            expand_btn.setFlat(True)
+            expand_btn.setStyleSheet('font-size: 8px; padding: 0px;')
+            tl.addWidget(cb)
+            tl.addStretch()
+            tl.addWidget(expand_btn)
+
+            # Factor row (hidden unless this bond type was expanded)
+            factor_row = QWidget()
+            fl         = QHBoxLayout(factor_row)
+            fl.setContentsMargins(16, 0, 2, 3)
+            fl.addWidget(QLabel('factor:'))
+            spin = QDoubleSpinBox()
+            spin.setRange(0.8, 2.0)
+            spin.setSingleStep(0.05)
+            spin.setDecimals(2)
+            spin.setValue(self._bond_factors.get(bt, BOND_FACTOR))
+            spin.setFixedWidth(60)
+            fl.addWidget(spin)
+            fl.addStretch()
+            factor_row.setVisible(is_open)
+
+            expand_btn.clicked.connect(
+                lambda _checked, b=bt, btn=expand_btn, fr=factor_row:
+                self._toggle_bond_expand(b, btn, fr)
+            )
+            spin.valueChanged.connect(
+                lambda val, b=bt: self._on_bond_factor_change(b, val)
+            )
+
+            cl.addWidget(top_row)
+            cl.addWidget(factor_row)
+            self._bond_layout.addWidget(container)
             self._bond_checkboxes[bt] = cb
+
+    def _toggle_bond_expand(self, bond_type, btn, factor_row):
+        if bond_type in self._expanded_bond_types:
+            self._expanded_bond_types.discard(bond_type)
+            btn.setText('▶')
+            factor_row.setVisible(False)
+        else:
+            self._expanded_bond_types.add(bond_type)
+            btn.setText('▼')
+            factor_row.setVisible(True)
+
+    def _on_bond_factor_change(self, bond_type, value):
+        if self.supercell is None:
+            return
+        self._bond_factors[bond_type] = value
+        self._bond_pairs = self._compute_bonds(self.supercell)
+        # Sync enabled set: preserve user's choices, add any newly-appearing
+        # types with the same default rule used at load time.
+        all_types = {frozenset({sp_i, sp_j})
+                     for _, _, sp_i, sp_j in self._bond_pairs}
+        for bt in all_types:
+            if bt not in self._enabled_bond_types:
+                if not (len(bt) == 1 and next(iter(bt)) in SAME_SPECIES_METALS):
+                    self._enabled_bond_types.add(bt)
+        self._enabled_bond_types &= all_types
+        self._rebuild_bond_toggles()
+        self._redraw()
 
     def _on_bond_toggle(self, bond_type, state):
         if state == Qt.Checked:
@@ -226,9 +299,11 @@ class StructureView(QWidget):
         self._refsite_fracs       = []
         self._refsite_bonds_cutoff = None
         self._n_refsite_cubes     = 0
-        self._colours        = {
+        self._colours             = {
             sp: element_colour(sp) for sp in supercell.chem_symbols
         }
+        self._bond_factors        = {}
+        self._expanded_bond_types = set()
 
         # Compute bond connectivity (indices + species)
         self._bond_pairs = self._compute_bonds(supercell)
@@ -393,30 +468,49 @@ class StructureView(QWidget):
     # Bond computation (once on load)
     # ------------------------------------------------------------------
 
-    @staticmethod
-    def _compute_bonds(supercell):
+    def _compute_bonds(self, supercell):
         """
-        Find all bonded pairs using a KDTree.
+        Find all bonded pairs using per-species-pair bond factors.
         Returns list of (i_1based, j_1based, species_i, species_j).
         """
-        sc       = supercell
-        cart_pos = sc.positions @ sc.lattice
-        max_r    = max(covalent_radius(sp) for sp in sc.chem_symbols)
-        q_radius = 2 * max_r * BOND_FACTOR * 1.05
-        tree     = cKDTree(cart_pos)
-        bonds    = []
+        sc         = supercell
+        lat        = sc.lattice
+        cart_pos   = sc.positions @ lat
+        N          = sc.n_atoms
+        max_r      = max(covalent_radius(sp) for sp in sc.chem_symbols)
+        max_factor = max(self._bond_factors.values(), default=BOND_FACTOR)
+        q_radius   = 2 * max_r * max_factor * 1.05
 
-        for i in range(sc.n_atoms):
-            sp_i = sc.species(i + 1)
-            r_i  = covalent_radius(sp_i)
-            for j in tree.query_ball_point(cart_pos[i], q_radius):
-                if j <= i:
+        # Expand to all 27 cells (original + 26 periodic images) so that bonds
+        # crossing the supercell boundary are found.  all_cart[k*N + i] is image
+        # k of atom i; idx % N maps any expanded index back to the original atom.
+        all_cart = np.vstack(
+            [cart_pos + np.array([di, dj, dk], dtype=float) @ lat
+             for di in (-1, 0, 1) for dj in (-1, 0, 1) for dk in (-1, 0, 1)]
+        )
+        tree = cKDTree(all_cart)
+
+        seen  = set()
+        bonds = []
+        for i in range(N):
+            sp_i   = sc.species(i + 1)
+            r_i    = covalent_radius(sp_i)
+            for idx in tree.query_ball_point(cart_pos[i], q_radius):
+                j = idx % N
+                if j == i:
                     continue
-                sp_j = sc.species(j + 1)
-                d    = sc.atom_distance(i + 1, j + 1)
-                if d <= (r_i + covalent_radius(sp_j)) * BOND_FACTOR:
-                    bonds.append((i + 1, j + 1, sp_i, sp_j))
-
+                pair = (min(i, j), max(i, j))
+                if pair in seen:
+                    continue
+                sp_j   = sc.species(j + 1)
+                bt     = frozenset({sp_i, sp_j})
+                factor = self._bond_factors.get(bt, BOND_FACTOR)
+                d      = sc.atom_distance(i + 1, j + 1)
+                if d <= (r_i + covalent_radius(sp_j)) * factor:
+                    seen.add(pair)
+                    i1, j1 = pair
+                    bonds.append((i1 + 1, j1 + 1,
+                                  sc.species(i1 + 1), sc.species(j1 + 1)))
         return bonds
 
     # ------------------------------------------------------------------
@@ -427,8 +521,7 @@ class StructureView(QWidget):
         """
         Shift all fractional coords so center_idx is at (0.5, 0.5, 0.5)
         using the minimum-image convention.
-        Bond endpoints are recomputed from these coords in _redraw,
-        so no bond crosses the cell after centering.
+        Bond endpoints are recomputed from these coords in _redraw.
         """
         sc         = self.supercell
         pos_center = sc.positions[center_idx_1based - 1]
@@ -513,6 +606,14 @@ class StructureView(QWidget):
                 bond_points.extend([p1, p2])
                 bond_lines.extend([2, pt_idx, pt_idx + 1])
                 pt_idx += 2
+                # If the bond crosses the cell boundary, also draw a matching
+                # stub from j's side so neither atom looks stranded.
+                p2_frac = frac_i + diff
+                if np.any(p2_frac < -1e-6) or np.any(p2_frac > 1.0 + 1e-6):
+                    p2_j = cart[j_1 - 1]
+                    bond_points.extend([p2_j, p2_j - diff @ sc.lattice])
+                    bond_lines.extend([2, pt_idx, pt_idx + 1])
+                    pt_idx += 2
             bond_mesh        = pv.PolyData()
             bond_mesh.points = np.array(bond_points)
             bond_mesh.lines  = np.array(bond_lines)
@@ -643,6 +744,17 @@ class StructureView(QWidget):
                 name='highlight_bond',
                 opacity=FULL_OPACITY, render=False,
             )
+            p2_frac = frac_i + diff
+            if np.any(p2_frac < -1e-6) or np.any(p2_frac > 1.0 + 1e-6):
+                p2_j  = cart[j_1 - 1]
+                tube2 = pv.Line(p2_j, p2_j - diff @ sc.lattice).tube(
+                    radius=HIGHLIGHT_BOND_RADIUS, n_sides=16
+                )
+                self.plotter.add_mesh(
+                    tube2, color=HIGHLIGHT_COLOUR,
+                    name='highlight_bond_wrap',
+                    opacity=FULL_OPACITY, render=False,
+                )
 
         # --- Multi-bond highlight (shell mode) ---
         # Each bond needs its own tube actor — pv.PolyData with multiple
@@ -660,6 +772,17 @@ class StructureView(QWidget):
                 name=f'highlight_bond_multi_{k}',
                 opacity=FULL_OPACITY, render=False,
             )
+            p2_frac = frac_i + diff
+            if np.any(p2_frac < -1e-6) or np.any(p2_frac > 1.0 + 1e-6):
+                p2_j  = cart[j_1 - 1]
+                tube2 = pv.Line(p2_j, p2_j - diff @ sc.lattice).tube(
+                    radius=HIGHLIGHT_BOND_RADIUS, n_sides=12
+                )
+                self.plotter.add_mesh(
+                    tube2, color=HIGHLIGHT_COLOUR,
+                    name=f'highlight_bond_multi_{k}_wrap',
+                    opacity=FULL_OPACITY, render=False,
+                )
 
         # --- Refsite cube markers ---
         fracs_to_draw = self._refsite_fracs if self._refsite_fracs else (
