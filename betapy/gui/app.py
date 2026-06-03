@@ -209,6 +209,7 @@ class MainWindow(QMainWindow):
         from betapy.gui.stiffness_shift_widget import StiffnessShiftWidget
         from betapy.gui.lt_viewer              import LTDecompositionWidget
         from betapy.gui.multicenter_viewer     import MulticenterWidget
+        from betapy.gui.badger_viewer          import BadgerWidget
 
         # Instantiate all widgets upfront; only *add* them to the tab bar
         # selectively via _update_tab_visibility().
@@ -217,6 +218,7 @@ class MainWindow(QMainWindow):
         self.stiffness_shift = StiffnessShiftWidget()
         self.lt_viewer       = LTDecompositionWidget()
         self.multicenter     = MulticenterWidget()
+        self.badger          = BadgerWidget()
 
         # pFC Viewer is always present; track permanent tabs (no close button).
         self.tabs.addTab(self.pfc_viewer, 'pFC Viewer')
@@ -368,6 +370,7 @@ class MainWindow(QMainWindow):
         self.site_picker.set_unit(unit)
         self.stiffness_shift.set_unit(unit)
         self.lt_viewer.set_unit(unit)
+        self.badger.set_unit(unit)
 
     # ------------------------------------------------------------------
     # Tab bar — "+" overlay button and close handling
@@ -422,7 +425,7 @@ class MainWindow(QMainWindow):
         # Optional singleton tabs are kept alive for re-adding; extra pFC
         # viewers are independent instances and can be destroyed.
         if widget not in (self.site_picker, self.stiffness_shift,
-                          self.lt_viewer, self.multicenter):
+                          self.lt_viewer, self.multicenter, self.badger):
             widget.deleteLater()
         QTimer.singleShot(0, self._reposition_plus_btn)
 
@@ -436,19 +439,23 @@ class MainWindow(QMainWindow):
         has_shift   = self.tabs.indexOf(self.stiffness_shift) != -1
         has_lt      = self.tabs.indexOf(self.lt_viewer)       != -1
         has_mc      = self.tabs.indexOf(self.multicenter)     != -1
+        has_badger  = self.tabs.indexOf(self.badger)          != -1
 
-        label_ref   = ('• ' if has_refsite else '  ') + 'Ref. Site Projection'
-        label_shift = ('• ' if has_shift   else '  ') + 'Stiffness Shift'
-        label_lt    = ('• ' if has_lt      else '  ') + 'LT Decomposition  (β)'
-        label_mc    = ('• ' if has_mc      else '  ') + 'Multicenter Bonding  (β)'
+        label_ref    = ('• ' if has_refsite else '  ') + 'Ref. Site Projection'
+        label_shift  = ('• ' if has_shift   else '  ') + 'Stiffness Shift'
+        label_lt     = ('• ' if has_lt      else '  ') + 'LT Decomposition  (β)'
+        label_mc     = ('• ' if has_mc      else '  ') + 'Multicenter Bonding  (β)'
+        label_badger = ('• ' if has_badger  else '  ') + 'Badger Analysis  (β)'
 
-        menu.addAction(label_mc,    lambda: self._add_optional_tab(
+        menu.addAction(label_mc,     lambda: self._add_optional_tab(
             self.multicenter, 'Multicenter Bonding  (β)'))
-        menu.addAction(label_ref,   lambda: self._add_optional_tab(
+        menu.addAction(label_badger, lambda: self._add_optional_tab(
+            self.badger, 'Badger Analysis  (β)'))
+        menu.addAction(label_ref,    lambda: self._add_optional_tab(
             self.site_picker, 'Ref. Site Projection'))
-        menu.addAction(label_shift, lambda: self._add_optional_tab(
+        menu.addAction(label_shift,  lambda: self._add_optional_tab(
             self.stiffness_shift, 'Stiffness Shift'))
-        menu.addAction(label_lt,    lambda: self._add_optional_tab(
+        menu.addAction(label_lt,     lambda: self._add_optional_tab(
             self.lt_viewer, 'LT Decomposition  (β)'))
 
         menu.exec_(pos)
@@ -741,6 +748,11 @@ class MainWindow(QMainWindow):
         self._bulk_results = results
         self.multicenter.load_data(
             results, self.supercell, lobster_dir=self._lobster_dir
+        )
+        self.badger.load_data(
+            results,
+            reliability_cutoff=self.pfc_viewer._reliability_cutoff,
+            supercell=self.supercell,
         )
         self._update_tab_visibility()
 
