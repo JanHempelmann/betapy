@@ -203,7 +203,9 @@ class BadgerWidget(QWidget):
 
         self.structure_view = StructureView(self)
         bot.addWidget(self.structure_view)
-        bot.setSizes([1, 1])
+        bot.setSizes([500, 500])
+        bot.setStretchFactor(0, 1)
+        bot.setStretchFactor(1, 1)
 
         rv.addWidget(bot, stretch=1)
 

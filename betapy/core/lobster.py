@@ -320,7 +320,14 @@ def parse_car_header(path) -> dict:
         r'No\.(\d+):([A-Za-z]+\d+)\[([^\]]+)\]->([A-Za-z]+\d+)\[([^\]]+)\]'
     )
 
-    pairs = []
+    # Regex for N-centre COBICAR: No.k:S10[0 0 0]->Bi43[0 0 1]->S7[0 0 1]
+    _re_nc = re.compile(
+        r'No\.(\d+):((?:[A-Za-z]+\d+\[[^\]]+\]->)+[A-Za-z]+\d+\[[^\]]+\])'
+    )
+    _re_nc_atom = re.compile(r'([A-Za-z]+\d+)\[([^\]]+)\]')
+
+    pairs    = []
+    nc_pairs = []
     for i in range(hdr_start, hdr_start + n_pairs):
         line = lines[i].strip()
         m = _re_dist.match(line)
@@ -336,7 +343,12 @@ def parse_car_header(path) -> dict:
             continue
         m = _re_cell.match(line)
         if m:
-            if '->' in line[m.end():]:   # 3-centre COBI — skip
+            if '->' in line[m.end():]:   # N-centre COBICAR entry
+                m2 = _re_nc.match(line)
+                if m2:
+                    atoms = [(a.group(1), list(map(int, a.group(2).split())))
+                             for a in _re_nc_atom.finditer(m2.group(2))]
+                    nc_pairs.append({'index': int(m2.group(1)), 'atoms': atoms})
                 continue
             sp1 = re.match(r'([A-Za-z]+)', m.group(2)).group(1)
             sp2 = re.match(r'([A-Za-z]+)', m.group(4)).group(1)
@@ -356,7 +368,7 @@ def parse_car_header(path) -> dict:
     return {
         'n_spins': n_spins, 'n_e': n_e, 'e_fermi': e_fermi,
         'has_average': has_average, 'n_total': n_total, 'n_pairs': n_pairs,
-        'first_data_line': first_data, 'pairs': pairs,
+        'first_data_line': first_data, 'pairs': pairs, 'nc_pairs': nc_pairs,
     }
 
 
@@ -482,6 +494,241 @@ def load_car_curves(path, header: dict,
         })
 
     result.sort(key=lambda x: abs(x['ival_ef']), reverse=True)
+    return result
+
+
+# ---------------------------------------------------------------------------
+# N-center COBI — NcICOBILIST and NcCOBICAR
+# ---------------------------------------------------------------------------
+
+_re_nc_icobi_row  = re.compile(r'^\s*\d+\s+(\d+)\s+([+-]?\d[\d.eE+-]*)\s+(.*)')
+_re_nc_atom_cell  = re.compile(r'([A-Za-z]+\d+)\[([^\]]+)\]')
+
+
+def parse_ncicobi_list(path) -> list:
+    """
+    Parse NcICOBILIST.lobster.
+
+    Returns list of dicts:
+        n_atoms : int
+        icobi   : float (Nc-ICOBI at EF spin 1)
+        atoms   : list of (label_str, [h,k,l])  e.g. [('Sc1',[0,0,0]),('F2',[0,0,0])]
+    """
+    records = []
+    with open(Path(path)) as f:
+        for line in f:
+            m = _re_nc_icobi_row.match(line)
+            if not m:
+                continue
+            try:
+                n_atoms = int(m.group(1))
+                icobi   = float(m.group(2))
+                atoms   = [(am.group(1),
+                            list(map(int, am.group(2).split())))
+                           for am in _re_nc_atom_cell.finditer(m.group(3))]
+                if len(atoms) == n_atoms:
+                    records.append({'n_atoms': n_atoms, 'icobi': icobi,
+                                    'atoms': atoms})
+            except (ValueError, AttributeError):
+                continue
+    return records
+
+
+def parse_poscar_lobster(path) -> dict:
+    """Public alias for the internal POSCAR.lobster parser."""
+    return _parse_poscar_lobster(path)
+
+
+def _directive_to_chain(directive_str, lob_poscar):
+    """
+    Convert a cobiBetween directive to a list of (lobster_label, cell) pairs.
+
+    'cobiBetween atom1 atom2 cell 1 0 0 atom1'
+      → [('Sc1',[0,0,0]), ('F2',[0,0,0]), ('Sc1',[1,0,0])]
+
+    Returns None if parsing fails.
+    """
+    tokens = directive_str.split()
+    if len(tokens) < 3 or tokens[0].lower() != 'cobibetween':
+        return None
+    tokens  = tokens[1:]
+    species = lob_poscar['species']   # 0-based list
+    chain   = []
+    i = 0
+    while i < len(tokens):
+        tok = tokens[i]
+        if not tok.startswith('atom'):
+            i += 1
+            continue
+        try:
+            idx0  = int(tok[4:]) - 1      # 0-based POSCAR index
+            label = species[idx0] + str(idx0 + 1)
+        except (ValueError, IndexError):
+            return None
+        i += 1
+        cell = [0, 0, 0]
+        if i < len(tokens) and tokens[i] == 'cell':
+            try:
+                cell = [int(tokens[i+1]), int(tokens[i+2]), int(tokens[i+3])]
+                i += 4
+            except (ValueError, IndexError):
+                return None
+        chain.append((label, cell))
+    return chain if len(chain) >= 2 else None
+
+
+def _chain_variants(chain):
+    """
+    Yield all normalized cyclic rotations and their reversals.
+
+    Each variant has the first atom at cell [0,0,0].
+    """
+    n = len(chain)
+    for start in range(n):
+        rot  = chain[start:] + chain[:start]
+        base = rot[0][1]
+        yield [(lbl, [c - b for c, b in zip(cell, base)])
+               for lbl, cell in rot]
+    rev = list(reversed(chain))
+    for start in range(n):
+        rot  = rev[start:] + rev[:start]
+        base = rot[0][1]
+        yield [(lbl, [c - b for c, b in zip(cell, base)])
+               for lbl, cell in rot]
+
+
+def lookup_ncicobi(records, directive_str, lob_poscar):
+    """
+    Find the NcICOBI value for a cobiBetween directive.
+
+    Parameters
+    ----------
+    records      : output of parse_ncicobi_list()
+    directive_str: full cobiBetween line string
+    lob_poscar   : output of parse_poscar_lobster() / _parse_poscar_lobster()
+
+    Returns
+    -------
+    float or None if not found.
+    """
+    chain = _directive_to_chain(directive_str, lob_poscar)
+    if chain is None:
+        return None
+    n = len(chain)
+    for rec in records:
+        if rec['n_atoms'] != n:
+            continue
+        for variant in _chain_variants(chain):
+            if variant == rec['atoms']:
+                return rec['icobi']
+    return None
+
+
+def parse_nccobicar_header(path):
+    """
+    Parse NcCOBICAR.lobster header.
+
+    Returns None if the file is absent or malformed, otherwise a dict:
+        n_spins, n_e, e_fermi, n_total, n_pairs, first_data_line,
+        nc_pairs : list of {index, atoms: [(label, [h,k,l])]}
+    """
+    path = Path(path)
+    if not path.exists():
+        return None
+    _re_nc_hdr = re.compile(
+        r'No\.(\d+):((?:[A-Za-z]+\d+\[[^\]]+\]->)+[A-Za-z]+\d+\[[^\]]+\])'
+    )
+    try:
+        with open(path) as f:
+            lines = f.readlines()
+        meta        = lines[1].split()
+        n_total     = int(meta[0])
+        n_spins     = int(meta[1])
+        n_e         = int(meta[2])
+        e_fermi     = float(meta[5])
+        has_average = lines[2].strip() == 'Average'
+        hdr_start   = 3 if has_average else 2
+        n_pairs     = n_total - (1 if has_average else 0)
+
+        nc_pairs = []
+        for i in range(hdr_start, min(hdr_start + n_pairs, len(lines))):
+            m = _re_nc_hdr.match(lines[i].strip())
+            if not m:
+                continue
+            atoms = [(am.group(1), list(map(int, am.group(2).split())))
+                     for am in _re_nc_atom_cell.finditer(m.group(2))]
+            nc_pairs.append({'index': int(m.group(1)), 'atoms': atoms})
+
+        first_data = hdr_start + n_pairs
+        while first_data < len(lines) and not lines[first_data].strip():
+            first_data += 1
+
+        return {'n_spins': n_spins, 'n_e': n_e, 'e_fermi': e_fermi,
+                'n_total': n_total, 'n_pairs': n_pairs,
+                'first_data_line': first_data, 'nc_pairs': nc_pairs}
+    except Exception:
+        return None
+
+
+def load_nccobicar_curves(path, header, directive_str, lob_poscar) -> list:
+    """
+    Load energy-resolved NcCOBI curves for a cobiBetween directive.
+
+    Parameters
+    ----------
+    path         : path to NcCOBICAR.lobster
+    header       : output of parse_nccobicar_header()
+    directive_str: full cobiBetween line string
+    lob_poscar   : output of parse_poscar_lobster()
+
+    Returns
+    -------
+    list of dicts {energy, curve, icurve, ival_ef}, or empty list.
+    """
+    chain = _directive_to_chain(directive_str, lob_poscar)
+    if chain is None:
+        return []
+
+    matching = []
+    for p in header['nc_pairs']:
+        for variant in _chain_variants(chain):
+            if variant == p['atoms']:
+                matching.append(p)
+                break
+    if not matching:
+        return []
+
+    n_spins = header['n_spins']
+
+    def _cols(idx):
+        base = 1 + (idx - 1) * 2 * n_spins
+        return base, base + 1
+
+    usecols  = [0]
+    slot_map = {}
+    for p in matching:
+        c, ic = _cols(p['index'])
+        slot_map[p['index']] = (len(usecols), len(usecols) + 1)
+        usecols.extend([c, ic])
+
+    try:
+        data = np.loadtxt(path, skiprows=header['first_data_line'],
+                          usecols=usecols)
+    except Exception:
+        return []
+
+    if data.ndim == 1:
+        data = data.reshape(1, -1)
+    energy = data[:, 0]
+    ef_idx = int(np.argmin(np.abs(energy)))
+
+    result = []
+    for p in matching:
+        s_c, s_ic = slot_map[p['index']]
+        curve  = data[:, s_c]
+        icurve = data[:, s_ic]
+        result.append({'energy': energy, 'curve': curve, 'icurve': icurve,
+                       'ival_ef': float(icurve[ef_idx])})
     return result
 
 

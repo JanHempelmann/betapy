@@ -196,26 +196,26 @@ class TestMapScAtomToPostcar:
     def lob_poscar(self, poscar_path):
         return _parse_poscar_lobster(poscar_path)
 
-    def test_atom1_maps_to_A1_cell_000(self, supercell, lob_poscar):
+    def test_atom1_maps_to_atom1_cell_000(self, supercell, lob_poscar):
         label, cell = _map_sc_atom_to_poscar(1, supercell, lob_poscar)
-        assert label == 'A1'
+        assert label == 'atom1'
         assert cell == [0, 0, 0]
 
-    def test_atom2_maps_to_B2_cell_000(self, supercell, lob_poscar):
+    def test_atom2_maps_to_atom2_cell_000(self, supercell, lob_poscar):
         label, cell = _map_sc_atom_to_poscar(2, supercell, lob_poscar)
-        assert label == 'B2'
+        assert label == 'atom2'
         assert cell == [0, 0, 0]
 
-    def test_atom3_maps_to_A1_cell_100(self, supercell, lob_poscar):
+    def test_atom3_maps_to_atom1_cell_100(self, supercell, lob_poscar):
         # A at fractional (0.5, 0, 0) in 8 Å supercell = Cartesian (4, 0, 0)
         # In 4 Å POSCAR: f_lob = 1.0 → cell=[1,0,0], wrapped=0.0 → matches A at (0,0,0)
         label, cell = _map_sc_atom_to_poscar(3, supercell, lob_poscar)
-        assert label == 'A1'
+        assert label == 'atom1'
         assert cell == [1, 0, 0]
 
-    def test_atom4_maps_to_B2_cell_100(self, supercell, lob_poscar):
+    def test_atom4_maps_to_atom2_cell_100(self, supercell, lob_poscar):
         label, cell = _map_sc_atom_to_poscar(4, supercell, lob_poscar)
-        assert label == 'B2'
+        assert label == 'atom2'
         assert cell == [1, 0, 0]
 
     def test_raises_on_incommensurate_poscar(self, supercell):
@@ -434,12 +434,12 @@ class TestFormatCobiDirective:
         # Chain atoms 1(A), 2(B), 3(A) — atom3 is in cell [1,0,0] relative to atom1
         directive = format_cobi_directive([1, 2, 3], sc, lob_poscar)
         assert directive.startswith('cobiBetween')
-        assert 'A1' in directive
-        assert 'B2' in directive
+        assert 'atom1' in directive
+        assert 'atom2' in directive
         # Atom 1 is the reference: cell [0,0,0] — no cell tag for it
         tokens = directive.split()
-        # First token: 'cobiBetween', second: label of atom1 (A1)
-        assert tokens[1] == 'A1'
+        # First token: 'cobiBetween', second: label of atom1
+        assert tokens[1] == 'atom1'
         # cell tag must appear for atom 3, minimum-image wrapped within the supercell
         assert 'cell' in directive
         # 2×1×1 supercell: [1,0,0] and [-1,0,0] are equivalent; minimum image gives -1
@@ -450,8 +450,8 @@ class TestFormatCobiDirective:
         directive = format_cobi_directive([1, 2], sc, lob_poscar)
         tokens = directive.split()
         # Format: cobiBetween label1 [cell h k l] label2 [cell h k l]
-        assert tokens[1] == 'A1'
-        # No 'cell' tag immediately after 'cobiBetween A1'
+        assert tokens[1] == 'atom1'
+        # No 'cell' tag immediately after 'cobiBetween atom1'
         assert tokens[2] != 'cell'
 
     def test_three_atom_same_cell(self, sc, lob_poscar):

@@ -350,7 +350,7 @@ def _map_sc_atom_to_poscar(sc_idx, supercell, lob_poscar, tol=0.15):
             "Ensure POSCAR.lobster is commensurate with SPOSCAR."
         )
 
-    return f"{lob_poscar['species'][best_idx]}{best_idx + 1}", cell.tolist()
+    return f"atom{best_idx + 1}", cell.tolist()
 
 
 # ---------------------------------------------------------------------------

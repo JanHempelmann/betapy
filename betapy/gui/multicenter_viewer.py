@@ -24,7 +24,7 @@ from PyQt5.QtWidgets import (
     QWidget, QHBoxLayout, QVBoxLayout, QSplitter,
     QPushButton, QLabel, QDoubleSpinBox, QSpinBox,
     QGroupBox, QListWidget, QProgressBar, QApplication,
-    QMessageBox, QCheckBox, QScrollArea, QFrame,
+    QMessageBox, QCheckBox, QScrollArea, QFrame, QDialog,
 )
 from PyQt5.QtCore import Qt, QThread, pyqtSignal
 from PyQt5.QtGui import QFont, QFontDatabase
@@ -46,6 +46,120 @@ _FLAG_ALPHA  = 0.90
 _CURVE_ALPHA = 0.65
 _BAND_ALPHA  = 0.10
 _PICK_TOL    = 0.025     # fraction of axis range for click detection
+
+_NC_COLOUR_BOND = '#4d94ff'
+_NC_COLOUR_ANTI = '#ff6666'
+
+
+# ---------------------------------------------------------------------------
+# NcICOBI popup
+# ---------------------------------------------------------------------------
+
+class _NcCobiViewerWidget(QDialog):
+    """
+    Non-modal popup showing NcICOBI(N) value and the NcCOBI energy curve
+    for a selected cobiBetween directive.
+
+    Call show_result() when the user clicks a directive whose entry is found
+    in NcICOBILIST.lobster.
+    """
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle('LOBSTER — Multicenter COBI')
+        self.setWindowFlags(Qt.Window | Qt.WindowCloseButtonHint |
+                            Qt.WindowMinimizeButtonHint)
+        self.setAttribute(Qt.WA_DeleteOnClose, False)
+        self._build_ui()
+
+    def _build_ui(self):
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(8, 8, 8, 8)
+        layout.setSpacing(6)
+
+        self._title_label = QLabel('')
+        self._title_label.setAlignment(Qt.AlignCenter)
+        self._title_label.setWordWrap(True)
+        mono = QFontDatabase.systemFont(QFontDatabase.FixedFont)
+        self._title_label.setFont(mono)
+        layout.addWidget(self._title_label)
+
+        self._icobi_label = QLabel('')
+        self._icobi_label.setAlignment(Qt.AlignCenter)
+        f = self._icobi_label.font()
+        f.setPointSize(f.pointSize() + 1)
+        self._icobi_label.setFont(f)
+        layout.addWidget(self._icobi_label)
+
+        self._figure = Figure(figsize=(4, 5), tight_layout=True)
+        self._canvas = FigureCanvas(self._figure)
+        layout.addWidget(self._canvas, stretch=1)
+
+        btn_row = QHBoxLayout()
+        btn_close = QPushButton('Close')
+        btn_close.clicked.connect(self.hide)
+        btn_row.addStretch()
+        btn_row.addWidget(btn_close)
+        layout.addLayout(btn_row)
+
+        self.resize(420, 540)
+
+    def show_result(self, directive, icobi, curves):
+        """Update display and bring the window forward."""
+        self._draw(directive, icobi, curves)
+        if not self.isVisible():
+            self._position_beside_parent()
+        self.show()
+        self.raise_()
+        self.activateWindow()
+
+    def _position_beside_parent(self):
+        top = self.parent().window() if self.parent() else None
+        if top is None:
+            return
+        pg = top.frameGeometry()
+        x, y = pg.right() + 10, pg.top()
+        screen = QApplication.screenAt(pg.center())
+        if screen:
+            sr = screen.availableGeometry()
+            if x + self.width() > sr.right():
+                x = max(sr.left(), pg.left() - self.width() - 10)
+            y = max(sr.top(), min(y, sr.bottom() - self.height()))
+        self.move(x, y)
+
+    def _draw(self, directive, icobi, curves):
+        body = directive[len('cobiBetween'):].strip() \
+               if directive.startswith('cobiBetween') else directive
+        self._title_label.setText(body)
+
+        self._figure.clear()
+        ax = self._figure.add_subplot(111)
+
+        if not curves:
+            self._icobi_label.setText(f'NcICOBI(N) = {icobi:.5f}')
+            ax.text(0.5, 0.5, 'no NcCOBICAR data',
+                    transform=ax.transAxes,
+                    ha='center', va='center', color='grey', fontsize=9)
+        else:
+            result = curves[0]   # show first (and usually only) match
+            energy = result['energy']
+            curve  = result['curve']
+            ax.fill_betweenx(energy, 0, curve, where=(curve >= 0),
+                             color=_NC_COLOUR_BOND, alpha=0.35, linewidth=0)
+            ax.fill_betweenx(energy, 0, curve, where=(curve <= 0),
+                             color=_NC_COLOUR_ANTI, alpha=0.35, linewidth=0)
+            ax.plot(curve, energy, color='#111', linewidth=1.0, zorder=2)
+            ef_val = result['ival_ef']
+            self._icobi_label.setText(
+                f'NcICOBI(N) = {icobi:.5f}   ·   NcICOBI(EF) = {ef_val:.5f}'
+            )
+
+        ax.axhline(0, color='#777', linestyle='--', linewidth=0.9, zorder=1)
+        ax.axvline(0, color='#999', linestyle='-',  linewidth=0.5, zorder=1)
+        ax.grid(True, linestyle=':', alpha=0.35)
+        ax.set_xlabel('NcCOBI', fontsize=10)
+        ax.set_ylabel('Energy (eV)', fontsize=10)
+        self._canvas.draw_idle()
 
 
 # ---------------------------------------------------------------------------
@@ -214,6 +328,11 @@ class MulticenterWidget(QWidget):
         self._directive_trigger = {}   # directive string → trigger pair record
         self._selected_record   = None
         self._ax                = None
+        # NcICOBI / NcCOBICAR
+        self._lob_poscar         = None   # dict from parse_poscar_lobster()
+        self._nc_icobi_records   = []     # list from parse_ncicobi_list()
+        self._nc_cobicar_header  = None   # dict from parse_nccobicar_header(), or None
+        self._nc_viewer          = None   # _NcCobiViewerWidget, created lazily
         self._build_ui()
 
     # ------------------------------------------------------------------ build
@@ -377,17 +496,48 @@ class MulticenterWidget(QWidget):
             self._worker.quit()
             self._worker.wait(500)
 
-        self._bulk_results = bulk_results
-        self._supercell    = supercell
-        self._lobster_dir  = lobster_dir
-        self._poscar_path  = None
+        self._bulk_results       = bulk_results
+        self._supercell          = supercell
+        self._lobster_dir        = lobster_dir
+        self._poscar_path        = None
+        self._lob_poscar         = None
+        self._nc_icobi_records   = []
+        self._nc_cobicar_header  = None
 
         self.structure_view.load_supercell(supercell)
 
         if lobster_dir is not None:
-            p = Path(lobster_dir) / 'POSCAR'
+            ldir = Path(lobster_dir)
+            p = ldir / 'POSCAR'
             if p.exists():
                 self._poscar_path = p
+
+            from betapy.core.lobster import (
+                parse_poscar_lobster, parse_ncicobi_list,
+                parse_car_header,
+            )
+            for _pl_name in ('POSCAR.lobster', 'POSCAR.lobster.vasp', 'POSCAR'):
+                _pl = ldir / _pl_name
+                if _pl.exists():
+                    try:
+                        self._lob_poscar = parse_poscar_lobster(_pl)
+                        break
+                    except Exception:
+                        pass
+
+            ni = ldir / 'NcICOBILIST.lobster'
+            if ni.exists():
+                try:
+                    self._nc_icobi_records = parse_ncicobi_list(ni)
+                except Exception:
+                    pass
+
+            nc = ldir / 'COBICAR.lobster'
+            if nc.exists():
+                try:
+                    self._nc_cobicar_header = parse_car_header(nc)
+                except Exception:
+                    pass
 
         if self._poscar_path is not None:
             self._lbl_status.setText(
@@ -818,6 +968,25 @@ class MulticenterWidget(QWidget):
                     self._selected_record = rec
                     break
             self._refresh_plot()
+
+        # NcICOBI popup — only open if the directive is found in NcICOBILIST
+        if self._nc_icobi_records and self._lob_poscar is not None:
+            from betapy.core.lobster import lookup_ncicobi, load_nccobicar_curves
+            icobi = lookup_ncicobi(
+                self._nc_icobi_records, directive, self._lob_poscar)
+            if icobi is not None:
+                curves = []
+                if self._nc_cobicar_header is not None:
+                    nc_path = Path(self._lobster_dir) / 'COBICAR.lobster'
+                    curves = load_nccobicar_curves(
+                        nc_path, self._nc_cobicar_header,
+                        directive, self._lob_poscar)
+                self._ensure_nc_viewer().show_result(directive, icobi, curves)
+
+    def _ensure_nc_viewer(self):
+        if self._nc_viewer is None:
+            self._nc_viewer = _NcCobiViewerWidget(self)
+        return self._nc_viewer
 
     def _copy_directives(self):
         lines = [self._directive_list.item(i).text()

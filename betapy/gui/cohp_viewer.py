@@ -91,7 +91,11 @@ class COHPViewerWidget(QDialog):
         self._headers.clear()
         self._cache.clear()
 
-        poscar_lob = lobster_dir / 'POSCAR.lobster'
+        poscar_lob = next(
+            (lobster_dir / n for n in ('POSCAR.lobster', 'POSCAR.lobster.vasp', 'POSCAR')
+             if (lobster_dir / n).exists()),
+            None,
+        )
 
         for car_type, fname in _CAR_FILES.items():
             fpath = lobster_dir / fname
@@ -99,7 +103,7 @@ class COHPViewerWidget(QDialog):
                 continue
             try:
                 hdr = parse_car_header(fpath)
-                if car_type == 'cobi' and poscar_lob.exists():
+                if car_type == 'cobi' and poscar_lob is not None:
                     enrich_cobicar_distances(hdr, poscar_lob)
                 self._headers[car_type] = hdr
             except Exception:
