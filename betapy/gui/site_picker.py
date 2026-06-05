@@ -25,36 +25,56 @@ from PyQt5.QtCore import Qt, QThread, pyqtSignal
 from betapy.core.io import read_refpos, write_refpos
 from betapy.core.projection import find_refsite_pairs, refsite_results_to_dataframes
 from betapy.gui.structure_view import StructureView
-from betapy.gui.refsite_viewer import RefsitePFCWidget
+from betapy.gui.refsite_viewer import MultiRefsitePFCWidget
 
 
-class _RefsiteWorker(QThread):
-    """Runs find_refsite_pairs off the main thread."""
+class _MultiRefsiteWorker(QThread):
+    """
+    Runs find_refsite_pairs for every position in the REFPOS off the main thread.
+    Emits a list of (label, offsite_results, onsite_results) tuples on completion.
+    """
 
-    finished = pyqtSignal(list, list)   # offsite_results, onsite_results
+    finished = pyqtSignal(list)   # list of (label, offsite, onsite)
     error    = pyqtSignal(str)
 
-    def __init__(self, supercell, fc_data, ref_frac,
-                 cutoff, exclude_species, parent=None):
+    # Atoms closer than this to the refsite are considered site-occupants and
+    # their species is excluded from the off-site pair list. Atoms further away
+    # (vacant sites) do not trigger any exclusion.
+    _OCCUPANT_THRESHOLD = 1.0   # Å
+
+    def __init__(self, supercell, fc_data, positions, labels,
+                 cutoff, exclude_checked, parent=None):
         super().__init__(parent)
         self._supercell       = supercell
         self._fc_data         = fc_data
-        self._ref_frac        = ref_frac
+        self._positions       = positions       # list of array-like fractional coords
+        self._labels          = labels          # list of str, one per position
         self._cutoff          = cutoff
-        self._exclude_species = exclude_species
+        self._exclude_checked = exclude_checked
 
     def run(self):
         try:
-            offsite, onsite = find_refsite_pairs(
-                self._supercell,
-                self._fc_data['atomic_pairs'],
-                self._fc_data['force_matrices'],
-                self._ref_frac,
-                self._cutoff,
-                exclude_species=self._exclude_species,
-                show_progress=False,
-            )
-            self.finished.emit(offsite, onsite)
+            sc           = self._supercell
+            site_results = []
+            for label, frac_pos in zip(self._labels, self._positions):
+                exclude_sp = None
+                if self._exclude_checked:
+                    dists    = [sc.distance_to_point(i + 1, frac_pos)
+                                for i in range(sc.n_atoms)]
+                    near_idx = min(range(sc.n_atoms), key=lambda i: dists[i])
+                    if dists[near_idx] < self._OCCUPANT_THRESHOLD:
+                        exclude_sp = {sc.species(near_idx + 1)}
+                offsite, onsite = find_refsite_pairs(
+                    sc,
+                    self._fc_data['atomic_pairs'],
+                    self._fc_data['force_matrices'],
+                    frac_pos,
+                    self._cutoff,
+                    exclude_species=exclude_sp,
+                    show_progress=False,
+                )
+                site_results.append((label, np.asarray(frac_pos), offsite, onsite))
+            self.finished.emit(site_results)
         except Exception as e:
             self.error.emit(str(e))
 
@@ -64,13 +84,12 @@ class SitePickerWidget(QWidget):
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.supercell  = None
-        self.fc_data    = None
-        self._ref_frac  = np.array([0.5, 0.5, 0.5])
-        self._positions = []
-        self._last_offsite = []
-        self._last_onsite  = []
-        self._last_label   = 'custom_site'
+        self.supercell          = None
+        self.fc_data            = None
+        self._ref_frac          = np.array([0.5, 0.5, 0.5])
+        self._positions         = []
+        self._last_site_results = []   # list of (label, offsite, onsite)
+        self._last_label        = 'custom_site'
 
         self._build_ui()
 
@@ -197,6 +216,10 @@ class SitePickerWidget(QWidget):
         btn_analyse.clicked.connect(self._run_analysis)
         ctrl_layout.addWidget(btn_analyse)
 
+        btn_load_refpos = QPushButton('Load REFPOS…')
+        btn_load_refpos.clicked.connect(self._import_refpos)
+        ctrl_layout.addWidget(btn_load_refpos)
+
         btn_export_refpos = QPushButton('Export REFPOS…')
         btn_export_refpos.clicked.connect(self._export_refpos)
         ctrl_layout.addWidget(btn_export_refpos)
@@ -214,10 +237,10 @@ class SitePickerWidget(QWidget):
         splitter.setSizes([800, 270])
         v_splitter.addWidget(splitter)
 
-        # Bottom: pFC viewer spans full width of the tab
-        self.pfc_viewer = RefsitePFCWidget()
+        # Bottom: tabbed pFC viewer spans full width of the tab
+        self.pfc_viewer = MultiRefsitePFCWidget()
         self.pfc_viewer.set_structure_view(self.structure_view)
-        self.structure_view.colours_changed.connect(self.pfc_viewer._refresh_plot)
+        self.structure_view.colours_changed.connect(self.pfc_viewer._on_colours_changed)
         v_splitter.addWidget(self.pfc_viewer)
         v_splitter.setSizes([560, 370])
 
@@ -361,27 +384,31 @@ class SitePickerWidget(QWidget):
             QMessageBox.warning(self, 'No data', 'Load a structure first.')
             return
 
-        sc     = self.supercell
-        cutoff = self.cutoff_spin.value()
+        # Positions to analyse: all REFPOS entries, or the current manual position.
+        if self._positions:
+            positions_to_run = [np.asarray(p) for p in self._positions]
+            base_label       = self._last_label or 'Site'
+            n                = len(positions_to_run)
+            labels           = ([base_label] if n == 1
+                                 else [f'{base_label} {i}' for i in range(n)])
+        else:
+            positions_to_run = [self._ref_frac.copy()]
+            labels           = [self.label_edit.text() or 'custom_site']
 
-        exclude_sp = None
-        self._analysis_ref_sp = None
-        if self.chk_exclude_refsite_species.isChecked():
-            dists    = [sc.distance_to_point(i + 1, self._ref_frac)
-                        for i in range(sc.n_atoms)]
-            near_idx = min(range(sc.n_atoms), key=lambda i: dists[i])
-            self._analysis_ref_sp = sc.species(near_idx + 1)
-            exclude_sp = {self._analysis_ref_sp}
-
-        self._worker = _RefsiteWorker(
-            sc, self.fc_data, self._ref_frac.copy(),
-            cutoff, exclude_sp, parent=self,
+        n = len(positions_to_run)
+        self._worker = _MultiRefsiteWorker(
+            self.supercell, self.fc_data,
+            positions_to_run, labels,
+            cutoff          = self.cutoff_spin.value(),
+            exclude_checked = self.chk_exclude_refsite_species.isChecked(),
+            parent          = self,
         )
-        self._worker.finished.connect(self._on_analysis_done)
+        self._worker.finished.connect(self._on_multi_analysis_done)
         self._worker.error.connect(self._on_analysis_error)
 
         self._progress = QProgressDialog(
-            'Running refsite analysis…', None, 0, 0, self,
+            f'Running refsite analysis ({n} site{"s" if n > 1 else ""})…',
+            None, 0, 0, self,
         )
         self._progress.setWindowTitle('betapy')
         self._progress.setWindowModality(Qt.WindowModal)
@@ -390,26 +417,22 @@ class SitePickerWidget(QWidget):
 
         self._worker.start()
 
-    def _on_analysis_done(self, offsite, onsite):
+    def _on_multi_analysis_done(self, site_results):
         self._progress.close()
+        self._last_site_results = site_results
+        if site_results:
+            self._last_label = site_results[0][0].split(' ')[0]
 
-        self._last_offsite = offsite
-        self._last_onsite  = onsite
-        self._last_label   = self.label_edit.text() or 'custom_site'
+        self.pfc_viewer.load_multi_data(site_results)
 
-        self.pfc_viewer.load_data(offsite, self.supercell)
-
-        ref_sp  = self._analysis_ref_sp
-        note    = f'  (excl. {ref_sp} pairs)\n' if ref_sp else ''
-        pfc_sum = sum(r['mean_pfc'] for r in offsite) if offsite else 0.0
-        self.result_label.setText(
-            f'Found:\n'
-            f'  {len(offsite)} off-site pairs\n'
-            f'{note}'
-            f'  {len(onsite)} on-site terms\n'
-            f'cutoff: {self.cutoff_spin.value():.2f} Å\n'
-            f'Σ pFC = {pfc_sum:+.4f} eV/Å²'
-        )
+        lines = [f'Found ({len(site_results)} site{"s" if len(site_results) > 1 else ""}):']
+        for label, _frac_pos, offsite, onsite in site_results:
+            pfc_sum = sum(r['mean_pfc'] for r in offsite) if offsite else 0.0
+            lines.append(f'  {label}:')
+            lines.append(f'    {len(offsite)} off-site, {len(onsite)} on-site')
+            lines.append(f'    Σ pFC = {pfc_sum:+.4f} eV/Å²')
+        lines.append(f'cutoff: {self.cutoff_spin.value():.2f} Å')
+        self.result_label.setText('\n'.join(lines))
 
     def _on_analysis_error(self, msg):
         self._progress.close()
@@ -418,6 +441,14 @@ class SitePickerWidget(QWidget):
     def load_refsite_csv(self, path):
         """Load a refsite pFCs CSV into the pFC viewer panel."""
         self.pfc_viewer.load_from_csv(path)
+
+    def _import_refpos(self):
+        path, _ = QFileDialog.getOpenFileName(
+            self, 'Load REFPOS', '',
+            'REFPOS files (REFPOS);;All files (*)',
+        )
+        if path:
+            self.load_refpos(path)
 
     def _export_refpos(self):
         label = self.label_edit.text() or 'custom_site'
@@ -429,16 +460,20 @@ class SitePickerWidget(QWidget):
             write_refpos(label, [self._ref_frac.tolist()], path)
 
     def _export_csv(self):
-        if not self._last_offsite and not self._last_onsite:
-            QMessageBox.warning(self, 'No results',
-                                'Run the analysis first.')
+        if not self._last_site_results:
+            QMessageBox.warning(self, 'No results', 'Run the analysis first.')
             return
+        # Combine all sites into one set of DataFrames (Ref Label column
+        # distinguishes sites in the CSV, matching the CLI output format).
+        all_offsite = [r for _, _fp, offsite, _ in self._last_site_results for r in offsite]
+        all_onsite  = [r for _, _fp, _, onsite  in self._last_site_results for r in onsite]
+        base_label  = self._last_label or 'site'
         df_off, df_on = refsite_results_to_dataframes(
-            self._last_offsite, self._last_onsite, self._last_label
+            all_offsite, all_onsite, base_label
         )
         path, _ = QFileDialog.getSaveFileName(
             self, 'Save pFC CSV',
-            f'{self._last_label}_pFCs.csv',
+            f'{base_label}_pFCs.csv',
             'CSV files (*.csv);;All files (*)',
         )
         if not path:

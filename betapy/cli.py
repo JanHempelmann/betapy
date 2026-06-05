@@ -12,12 +12,14 @@ from betapy.core.settings import Settings
 from betapy.core.constants import EV_ANG2_TO_N_M, UNIT_LABEL
 from betapy.core.io import (
     read_SPOSCAR, read_FORCE_CONSTANTS, read_refpos,
-    write_unique_pfcs, write_refsite_pfcs, write_refsite_onsite_pfcs,
+    write_unique_pfcs, write_bulk_pfcs,
+    write_refsite_pfcs, write_refsite_onsite_pfcs,
 )
 from betapy.core.structure import Supercell
 from betapy.core.projection import (
     compute_bulk_pfcs, unique_pfcs,
     find_refsite_pairs, refsite_results_to_dataframes,
+    compare_refsite_projections,
     match_fc_pairs_direct, stiffness_shift_from_pairs,
     structural_disturbance, sum_intercalant_pfcs,
 )
@@ -123,7 +125,8 @@ def run_bulk_analysis(supercell, fc_data, settings, lobster_pairs=None):
         print(f'  LOBSTER cols   : {", ".join(cols)}')
     if settings.store:
         write_unique_pfcs(df_unique)
-        print('  Written: unique_pFCs.csv')
+        write_bulk_pfcs(results)
+        print('  Written: unique_pFCs.csv, bulk_pFCs.csv')
     print(f'  Time           : {timeit.default_timer()-t0:.3f} s')
     return results, df_unique
 
@@ -136,14 +139,21 @@ def run_refsite_analysis(supercell, fc_data, settings):
         print(f'  Error: REFPOS file not found at {rs.file}')
         return None, None
 
+    factor     = EV_ANG2_TO_N_M if settings.unit == 'N/m' else 1.0
+    unit_label = UNIT_LABEL.get(settings.unit, settings.unit)
+
     all_offsite, all_onsite = [], []
+    site_offsite = []   # per-site, used for pairwise comparison below
     for idx, frac_pos in enumerate(refpos_data['positions']):
         exclude_sp = None
         if rs.exclude_refsite_species:
-            dists     = [supercell.distance_to_point(k + 1, frac_pos)
-                         for k in range(supercell.n_atoms)]
-            near_idx  = min(range(supercell.n_atoms), key=lambda k: dists[k])
-            exclude_sp = {supercell.species(near_idx + 1)}
+            dists    = [supercell.distance_to_point(k + 1, frac_pos)
+                        for k in range(supercell.n_atoms)]
+            near_idx = min(range(supercell.n_atoms), key=lambda k: dists[k])
+            # Only exclude if an atom actually sits at the site (< 1 Å).
+            # Vacant sites have no atom nearby, so nothing is excluded there.
+            if dists[near_idx] < 1.0:
+                exclude_sp = {supercell.species(near_idx + 1)}
         offsite, onsite = find_refsite_pairs(
             supercell,
             fc_data['atomic_pairs'],
@@ -154,8 +164,45 @@ def run_refsite_analysis(supercell, fc_data, settings):
         )
         all_offsite.extend(offsite)
         all_onsite.extend(onsite)
+        site_offsite.append(offsite)
+        pfc_sum   = sum(r['mean_pfc'] for r in offsite) * factor
         excl_note = f', excl. {next(iter(exclude_sp))} pairs' if exclude_sp else ''
-        print(f'  Site {idx}: {len(offsite)} off-site, {len(onsite)} on-site{excl_note}')
+        print(f'  Site {idx}: {len(offsite)} off-site, {len(onsite)} on-site'
+              f'  Σ pFC = {pfc_sum:+.5f} {unit_label}{excl_note}')
+
+    if len(site_offsite) >= 2:
+        print(f'\n  ── Intra-structure comparison {"─" * 20}')
+        positions = refpos_data['positions']
+
+        # Determine the shared exclusion set for comparison: union of species
+        # found within 1 Å of any occupied site. Applied to both sides so that
+        # only framework bonds are matched — mirrors _StiffnessWorker sp_set logic.
+        comparison_excl: set = set()
+        if rs.exclude_refsite_species:
+            for frac_pos in positions:
+                dists    = [supercell.distance_to_point(k + 1, frac_pos)
+                            for k in range(supercell.n_atoms)]
+                near_idx = min(range(supercell.n_atoms), key=lambda k: dists[k])
+                if dists[near_idx] < 1.0:
+                    comparison_excl.add(supercell.species(near_idx + 1))
+
+        for i in range(len(site_offsite)):
+            for j in range(i + 1, len(site_offsite)):
+                sub_i = [r for r in site_offsite[i]
+                         if r['species1'] not in comparison_excl
+                         and r['species2'] not in comparison_excl]
+                sub_j = [r for r in site_offsite[j]
+                         if r['species1'] not in comparison_excl
+                         and r['species2'] not in comparison_excl]
+                matched, ua, ub = match_fc_pairs_direct(
+                    sub_i, sub_j,
+                    supercell, supercell,
+                    positions[i], positions[j],
+                    tol=1.5, directional=False,
+                )
+                _, delta = stiffness_shift_from_pairs(matched)
+                print(f'  Site {i} → Site {j}:  ΔΣ pFC = {delta * factor:+.5f} {unit_label}'
+                      f'  ({len(matched)} matched, {len(ua)} unmatched A, {len(ub)} unmatched B)')
 
     df_off, df_on = refsite_results_to_dataframes(
         all_offsite, all_onsite, refpos_data['label']

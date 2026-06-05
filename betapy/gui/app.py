@@ -17,7 +17,10 @@ from PyQt5.QtCore import Qt, QSettings, QEvent, QTimer, QThread, QPoint, pyqtSig
 from PyQt5.QtGui import QIcon
 
 from betapy.core.settings import Settings
-from betapy.core.io import read_SPOSCAR, read_FORCE_CONSTANTS
+from betapy.core.io import (
+    read_SPOSCAR, read_FORCE_CONSTANTS,
+    write_bulk_pfcs, read_bulk_pfcs,
+)
 from betapy.core.structure import Supercell
 
 # QSettings identifiers — platform-native storage location
@@ -521,6 +524,17 @@ class MainWindow(QMainWindow):
             except Exception as e:
                 errors.append(f'unique_pFCs.csv: {e}')
 
+        bulk_path = cwd / 'bulk_pFCs.csv'
+        if bulk_path.exists():
+            if self._splash:
+                self._splash.set_status('Loading bulk pFCs…')
+            try:
+                results = read_bulk_pfcs(str(bulk_path))
+                self._populate_from_bulk_results(results)
+                loaded.append('bulk_pFCs.csv')
+            except Exception as e:
+                errors.append(f'bulk_pFCs.csv: {e}')
+
         fc_path = cwd / 'FORCE_CONSTANTS'
         if fc_path.exists():
             if self._splash:
@@ -706,6 +720,35 @@ class MainWindow(QMainWindow):
     # Analysis
     # ------------------------------------------------------------------
 
+    def _populate_from_bulk_results(self, results):
+        """
+        Push bulk pFC results to all downstream tabs.
+
+        Called both after a fresh analysis and when restoring from
+        bulk_pFCs.csv on startup, so the two paths stay in sync.
+        """
+        from betapy.core.projection import unique_pfcs
+        df_unique = unique_pfcs(results)
+        self.pfc_viewer.load_data(df_unique, results, supercell=self.supercell)
+        if self._lobster_pairs is not None:
+            self.pfc_viewer.set_lobster_pairs(self._lobster_pairs)
+        if self._lobster_dir is not None:
+            self.pfc_viewer.set_lobster_dir(self._lobster_dir)
+        self.lt_viewer.load_data(
+            results,
+            reliability_cutoff=self.pfc_viewer._reliability_cutoff,
+        )
+        self._bulk_results = results
+        self.multicenter.load_data(
+            results, self.supercell, lobster_dir=self._lobster_dir
+        )
+        self.badger.load_data(
+            results,
+            reliability_cutoff=self.pfc_viewer._reliability_cutoff,
+            supercell=self.supercell,
+        )
+        self._update_tab_visibility()
+
     def _run_analysis(self):
         if self._worker is not None and self._worker.isRunning():
             return
@@ -731,34 +774,16 @@ class MainWindow(QMainWindow):
         self._progress_bar.hide()
         self.btn_run.setEnabled(True)
 
-        from betapy.core.projection import unique_pfcs
-        df_unique = unique_pfcs(results)
-        self.pfc_viewer.load_data(df_unique, results, supercell=self.supercell)
-        if self._lobster_pairs is not None:
-            self.pfc_viewer.set_lobster_pairs(self._lobster_pairs)
-        if self._lobster_dir is not None:
-            self.pfc_viewer.set_lobster_dir(self._lobster_dir)
+        self._populate_from_bulk_results(results)
         self.site_picker.load_supercell(self.supercell, self.fc_data)
 
-        self.lt_viewer.load_data(
-            results,
-            reliability_cutoff=self.pfc_viewer._reliability_cutoff,
-        )
-
-        self._bulk_results = results
-        self.multicenter.load_data(
-            results, self.supercell, lobster_dir=self._lobster_dir
-        )
-        self.badger.load_data(
-            results,
-            reliability_cutoff=self.pfc_viewer._reliability_cutoff,
-            supercell=self.supercell,
-        )
-        self._update_tab_visibility()
+        try:
+            write_bulk_pfcs(results)
+        except Exception:
+            pass
 
         self.status.showMessage(
-            f'Analysis complete — {len(results)} off-site pairs, '
-            f'{len(df_unique)} unique pFC values.'
+            f'Analysis complete — {len(results)} off-site pairs.'
         )
 
     def _on_analysis_error(self, msg):

@@ -146,3 +146,47 @@ def write_refsite_pfcs(df, path='refsite_pFCs.csv'):
 def write_refsite_onsite_pfcs(df, path='refsite_onsite_pFCs.csv'):
     """Write the reference-site onsite force constants to CSV."""
     df.to_csv(path, sep=',', header=True, index=False, encoding='utf-8')
+
+
+def write_bulk_pfcs(results, path='bulk_pFCs.csv'):
+    """
+    Write full per-pair bulk pFC results to CSV.
+
+    Stores all columns needed to restore downstream tabs (LT viewer,
+    Multicenter, Badger) without re-running the projection.
+    """
+    rows = []
+    for r in results:
+        d = r.get('direction', [0.0, 0.0, 0.0])
+        rows.append({
+            'atom1_idx':   r['atom1_idx'],
+            'atom2_idx':   r['atom2_idx'],
+            'species1':    r['species1'],
+            'species2':    r['species2'],
+            'distance':    r['distance'],
+            'mean_pfc':    r['mean_pfc'],
+            'rms_pfc':     r['rms_pfc'],
+            'phi_l':       r.get('phi_l', float('nan')),
+            'phi_t':       r.get('phi_t', float('nan')),
+            'direction_x': d[0],
+            'direction_y': d[1],
+            'direction_z': d[2],
+        })
+    pd.DataFrame(rows).to_csv(path, index=False)
+
+
+def read_bulk_pfcs(path='bulk_pFCs.csv'):
+    """
+    Read bulk pFC results from CSV.  Returns a list of dicts in the same
+    format as compute_bulk_pfcs(), suitable for passing directly to
+    lt_viewer.load_data(), multicenter.load_data(), etc.
+    """
+    df = pd.read_csv(path)
+    df['atom1_idx'] = df['atom1_idx'].astype(int)
+    df['atom2_idx'] = df['atom2_idx'].astype(int)
+    records = df.to_dict('records')
+    for r in records:
+        r['direction'] = [r.pop('direction_x'),
+                          r.pop('direction_y'),
+                          r.pop('direction_z')]
+    return records

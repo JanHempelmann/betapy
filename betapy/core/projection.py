@@ -412,37 +412,36 @@ def refsite_results_to_dataframes(offsite_results, onsite_results, ref_label):
 
 
 def match_fc_pairs_direct(results_a, results_b, sc_a, sc_b,
-                          refsite_a, refsite_b, tol=1.5):
+                          refsite_a, refsite_b, tol=1.5, directional=True):
     """
-    Match off-site pFC pairs by a 5-component fractional-coordinate fingerprint:
-    (atom1_disp_x, atom1_disp_y, atom1_disp_z, atom2_ref_dist, bond_frac_norm) × L_avg.
+    Match off-site pFC pairs by geometric fingerprint.
 
-    The first three components are the full 3D fractional displacement vector
-    from the refsite to atom1, PBC-wrapped in supercell space.  This encodes
-    both distance AND direction, so bonds that sit at the same distance from
-    the refsite but point in different directions get distinct fingerprints.
-    atom2_ref_dist and bond_frac_norm remain as scalars.
+    Two fingerprint modes:
 
-    All components are origin-independent: the displacement (atom - refsite)
-    is the same for equivalent atoms even when A and B use different
-    crystallographic origins (pnnm case).  The fractional representation also
-    makes the fingerprint invariant to anisotropic cell expansion — only small
-    fractional relaxation (~0.01–0.03) shifts equivalent bonds, giving well
-    below 1 Å of fingerprint noise for correct matches vs. several Å separation
-    for wrong ones.  The higher discrimination power allows a generous tolerance
-    (default 1.5 Å) that absorbs relaxation without accepting wrong matches.
+    directional=True  (default, for inter-structure comparison)
+        5-component: (atom1_disp_x, atom1_disp_y, atom1_disp_z,
+                      atom2_ref_dist, bond_frac_norm) × L_avg.
+        The signed 3D fractional displacement of atom1 from the refsite encodes
+        direction so bonds at the same distance but different directions get
+        distinct fingerprints.  Works when A and B share the same orientation
+        (e.g. two versions of the same structure).
 
-    atom2_ref_dist is computed on the fly (not stored in results) to
-    discriminate pairs where atom2 is on opposite sides of the supercell
-    from the refsite.
+    directional=False  (for intra-structure / same-supercell comparison)
+        3-component Cartesian magnitude fingerprint:
+        (d1_cart, d2_cart, bond_cart) in Å.
+        All three are rotationally invariant, so the fingerprint matches
+        correctly even when the two refsites are related by a symmetry
+        operation that changes displacement directions (rotations, reflections,
+        glide planes — common for different Wyckoff sites in the same cell).
 
     Parameters
     ----------
     results_a, results_b : list of dicts from find_refsite_pairs()
     sc_a, sc_b           : Supercell instances
     refsite_a, refsite_b : array-like (3,), fractional refsite coords
-    tol                  : float, max L2 norm of fingerprint difference
-                           in Å (default 1.5 Å).
+    tol                  : float, max L2 norm of fingerprint difference in Å
+    directional          : bool, use signed directional (True) or Cartesian
+                           magnitude (False) fingerprint
 
     Returns
     -------
@@ -454,14 +453,13 @@ def match_fc_pairs_direct(results_a, results_b, sc_a, sc_b,
     refsite_a = np.asarray(refsite_a)
     refsite_b = np.asarray(refsite_b)
 
-    # Scale factor: average cell length so tol keeps its Å interpretation.
+    # Scale factor for fractional fingerprint (directional mode only).
     L_avg = 0.5 * (abs(np.linalg.det(sc_a.lattice)) ** (1.0 / 3.0)
                    + abs(np.linalg.det(sc_b.lattice)) ** (1.0 / 3.0))
 
     def _frac_disp(sc, atom_idx, ref):
-        """3D fractional displacement from ref to atom, PBC-wrapped."""
         pos = sc.positions[atom_idx - 1]
-        return sc.frac_diff(pos, ref)  # shape (3,)
+        return sc.frac_diff(pos, ref)
 
     def _frac_norm(sc, atom_idx, ref):
         return float(np.linalg.norm(_frac_disp(sc, atom_idx, ref)))
@@ -471,36 +469,56 @@ def match_fc_pairs_direct(results_a, results_b, sc_a, sc_b,
         pos2 = sc.positions[idx2 - 1]
         return float(np.linalg.norm(sc.frac_diff(pos1, pos2)))
 
-    # Group pairs by ordered species pair, pre-computing atom2 frac norms
+    def _cart_dist(sc, atom_idx, ref_frac):
+        """Cartesian distance from refsite to atom (Å)."""
+        frac_d = sc.frac_diff(sc.positions[atom_idx - 1], ref_frac)
+        return float(np.linalg.norm(frac_d @ sc.lattice))
+
+    def _cart_bond(sc, idx1, idx2):
+        """Cartesian bond length (Å)."""
+        frac_d = sc.frac_diff(sc.positions[idx1 - 1], sc.positions[idx2 - 1])
+        return float(np.linalg.norm(frac_d @ sc.lattice))
+
+    # Group pairs by ordered species pair, pre-computing atom2 ref distances
     by_sp_a = {}
     for i, r in enumerate(results_a):
-        d2 = _frac_norm(sc_a, r['atom2_idx'], refsite_a)
+        d2 = (_frac_norm(sc_a, r['atom2_idx'], refsite_a) if directional
+              else _cart_dist(sc_a, r['atom2_idx'], refsite_a))
         by_sp_a.setdefault((r['species1'], r['species2']), []).append((i, r, d2))
     by_sp_b = {}
     for j, r in enumerate(results_b):
-        d2 = _frac_norm(sc_b, r['atom2_idx'], refsite_b)
+        d2 = (_frac_norm(sc_b, r['atom2_idx'], refsite_b) if directional
+              else _cart_dist(sc_b, r['atom2_idx'], refsite_b))
         by_sp_b.setdefault((r['species1'], r['species2']), []).append((j, r, d2))
 
     a_to_b = {}
     for key in set(by_sp_a) & set(by_sp_b):
         ag = by_sp_a[key]
         bg = by_sp_b[key]
-        # 5-component fingerprint:
-        #   [d1_x, d1_y, d1_z]  — full 3D local displacement of atom1 from refsite
-        #   [d2_norm]            — scalar distance of atom2 from refsite
-        #   [bond_norm]          — scalar fractional bond length atom1→atom2
-        # Encoding both distance and direction for atom1 breaks degeneracies
-        # between bonds at the same distance but pointing in different directions.
-        fp_a = np.array([[*(_frac_disp(sc_a, r['atom1_idx'], refsite_a) * L_avg),
-                          d2 * L_avg,
-                          _frac_norm_pair(sc_a, r['atom1_idx'], r['atom2_idx']) * L_avg]
-                         for _, r, d2 in ag])
-        fp_b = np.array([[*(_frac_disp(sc_b, r['atom1_idx'], refsite_b) * L_avg),
-                          d2 * L_avg,
-                          _frac_norm_pair(sc_b, r['atom1_idx'], r['atom2_idx']) * L_avg]
-                         for _, r, d2 in bg])
-        diff = fp_b[None] - fp_a[:, None]   # (Na, Nb, 3)
-        cost = np.linalg.norm(diff, axis=2)  # (Na, Nb)
+
+        if directional:
+            # 5-component signed fractional fingerprint × L_avg
+            fp_a = np.array([[*(_frac_disp(sc_a, r['atom1_idx'], refsite_a) * L_avg),
+                              d2 * L_avg,
+                              _frac_norm_pair(sc_a, r['atom1_idx'], r['atom2_idx']) * L_avg]
+                             for _, r, d2 in ag])
+            fp_b = np.array([[*(_frac_disp(sc_b, r['atom1_idx'], refsite_b) * L_avg),
+                              d2 * L_avg,
+                              _frac_norm_pair(sc_b, r['atom1_idx'], r['atom2_idx']) * L_avg]
+                             for _, r, d2 in bg])
+        else:
+            # 3-component Cartesian magnitude fingerprint (Å) — rotation-invariant
+            fp_a = np.array([[_cart_dist(sc_a, r['atom1_idx'], refsite_a),
+                              d2,
+                              _cart_bond(sc_a, r['atom1_idx'], r['atom2_idx'])]
+                             for _, r, d2 in ag])
+            fp_b = np.array([[_cart_dist(sc_b, r['atom1_idx'], refsite_b),
+                              d2,
+                              _cart_bond(sc_b, r['atom1_idx'], r['atom2_idx'])]
+                             for _, r, d2 in bg])
+
+        diff = fp_b[None] - fp_a[:, None]
+        cost = np.linalg.norm(diff, axis=2)
         ri, ci = linear_sum_assignment(cost)
         for r2, c2 in zip(ri.tolist(), ci.tolist()):
             if cost[r2, c2] <= tol:
@@ -596,6 +614,52 @@ def structural_disturbance(matched_pairs):
         'min_species': (f"{matched_pairs[min_idx]['species1']}"
                         f"–{matched_pairs[min_idx]['species2']}"),
     }
+
+
+def compare_refsite_projections(results_a, results_b):
+    """
+    Compare two refsite projections of the same supercell by direct index matching.
+
+    Because both analyses share the same SPOSCAR, pair identity is determined by
+    (atom1_idx, atom2_idx) — no fingerprint matching required.
+
+    Parameters
+    ----------
+    results_a, results_b : lists of dicts from find_refsite_pairs()
+
+    Returns
+    -------
+    matched     : list of dicts with keys atom1_idx, atom2_idx, species1, species2,
+                  distance, mean_pfc_a, mean_pfc_b, delta_pfc (= pfc_b − pfc_a)
+    unmatched_a : list of dicts — pairs in A absent from B
+    unmatched_b : list of dicts — pairs in B absent from A
+    total_delta : float, Σ delta_pfc over all matched pairs
+    """
+    by_pair_b    = {(r['atom1_idx'], r['atom2_idx']): r for r in results_b}
+    matched      = []
+    unmatched_a  = []
+    matched_b_keys = set()
+    for ra in results_a:
+        key = (ra['atom1_idx'], ra['atom2_idx'])
+        if key in by_pair_b:
+            rb = by_pair_b[key]
+            matched.append({
+                'atom1_idx':  ra['atom1_idx'],
+                'atom2_idx':  ra['atom2_idx'],
+                'species1':   ra['species1'],
+                'species2':   ra['species2'],
+                'distance':   ra['distance'],
+                'mean_pfc_a': ra['mean_pfc'],
+                'mean_pfc_b': rb['mean_pfc'],
+                'delta_pfc':  rb['mean_pfc'] - ra['mean_pfc'],
+            })
+            matched_b_keys.add(key)
+        else:
+            unmatched_a.append(ra)
+    unmatched_b = [r for r in results_b
+                   if (r['atom1_idx'], r['atom2_idx']) not in matched_b_keys]
+    total_delta = sum(p['delta_pfc'] for p in matched)
+    return matched, unmatched_a, unmatched_b, total_delta
 
 
 def sum_intercalant_pfcs(results, intercalant_species):

@@ -1,12 +1,19 @@
 """
-Stiffness Shift tab — side-by-side ΔpFC comparison of two structures.
+Stiffness Shift tab — ΔpFC comparison with two modes:
+
+  Two structures   Compare structure A (deintercalated) vs B (intercalated),
+                   each with their own SPOSCAR/FORCE_CONSTANTS.
+
+  Same structure,  Compare two crystallographic sites (e.g. occupied vs vacant)
+  two sites        within a single SPOSCAR/FORCE_CONSTANTS using a multi-position
+                   REFPOS file.
 
 Layout
 ------
-Top bar   : directory paths for A and B, REFPOS, analysis settings
+Top bar   : mode selector, directory paths, REFPOS, analysis settings
 3D views  : side-by-side StructureView with refsite cube + connection toggles
 Bottom    : overlay scatter (A ○, B △, matched connected, unmatched grey)
-            + tabbed tables: "Matched" and "Unmatched"
+            + tabbed tables: "Matched", "Unmatched", "Summary"
 
 Scatter interaction
 -------------------
@@ -26,6 +33,7 @@ from PyQt5.QtWidgets import (
     QTableWidget, QTableWidgetItem, QHeaderView,
     QAbstractItemView, QFrame, QScrollArea, QGridLayout,
     QTabWidget, QProgressBar, QPlainTextEdit,
+    QComboBox, QRadioButton, QButtonGroup, QStackedWidget,
 )
 from PyQt5.QtCore import Qt, QThread, pyqtSignal, QSettings, QTimer
 from PyQt5.QtWidgets import QApplication
@@ -213,6 +221,144 @@ class _StiffnessWorker(QThread):
             self.error.emit(str(e))
 
 
+class _IntraSiteWorker(QThread):
+    """Background thread for same-structure two-site stiffness comparison."""
+    finished = pyqtSignal()
+    error    = pyqtSignal(str)
+
+    _OCCUPANT_THRESHOLD = 1.0  # Å — only exclude species if atom is this close
+
+    def __init__(self, dir_path, refpos_path, site_idx_a, site_idx_b,
+                 cutoff, tol, excl):
+        super().__init__()
+        self._dir       = Path(dir_path)
+        self._refpos    = Path(refpos_path)
+        self._idx_a     = site_idx_a
+        self._idx_b     = site_idx_b
+        self._cutoff    = cutoff
+        self._tol       = tol
+        self._excl      = excl
+        # Outputs — same shape as _StiffnessWorker for shared _on_analysis_done
+        self.sc_a                = None
+        self.sc_b                = None
+        self.refsites_a          = []
+        self.refsites_b          = []
+        self.offsite_a           = []
+        self.offsite_b           = []
+        self.matched             = []
+        self.unmatched_a         = []
+        self.unmatched_b         = []
+        self.excl_sp             = None
+        self.intercalant_contrib = 0.0
+        self.intercalant_species = set()
+
+    def run(self):
+        try:
+            _key = _cache.make_key(
+                self._dir / 'SPOSCAR', self._dir / 'FORCE_CONSTANTS',
+                self._refpos,
+                site_idx_a=self._idx_a, site_idx_b=self._idx_b,
+                cutoff=self._cutoff, tol=self._tol, excl=self._excl,
+                mode='intra_site',
+            )
+            _hit = _cache.load(_key)
+            if _hit is not None:
+                self.sc_a        = _hit['sc_a']
+                self.sc_b        = _hit['sc_b']
+                self.refsites_a  = _hit['refsites_a']
+                self.refsites_b  = _hit['refsites_b']
+                self.offsite_a   = _hit['offsite_a']
+                self.offsite_b   = _hit['offsite_b']
+                self.matched     = _hit['matched']
+                self.unmatched_a = _hit['unmatched_a']
+                self.unmatched_b = _hit['unmatched_b']
+                self.excl_sp     = _hit['excl_sp']
+                self.finished.emit()
+                return
+
+            sc = Supercell(read_SPOSCAR(self._dir / 'SPOSCAR'))
+            fc = read_FORCE_CONSTANTS(self._dir / 'FORCE_CONSTANTS')
+
+            all_pos = read_refpos(self._refpos)['positions']
+            if self._idx_a >= len(all_pos) or self._idx_b >= len(all_pos):
+                raise ValueError(
+                    f'Site index out of range (REFPOS has {len(all_pos)} positions)'
+                )
+            frac_a = np.asarray(all_pos[self._idx_a])
+            frac_b = np.asarray(all_pos[self._idx_b])
+
+            # Mirror _StiffnessWorker: excl_sp is determined from the occupied
+            # site (B analogue) and applied to BOTH sides so that matching only
+            # sees framework bonds — not the intercalant Na pairs that appear on
+            # one side but not the other.
+            excl_sp = None
+            if self._excl:
+                dists = [sc.distance_to_point(k + 1, frac_b)
+                         for k in range(sc.n_atoms)]
+                ni = min(range(sc.n_atoms), key=lambda k: dists[k])
+                if dists[ni] < self._OCCUPANT_THRESHOLD:
+                    excl_sp = {sc.species(ni + 1)}
+
+            offsite_a, _ = find_refsite_pairs(
+                sc, fc['atomic_pairs'], fc['force_matrices'],
+                frac_a, cutoff=self._cutoff, min_distance=0.0,
+                exclude_species=excl_sp, show_progress=False,
+            )
+            offsite_b, _ = find_refsite_pairs(
+                sc, fc['atomic_pairs'], fc['force_matrices'],
+                frac_b, cutoff=self._cutoff, min_distance=0.0,
+                exclude_species=excl_sp, show_progress=False,
+            )
+
+            # Phase 1: match within the base cutoff on both sides.
+            matched, unmatched_a, unmatched_b = match_fc_pairs_direct(
+                offsite_a, offsite_b, sc, sc, frac_a, frac_b,
+                tol=self._tol, directional=False,
+            )
+
+            # Phase 2: for any A pairs still unmatched, search a wider B shell
+            # (mirrors the cutoff * 1.5 used for the intercalated side in
+            # _StiffnessWorker).  Edge pairs around the vacant site can fall
+            # slightly outside the cutoff of the occupied site due to
+            # vacancy-induced relaxation.
+            if unmatched_a:
+                offsite_b_wide, _ = find_refsite_pairs(
+                    sc, fc['atomic_pairs'], fc['force_matrices'],
+                    frac_b, cutoff=self._cutoff * 1.5, min_distance=0.0,
+                    exclude_species=excl_sp, show_progress=False,
+                )
+                core_keys = {(r['atom1_idx'], r['atom2_idx']) for r in offsite_b}
+                offsite_b_extra = [r for r in offsite_b_wide
+                                   if (r['atom1_idx'], r['atom2_idx']) not in core_keys]
+                m2, unmatched_a, _ = match_fc_pairs_direct(
+                    unmatched_a, offsite_b_extra, sc, sc, frac_a, frac_b,
+                    tol=self._tol, directional=False,
+                )
+                matched = matched + m2
+
+            self.sc_a        = sc
+            self.sc_b        = sc
+            self.refsites_a  = [frac_a.tolist()]
+            self.refsites_b  = [frac_b.tolist()]
+            self.offsite_a   = offsite_a
+            self.offsite_b   = offsite_b
+            self.matched     = matched
+            self.unmatched_a = unmatched_a
+            self.unmatched_b = unmatched_b
+            self.excl_sp     = excl_sp
+
+            _cache.save(_key, {
+                'sc_a': sc, 'sc_b': sc,
+                'refsites_a': self.refsites_a, 'refsites_b': self.refsites_b,
+                'offsite_a': offsite_a, 'offsite_b': offsite_b,
+                'matched': matched, 'unmatched_a': unmatched_a,
+                'unmatched_b': unmatched_b, 'excl_sp': excl_sp,
+            })
+            self.finished.emit()
+        except Exception as e:
+            self.error.emit(str(e))
+
+
 class _NumericItem(QTableWidgetItem):
     def __lt__(self, other):
         try:
@@ -226,6 +372,8 @@ class StiffnessShiftWidget(QWidget):
 
     def __init__(self, parent=None):
         super().__init__(parent)
+        self._mode             = 'two_structs'  # or 'two_sites'
+        self._refpos_positions = []             # populated in two_sites mode
         self._worker       = None
         self._sc_a         = None
         self._sc_b         = None
@@ -323,50 +471,94 @@ class StiffnessShiftWidget(QWidget):
         bar = QGroupBox('Structures and settings')
         outer_layout = QVBoxLayout()
 
-        grid = QGridLayout()
-        grid.setColumnStretch(1, 1)
+        # ── Mode selector ────────────────────────────────────────────────
+        mode_row = QHBoxLayout()
+        mode_row.addWidget(QLabel('Mode:'))
+        self._radio_two_structs = QRadioButton('Two structures (A vs B)')
+        self._radio_two_sites   = QRadioButton('Same structure, two sites')
+        self._radio_two_structs.setChecked(True)
+        _mode_grp = QButtonGroup(bar)
+        _mode_grp.addButton(self._radio_two_structs)
+        _mode_grp.addButton(self._radio_two_sites)
+        self._radio_two_structs.toggled.connect(self._on_mode_changed)
+        mode_row.addWidget(self._radio_two_structs)
+        mode_row.addWidget(self._radio_two_sites)
+        mode_row.addStretch()
+        outer_layout.addLayout(mode_row)
 
-        grid.addWidget(QLabel('Structure A (deintercalated):'), 0, 0)
+        # ── Always-visible rows: Structure A + REFPOS A ──────────────────
+        top_grid = QGridLayout()
+        top_grid.setColumnStretch(1, 1)
+
+        self._lbl_dir_a = QLabel('Structure A (deintercalated):')
         self._edit_a = QLineEdit()
         self._edit_a.setPlaceholderText('directory containing SPOSCAR, FORCE_CONSTANTS')
-        grid.addWidget(self._edit_a, 0, 1)
         btn_a = QPushButton('Browse…')
         btn_a.setFixedWidth(80)
         btn_a.clicked.connect(lambda: self._browse_dir(self._edit_a, self._edit_refpos_a))
-        grid.addWidget(btn_a, 0, 2)
+        top_grid.addWidget(self._lbl_dir_a, 0, 0)
+        top_grid.addWidget(self._edit_a, 0, 1)
+        top_grid.addWidget(btn_a, 0, 2)
 
-        grid.addWidget(QLabel('REFPOS A:'), 1, 0)
+        self._lbl_refpos_a = QLabel('REFPOS A:')
         self._edit_refpos_a = QLineEdit()
         self._edit_refpos_a.setPlaceholderText('auto-detected from Dir A, or browse')
-        grid.addWidget(self._edit_refpos_a, 1, 1)
+        self._edit_refpos_a.editingFinished.connect(self._maybe_populate_site_combos)
         btn_rpa = QPushButton('Browse…')
         btn_rpa.setFixedWidth(80)
-        btn_rpa.clicked.connect(lambda: self._browse_file(
-            self._edit_refpos_a, 'REFPOS files (REFPOS);;All files (*)'
-        ))
-        grid.addWidget(btn_rpa, 1, 2)
+        btn_rpa.clicked.connect(self._browse_refpos_a)
+        top_grid.addWidget(self._lbl_refpos_a, 1, 0)
+        top_grid.addWidget(self._edit_refpos_a, 1, 1)
+        top_grid.addWidget(btn_rpa, 1, 2)
 
-        grid.addWidget(QLabel('Structure B (intercalated):'), 2, 0)
+        outer_layout.addLayout(top_grid)
+
+        # ── Mode-specific rows (stacked) ─────────────────────────────────
+        self._mode_stack = QStackedWidget()
+
+        # Page 0 — two-structs: dir_b + refpos_b
+        page_structs = QWidget()
+        pg0 = QGridLayout(page_structs)
+        pg0.setColumnStretch(1, 1)
+        pg0.setContentsMargins(0, 0, 0, 0)
+        pg0.addWidget(QLabel('Structure B (intercalated):'), 0, 0)
         self._edit_b = QLineEdit()
         self._edit_b.setPlaceholderText('directory containing SPOSCAR, FORCE_CONSTANTS')
-        grid.addWidget(self._edit_b, 2, 1)
         btn_b = QPushButton('Browse…')
         btn_b.setFixedWidth(80)
         btn_b.clicked.connect(lambda: self._browse_dir(self._edit_b, self._edit_refpos_b))
-        grid.addWidget(btn_b, 2, 2)
-
-        grid.addWidget(QLabel('REFPOS B:'), 3, 0)
+        pg0.addWidget(self._edit_b, 0, 1)
+        pg0.addWidget(btn_b, 0, 2)
+        pg0.addWidget(QLabel('REFPOS B:'), 1, 0)
         self._edit_refpos_b = QLineEdit()
         self._edit_refpos_b.setPlaceholderText('auto-detected from Dir B, or browse')
-        grid.addWidget(self._edit_refpos_b, 3, 1)
         btn_rpb = QPushButton('Browse…')
         btn_rpb.setFixedWidth(80)
         btn_rpb.clicked.connect(lambda: self._browse_file(
             self._edit_refpos_b, 'REFPOS files (REFPOS);;All files (*)'
         ))
-        grid.addWidget(btn_rpb, 3, 2)
-        outer_layout.addLayout(grid)
+        pg0.addWidget(self._edit_refpos_b, 1, 1)
+        pg0.addWidget(btn_rpb, 1, 2)
 
+        # Page 1 — two-sites: site A + site B combo selectors
+        page_sites = QWidget()
+        pg1 = QGridLayout(page_sites)
+        pg1.setColumnStretch(1, 1)
+        pg1.setContentsMargins(0, 0, 0, 0)
+        pg1.addWidget(QLabel('Site A:'), 0, 0)
+        self._combo_site_a = QComboBox()
+        self._combo_site_a.setMinimumWidth(300)
+        pg1.addWidget(self._combo_site_a, 0, 1)
+        pg1.addWidget(QLabel('Site B:'), 1, 0)
+        self._combo_site_b = QComboBox()
+        self._combo_site_b.setMinimumWidth(300)
+        pg1.addWidget(self._combo_site_b, 1, 1)
+
+        self._mode_stack.addWidget(page_structs)  # index 0
+        self._mode_stack.addWidget(page_sites)    # index 1
+        outer_layout.addWidget(self._mode_stack)
+
+        # ── Settings row ─────────────────────────────────────────────────
         srow = QHBoxLayout()
 
         srow.addWidget(QLabel('Cutoff (Å):'))
@@ -378,7 +570,8 @@ class StiffnessShiftWidget(QWidget):
         self._spin_cutoff.setFixedWidth(72)
         srow.addWidget(self._spin_cutoff)
 
-        srow.addWidget(QLabel('Min site dist (Å):'))
+        self._lbl_msd = QLabel('Min site dist (Å):')
+        srow.addWidget(self._lbl_msd)
         self._spin_msd = QDoubleSpinBox()
         self._spin_msd.setRange(0.0, 5.0)
         self._spin_msd.setSingleStep(0.05)
@@ -411,7 +604,9 @@ class StiffnessShiftWidget(QWidget):
         self._chk_excl.setChecked(True)
         self._chk_excl.setToolTip(
             'Exclude off-site pairs where either atom is the species\n'
-            'occupying the reference site in structure B.'
+            'occupying the reference site in structure B.\n'
+            'In two-sites mode a 1 Å distance threshold is applied per site\n'
+            '(vacant sites are never excluded).'
         )
         srow.addWidget(self._chk_excl)
 
@@ -467,6 +662,10 @@ class StiffnessShiftWidget(QWidget):
         lbl = QLabel('A — deintercalated' if is_a else 'B — intercalated')
         lbl.setStyleSheet('font-weight: bold; padding: 3px;')
         col.addWidget(lbl)
+        if is_a:
+            self._view_a_lbl = lbl
+        else:
+            self._view_b_lbl = lbl
 
         view = StructureView(self)
         col.addWidget(view, stretch=1)
@@ -610,6 +809,64 @@ class StiffnessShiftWidget(QWidget):
         return h
 
     # ------------------------------------------------------------------
+    # Mode toggle
+    # ------------------------------------------------------------------
+
+    def _on_mode_changed(self):
+        if self._radio_two_structs.isChecked():
+            self._mode = 'two_structs'
+            self._mode_stack.setCurrentIndex(0)
+            self._lbl_dir_a.setText('Structure A (deintercalated):')
+            self._lbl_refpos_a.setText('REFPOS A:')
+            self._lbl_msd.show()
+            self._spin_msd.show()
+            self._view_a_lbl.setText('A — deintercalated')
+            self._view_b_lbl.setText('B — intercalated')
+        else:
+            self._mode = 'two_sites'
+            self._mode_stack.setCurrentIndex(1)
+            self._lbl_dir_a.setText('Structure:')
+            self._lbl_refpos_a.setText('REFPOS (multi-position):')
+            self._lbl_msd.hide()
+            self._spin_msd.hide()
+            self._view_a_lbl.setText('Site A')
+            self._view_b_lbl.setText('Site B')
+            self._maybe_populate_site_combos()
+
+    def _maybe_populate_site_combos(self):
+        if self._mode != 'two_sites':
+            return
+        path = self._edit_refpos_a.text().strip()
+        if path and Path(path).exists():
+            self._populate_site_combos(path)
+
+    def _populate_site_combos(self, refpos_path):
+        try:
+            data = read_refpos(refpos_path)
+        except Exception:
+            return
+        self._refpos_positions = data['positions']
+        label = data.get('label', 'Site')
+        prev_a = self._combo_site_a.currentIndex()
+        prev_b = self._combo_site_b.currentIndex()
+        self._combo_site_a.blockSignals(True)
+        self._combo_site_b.blockSignals(True)
+        self._combo_site_a.clear()
+        self._combo_site_b.clear()
+        for i, pos in enumerate(self._refpos_positions):
+            text = f'{label} {i}:  ({pos[0]:.4f}, {pos[1]:.4f}, {pos[2]:.4f})'
+            self._combo_site_a.addItem(text)
+            self._combo_site_b.addItem(text)
+        n = len(self._refpos_positions)
+        self._combo_site_a.setCurrentIndex(min(prev_a, n - 1) if prev_a >= 0 else 0)
+        self._combo_site_b.setCurrentIndex(
+            min(prev_b, n - 1) if prev_b >= 0 and prev_b != prev_a
+            else (1 if n >= 2 else 0)
+        )
+        self._combo_site_a.blockSignals(False)
+        self._combo_site_b.blockSignals(False)
+
+    # ------------------------------------------------------------------
     # File dialogs
     # ------------------------------------------------------------------
 
@@ -630,6 +887,17 @@ class StiffnessShiftWidget(QWidget):
                 candidate = Path(path) / 'REFPOS'
                 if candidate.exists():
                     refpos_edit.setText(str(candidate))
+            if self._mode == 'two_sites' and edit is self._edit_a:
+                self._maybe_populate_site_combos()
+
+    def _browse_refpos_a(self):
+        path, _ = QFileDialog.getOpenFileName(
+            self, 'Select REFPOS', '', 'REFPOS files (REFPOS);;All files (*)'
+        )
+        if path:
+            self._edit_refpos_a.setText(path)
+            if self._mode == 'two_sites':
+                self._populate_site_combos(path)
 
     def _browse_file(self, edit, filter_str):
         path, _ = QFileDialog.getOpenFileName(self, 'Select file', '', filter_str)
@@ -659,7 +927,12 @@ class StiffnessShiftWidget(QWidget):
     def _run_analysis(self):
         if self._worker is not None and self._worker.isRunning():
             return
+        if self._mode == 'two_sites':
+            self._run_intra_analysis()
+        else:
+            self._run_inter_analysis()
 
+    def _run_inter_analysis(self):
         dir_a_str    = self._edit_a.text().strip()
         dir_b_str    = self._edit_b.text().strip()
         refpos_a_str = self._edit_refpos_a.text().strip()
@@ -681,21 +954,63 @@ class StiffnessShiftWidget(QWidget):
 
         refpos_path_b = Path(refpos_b_str) if refpos_b_str else dir_b / 'REFPOS'
         if not refpos_path_b.exists():
-            refpos_path_b = refpos_path_a  # fall back to A's REFPOS
+            refpos_path_b = refpos_path_a
 
         self._btn_run.setEnabled(False)
-        self._progress_bar.setRange(0, 0)  # indeterminate / busy indicator
+        self._progress_bar.setRange(0, 0)
         self._progress_bar.show()
 
         self._worker = _StiffnessWorker(
-            dir_a          = dir_a,
-            dir_b          = dir_b,
-            refpos_path_a  = refpos_path_a,
-            refpos_path_b  = refpos_path_b,
-            cutoff         = self._spin_cutoff.value(),
-            msd            = self._spin_msd.value(),
-            tol            = self._spin_tol.value(),
-            excl           = self._chk_excl.isChecked(),
+            dir_a         = dir_a,
+            dir_b         = dir_b,
+            refpos_path_a = refpos_path_a,
+            refpos_path_b = refpos_path_b,
+            cutoff        = self._spin_cutoff.value(),
+            msd           = self._spin_msd.value(),
+            tol           = self._spin_tol.value(),
+            excl          = self._chk_excl.isChecked(),
+        )
+        self._worker.finished.connect(self._on_analysis_done)
+        self._worker.error.connect(self._on_analysis_error)
+        self._worker.start()
+
+    def _run_intra_analysis(self):
+        dir_str    = self._edit_a.text().strip()
+        refpos_str = self._edit_refpos_a.text().strip()
+        idx_a      = self._combo_site_a.currentIndex()
+        idx_b      = self._combo_site_b.currentIndex()
+
+        if not dir_str:
+            QMessageBox.warning(self, 'Missing input',
+                                'Please specify the structure directory.')
+            return
+        dir_path    = Path(dir_str)
+        refpos_path = Path(refpos_str) if refpos_str else dir_path / 'REFPOS'
+        if not refpos_path.exists():
+            QMessageBox.warning(self, 'Missing REFPOS',
+                                f'REFPOS not found:\n{refpos_path}')
+            return
+        if self._combo_site_a.count() == 0:
+            self._populate_site_combos(str(refpos_path))
+            idx_a = self._combo_site_a.currentIndex()
+            idx_b = self._combo_site_b.currentIndex()
+        if idx_a == idx_b:
+            QMessageBox.warning(self, 'Same site',
+                                'Site A and Site B must be different.')
+            return
+
+        self._btn_run.setEnabled(False)
+        self._progress_bar.setRange(0, 0)
+        self._progress_bar.show()
+
+        self._worker = _IntraSiteWorker(
+            dir_path    = dir_path,
+            refpos_path = refpos_path,
+            site_idx_a  = idx_a,
+            site_idx_b  = idx_b,
+            cutoff      = self._spin_cutoff.value(),
+            tol         = self._spin_tol.value(),
+            excl        = self._chk_excl.isChecked(),
         )
         self._worker.finished.connect(self._on_analysis_done)
         self._worker.error.connect(self._on_analysis_error)
@@ -820,8 +1135,14 @@ class StiffnessShiftWidget(QWidget):
         n        = d.get('n_pairs', 0)
         sep      = '─' * 44
 
-        lines = [
-            f'── Stiffness shift (B − A) {sep[:20]}',
+        if self._mode == 'two_sites':
+            sa = self._combo_site_a.currentText().split(':')[0].strip()
+            sb = self._combo_site_b.currentText().split(':')[0].strip()
+            hdr = f'── Stiffness shift ({sb} − {sa}) {sep[:20]}'
+        else:
+            hdr = f'── Stiffness shift (B − A) {sep[:20]}'
+
+        lines = [hdr,
             f'  Matched pairs   : {n}',
             f'  Unmatched A     : {len(self._unmatched_a)}',
             f'  Unmatched B     : {len(self._unmatched_b)}',
@@ -974,7 +1295,12 @@ class StiffnessShiftWidget(QWidget):
 
         ax.set_xlabel('Atom 1 – refsite distance (Å)', fontsize=11)
         ax.set_ylabel(f'Projected force constant ({UNIT_LABEL[self._unit]})', fontsize=11)
-        ax.set_title('Stiffness shift: A (○) vs B (△)', fontsize=12)
+        if self._mode == 'two_sites':
+            sa = self._combo_site_a.currentText().split(':')[0].strip()
+            sb = self._combo_site_b.currentText().split(':')[0].strip()
+            ax.set_title(f'Stiffness shift: {sa} (○) vs {sb} (△)', fontsize=12)
+        else:
+            ax.set_title('Stiffness shift: A (○) vs B (△)', fontsize=12)
         ax.grid(True, linestyle='--', alpha=0.35)
         self._canvas.draw_idle()
 

@@ -15,7 +15,7 @@ from PyQt5.QtWidgets import (
     QWidget, QHBoxLayout, QVBoxLayout, QSplitter,
     QPushButton, QLabel, QFileDialog, QMessageBox,
     QTableWidget, QTableWidgetItem, QGroupBox,
-    QScrollArea, QFrame, QCheckBox,
+    QScrollArea, QFrame, QCheckBox, QTabWidget,
     QHeaderView, QAbstractItemView,
 )
 from PyQt5.QtCore import Qt, pyqtSignal
@@ -508,3 +508,87 @@ class RefsitePFCWidget(QWidget):
             self._structure_view.highlight_bond(a1, a2)
 
         self.pair_selected.emit(a1, a2)
+
+class MultiRefsitePFCWidget(QWidget):
+    """Tabbed refsite pFC viewer — one tab per site, falls back to placeholder."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._structure_view = None
+        self._unit           = UNIT_EV
+        self._tab_viewers    = []
+        self._build_ui()
+
+    # ------------------------------------------------------------------
+    # UI construction
+    # ------------------------------------------------------------------
+
+    def _build_ui(self):
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        self._tabs = QTabWidget()
+        layout.addWidget(self._tabs)
+        self._show_placeholder()
+
+    def _show_placeholder(self):
+        ph = QLabel('No data — run refsite analysis or load CSV.')
+        ph.setAlignment(Qt.AlignCenter)
+        self._tabs.clear()
+        self._tab_viewers = []
+        self._tabs.addTab(ph, 'Results')
+
+    # ------------------------------------------------------------------
+    # Public API
+    # ------------------------------------------------------------------
+
+    def set_structure_view(self, sv):
+        self._structure_view = sv
+        for w in self._tab_viewers:
+            w.set_structure_view(sv)
+
+    def _on_colours_changed(self):
+        """Propagate colours_changed from StructureView to all site tabs."""
+        for w in self._tab_viewers:
+            w._refresh_plot()
+
+    def set_unit(self, unit):
+        self._unit = unit
+        for w in self._tab_viewers:
+            w.set_unit(unit)
+
+    def load_multi_data(self, site_results):
+        """Load results for one or more sites and rebuild all tabs.
+
+        Parameters
+        ----------
+        site_results : list of (label, frac_pos, offsite_results, onsite_results)
+        """
+        self._tabs.clear()
+        self._tab_viewers = []
+
+        for label, _frac_pos, offsite, _onsite in site_results:
+            viewer = RefsitePFCWidget()
+            viewer.set_unit(self._unit)
+            if self._structure_view is not None:
+                viewer.set_structure_view(self._structure_view)
+                self._structure_view.colours_changed.connect(viewer._refresh_plot)
+            viewer.load_data(offsite)
+            self._tabs.addTab(viewer, label)
+            self._tab_viewers.append(viewer)
+
+    def load_from_csv(self, path=None):
+        """Load a single-site refsite_pFCs CSV into a fresh tab."""
+        self._tabs.clear()
+        self._tab_viewers = []
+
+        viewer = RefsitePFCWidget()
+        viewer.set_unit(self._unit)
+        if self._structure_view is not None:
+            viewer.set_structure_view(self._structure_view)
+            self._structure_view.colours_changed.connect(viewer._refresh_plot)
+
+        from pathlib import Path as _Path
+        tab_label = _Path(path).stem if path else 'Results'
+        self._tabs.addTab(viewer, tab_label)
+        self._tab_viewers.append(viewer)
+        viewer.load_from_csv(path)
