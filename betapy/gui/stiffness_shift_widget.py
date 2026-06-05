@@ -316,22 +316,30 @@ class _IntraSiteWorker(QThread):
                 tol=self._tol, directional=False,
             )
 
-            # Phase 2: for any A pairs still unmatched, search a wider B shell
-            # (mirrors the cutoff * 1.5 used for the intercalated side in
-            # _StiffnessWorker).  Edge pairs around the vacant site can fall
-            # slightly outside the cutoff of the occupied site due to
-            # vacancy-induced relaxation.
-            if unmatched_a:
-                offsite_b_wide, _ = find_refsite_pairs(
+            # Phase 2: edge pairs can fall just outside the base cutoff of the
+            # other site due to vacancy-induced relaxation — apply a wider
+            # shell search symmetrically for both residual ua and ub.
+            def _wide_shell(frac_ref, core):
+                wide, _ = find_refsite_pairs(
                     sc, fc['atomic_pairs'], fc['force_matrices'],
-                    frac_b, cutoff=self._cutoff * 1.5, min_distance=0.0,
+                    frac_ref, cutoff=self._cutoff * 1.5, min_distance=0.0,
                     exclude_species=excl_sp, show_progress=False,
                 )
-                core_keys = {(r['atom1_idx'], r['atom2_idx']) for r in offsite_b}
-                offsite_b_extra = [r for r in offsite_b_wide
-                                   if (r['atom1_idx'], r['atom2_idx']) not in core_keys]
+                keys = {(r['atom1_idx'], r['atom2_idx']) for r in core}
+                return [r for r in wide if (r['atom1_idx'], r['atom2_idx']) not in keys]
+
+            if unmatched_a:
+                ob_extra = _wide_shell(frac_b, offsite_b)
                 m2, unmatched_a, _ = match_fc_pairs_direct(
-                    unmatched_a, offsite_b_extra, sc, sc, frac_a, frac_b,
+                    unmatched_a, ob_extra, sc, sc, frac_a, frac_b,
+                    tol=self._tol, directional=False,
+                )
+                matched = matched + m2
+
+            if unmatched_b:
+                oa_extra = _wide_shell(frac_a, offsite_a)
+                m2, _, unmatched_b = match_fc_pairs_direct(
+                    oa_extra, unmatched_b, sc, sc, frac_a, frac_b,
                     tol=self._tol, directional=False,
                 )
                 matched = matched + m2
