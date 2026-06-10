@@ -3,8 +3,8 @@ Badger Analysis viewer — experimental feature.
 
 2×2 layout:
   Top-left     : conventional Φ_p^{-1/3} vs r  (projected)
-  Top-right    : isotropic   F_iso^{-1/3} vs r  (rotationally invariant)
-  Bottom-left  : conventional scatter coloured by ξ = Φ_p / F_iso
+  Top-right    : isotropic   Φ_iso^{-1/3} vs r  (rotationally invariant)
+  Bottom-left  : conventional scatter coloured by ξ = Φ_p / Φ_iso
   Bottom-right : 3D structure view — clicking a point in the ξ scatter
                  highlights the corresponding bond
 """
@@ -187,7 +187,7 @@ class BadgerWidget(QWidget):
         self._chk_iso = QCheckBox('Isotropic (top-right)')
         self._chk_iso.setChecked(True)
         self._chk_iso.setToolTip(
-            'Checked: top-right shows F_iso = (|φ_l|+2|φ_t|)/3\n'
+            'Checked: top-right shows Φ_iso = (|φ_l|+2|φ_t|)/3\n'
             'Unchecked: top-right shows conventional Φ_p\n'
             '(use to compare grouping improvement directly)'
         )
@@ -447,7 +447,7 @@ class BadgerWidget(QWidget):
 
         # ── Top row: conventional and isotropic/reference Badger ──────────
         use_iso     = self._chk_iso.isChecked()
-        iso_val_key = 'f_iso'    if use_iso else 'mean_pfc'
+        iso_val_key = 'phi_iso'    if use_iso else 'mean_pfc'
         iso_fits    = self._result.iso_fits if use_iso else self._result.conv_fits
         iso_title   = ('Isotropic   $(|\\phi_l|+2|\\phi_t|)/3$'
                        if use_iso else 'Conventional   $\\Phi_p$  (reference)')

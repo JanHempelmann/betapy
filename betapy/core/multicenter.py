@@ -179,36 +179,63 @@ def _split_into_shells(records, rel_gap=0.50):
 # Anomaly detection — individual pairs, robust regression
 # ---------------------------------------------------------------------------
 
-def detect_anomalous_pairs(bulk_results, n_sigma=2.0, min_pairs=4):
+def detect_anomalous_pairs(bulk_results, n_sigma=2.5, min_pairs=4,
+                           value_key='phi_iso', min_rel_residual=0.08,
+                           max_detect_dist=None):
     """
     Flag individual pFC pairs with anomalously large values relative to distance.
 
     Groups pairs by species (order-independent) and fits a Theil-Sen regression
-    to Phi_p^{-1/3} vs r — the Badger-type relationship.  Theil-Sen is the
-    median of all pairwise slopes, making it inherently insensitive to outliers:
+    to FC^{-1/3} vs r — the Badger-type relationship.  Theil-Sen is the median
+    of all pairwise slopes, making it inherently insensitive to outliers:
     anomalous (multicenter) pairs cannot bias the baseline even when they are a
-    substantial minority.  Individual pairs whose pFC residual exceeds *n_sigma*
-    robust standard deviations below the fit (i.e. pFC is too large for its
+    substantial minority.  Individual pairs whose FC residual exceeds *n_sigma*
+    robust standard deviations below the fit (i.e. FC is too large for its
     distance) are flagged.
 
+    Using *value_key='phi_iso'* (default) is strongly preferred over 'mean_pfc'.
+    Φ_iso = (|φ_l| + 2|φ_t|) / 3 removes the gleichergestalt orientation
+    dependence that inflates the residual scatter when using conventional Φ_p,
+    giving a tighter baseline and more discriminating n_sigma threshold.
+
     For groups with fewer than *min_pairs* valid records a monotonicity
-    fallback is used: any pair whose pFC exceeds that of the nearest
+    fallback is used: any pair whose FC exceeds that of the nearest
     shorter-distance pair (when sorted by distance) is flagged.
 
     Parameters
     ----------
-    bulk_results : list of dicts from compute_bulk_pfcs()
-        Each dict must contain 'species1', 'species2', 'distance', 'mean_pfc',
+    bulk_results : list of dicts — records must already contain *value_key*.
+        Call compute_badger_quantities() first to add 'phi_iso' and 'xi'.
+        Each dict must also contain 'species1', 'species2', 'distance',
         'atom1_idx', 'atom2_idx', and 'direction'.
     n_sigma      : float, detection threshold in robust std deviations. Default 2.0.
     min_pairs    : int, minimum valid pairs required for regression. Default 4.
+    value_key        : str, force-constant field to use for the Badger baseline.
+                       Default 'phi_iso' (rotationally invariant).
+                       Pass 'mean_pfc' to use the conventional projected FC.
+    min_rel_residual : float, minimum residual relative to the predicted
+                       FC^{-1/3} value required to flag a pair.  Prevents
+                       flagging pairs whose absolute FC deviation is physically
+                       negligible even if statistically significant — e.g.
+                       non-bonded O-O pairs in Quartz whose tiny phi_iso
+                       scatter produces a large n_sigma on a near-zero MAD.
+                       Default 0.08 (8 % of the predicted FC^{-1/3} value,
+                       corresponding to ~25 % excess in FC space).
+    max_detect_dist : float or None, Angstrom.  If set, only pairs with
+                       distance <= max_detect_dist are considered for flagging
+                       (pairs beyond this are still used to anchor the Badger
+                       baseline if they are in the same shell).  Typically set
+                       to ~75 % of the reliability limit (L/2) so that long-range
+                       pairs whose tiny FC values produce spurious statistical
+                       outliers near the aliasing boundary are excluded.
+                       Default None (no extra cutoff).
 
     Returns
     -------
     list of dicts — each is the original pair record augmented with:
         'method'   : 'regression' or 'monotone'
-        'residual' : float — regression: signed residual on Phi_p^{-1/3}
-                     (negative = pFC larger than predicted); monotone: raw pFC
+        'residual' : float — regression: signed residual on FC^{-1/3}
+                     (negative = FC larger than predicted); monotone: raw FC
                      excess over the nearest shorter-distance pair
         'n_sigma'  : float, significance (nan for monotone method)
     """
@@ -234,57 +261,58 @@ def detect_anomalous_pairs(bulk_results, n_sigma=2.0, min_pairs=4):
     flagged = []
 
     for pair_records in by_pair.values():
-        # Split the species-pair records into distance shells before fitting.
-        # Bonds from different shells (e.g. covalent 1st-shell vs non-bonded
-        # 2nd-shell in diamond, gap ~63 %) follow entirely different Badger
-        # trends and must not share a baseline.
-        # Only split when there are enough records; with very few pairs the
-        # split would create sub-groups too small for any analysis.
-        shells = (_split_into_shells(pair_records)
-                  if len(pair_records) >= min_pairs
-                  else [pair_records])
-        for shell_records in shells:
-            pfcs  = np.array([r['mean_pfc'] for r in shell_records])
-            dists = np.array([r['distance'] for r in shell_records])
+        fcs   = np.array([r.get(value_key, float('nan')) for r in pair_records])
+        dists = np.array([r['distance'] for r in pair_records])
 
-            valid = pfcs > 0
-            if valid.sum() < 2:
-                continue
+        valid = np.isfinite(fcs) & (fcs > 0)
+        if valid.sum() < 2:
+            continue
 
-            v_pfcs    = pfcs[valid]
-            v_dists   = dists[valid]
-            v_records = [r for r, v in zip(shell_records, valid) if v]
+        v_fcs     = fcs[valid]
+        v_dists   = dists[valid]
+        v_records = [r for r, v in zip(pair_records, valid) if v]
 
-            # Skip shells where all bonds are at essentially the same distance.
-            # With near-zero x-variation no Badger slope can be defined and any
-            # apparent anomalies are due to LP/regression numerical noise.
-            if float(v_dists.max() - v_dists.min()) < 0.05:
-                continue
+        if float(v_dists.max() - v_dists.min()) < 0.05:
+            continue
 
-            inv_cbrt = v_pfcs ** (-1.0 / 3.0)
+        inv_cbrt = v_fcs ** (-1.0 / 3.0)
 
-            if valid.sum() >= min_pairs:
-                slope, intercept, *_ = theilslopes(inv_cbrt, v_dists)
-                predicted = slope * v_dists + intercept
-                residuals = inv_cbrt - predicted    # negative => pFC too large
-                std_raw = float(median_abs_deviation(residuals) * 1.4826)
-                std = max(std_raw, 1e-6)
-                for rec, res in zip(v_records, residuals):
-                    if res < -n_sigma * std:
-                        flagged.append({**rec,
-                                        'method':   'regression',
-                                        'residual': float(res),
-                                        'n_sigma':  float(-res / std)})
-            else:
-                order  = np.argsort(v_dists)
-                s_pfcs = v_pfcs[order]
-                s_recs = [v_records[i] for i in order]
-                for i in range(1, len(s_recs)):
-                    if s_pfcs[i] > s_pfcs[i - 1]:
-                        flagged.append({**s_recs[i],
-                                        'method':   'monotone',
-                                        'residual': float(s_pfcs[i] - s_pfcs[i - 1]),
-                                        'n_sigma':  float('nan')})
+        # One representative per unique distance shell (0.001 Å bins).
+        # High-multiplicity symmetry-equivalent clusters (e.g. all Ge-Ge pairs
+        # at the 3-center distance) would otherwise bias the Theil-Sen slope
+        # toward threading through the anomalous cluster, collapsing the MAD
+        # to near zero and preventing detection.  All pairs are still evaluated
+        # against the resulting fit for flagging.
+        _rd = np.round(v_dists, 3)
+        _, _ux = np.unique(_rd, return_index=True)
+
+        if len(_ux) >= min_pairs:
+            slope, intercept, *_ = theilslopes(inv_cbrt[_ux], v_dists[_ux])
+            fit_res   = inv_cbrt[_ux] - (slope * v_dists[_ux] + intercept)
+            std_raw   = float(median_abs_deviation(fit_res) * 1.4826)
+            std       = max(std_raw, 1e-6)
+            predicted = slope * v_dists + intercept
+            residuals = inv_cbrt - predicted    # negative => FC too large
+            for rec, res, pred in zip(v_records, residuals, predicted):
+                if res < -n_sigma * std:
+                    if pred > 0 and (-res / pred) < min_rel_residual:
+                        continue
+                    if max_detect_dist is not None and rec['distance'] > max_detect_dist:
+                        continue
+                    flagged.append({**rec,
+                                    'method':   'regression',
+                                    'residual': float(res),
+                                    'n_sigma':  float(-res / std)})
+        else:
+            order  = np.argsort(v_dists)
+            s_fcs  = v_fcs[order]
+            s_recs = [v_records[i] for i in order]
+            for i in range(1, len(s_recs)):
+                if s_fcs[i] > s_fcs[i - 1]:
+                    flagged.append({**s_recs[i],
+                                    'method':   'monotone',
+                                    'residual': float(s_fcs[i] - s_fcs[i - 1]),
+                                    'n_sigma':  float('nan')})
 
     return flagged
 
@@ -627,15 +655,16 @@ def format_cobi_directive(chain_sc_indices, supercell, lob_poscar):
 
 def suggest_cobi_directives(
         bulk_results, supercell, poscar_lobster_path,
-        n_sigma=2.0, min_pairs=4,
+        n_sigma=2.5, min_pairs=4,
         min_angle_deg=150.0, max_order=5, bond_cutoff=4.0,
+        detect_cutoff_frac=0.75,
         fit_quantile=None):
     """
     Full pipeline: detect anomalous pFCs → trace chains → format directives.
 
     Parameters
     ----------
-    bulk_results         : first element of projection.compute_bulk_pfcs() return value
+    bulk_results         : list of dicts from compute_bulk_pfcs()
     supercell            : Supercell
     poscar_lobster_path  : path-like, POSCAR used for the LOBSTER calculation
     n_sigma              : float, anomaly detection threshold (sigma). Default 2.0.
@@ -643,6 +672,12 @@ def suggest_cobi_directives(
     min_angle_deg        : float, minimum bond angle for chain extension. Default 150.
     max_order            : int, maximum atoms per chain. Default 5.
     bond_cutoff          : float, Å, max step distance for chain extension. Default 4.0.
+    detect_cutoff_frac   : float, fraction of the reliability limit (L/2) used as
+                           the maximum pair distance considered for flagging.
+                           Pairs beyond this threshold still anchor the Badger
+                           baseline but cannot be flagged.  Default 0.75.
+                           Increase toward 1.0 only when multicenter bonds are
+                           expected at unusually long range (> 8 Å).
     fit_quantile         : ignored, kept for backward compatibility.
 
     Returns
@@ -652,13 +687,21 @@ def suggest_cobi_directives(
         'chains'        : list of chain dicts; sub_chains[*]['directive'] is filled
         'directives'    : list[str], unique cobiBetween lines ready for lobsterin
     """
+    from betapy.core.badger import compute_badger_quantities
+
     lob_poscar = _parse_poscar_lobster(poscar_lobster_path)
 
     reliability_limit = min(np.linalg.norm(v) for v in supercell.lattice) / 2.0
     reliable_pairs = [r for r in bulk_results if r['distance'] <= reliability_limit]
 
+    # Augment with Φ_iso so detection uses the orientation-invariant baseline.
+    reliable_pairs = compute_badger_quantities(reliable_pairs)
+
+    max_detect_dist = reliability_limit * detect_cutoff_frac
+
     flagged = detect_anomalous_pairs(
-        reliable_pairs, n_sigma=n_sigma, min_pairs=min_pairs)
+        reliable_pairs, n_sigma=n_sigma, min_pairs=min_pairs,
+        value_key='phi_iso', max_detect_dist=max_detect_dist)
 
     chains = find_chains(
         flagged, supercell, bulk_results,

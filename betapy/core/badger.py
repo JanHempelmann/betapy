@@ -154,7 +154,7 @@ def _find_nn_anchor(records, value_key='mean_pfc'):
 
 def compute_badger_quantities(bulk_results):
     """
-    Add 'f_iso', 'xi', and 'eta_pair' to each bulk result record.
+    Add 'phi_iso', 'xi', and 'eta_pair' to each bulk result record.
 
     Uses phi_l and phi_t already computed by compute_bulk_pfcs().
 
@@ -183,15 +183,15 @@ def compute_badger_quantities(bulk_results):
         mean_pfc = r.get('mean_pfc', float('nan'))
 
         if not (np.isfinite(phi_l) and np.isfinite(phi_t) and np.isfinite(mean_pfc)):
-            augmented.append({**r, 'f_iso': float('nan'), 'xi': float('nan'),
+            augmented.append({**r, 'phi_iso': float('nan'), 'xi': float('nan'),
                                'eta_pair': float('nan')})
             continue
 
-        f_iso    = (abs(phi_l) + 2.0 * abs(phi_t)) / 3.0
-        xi       = mean_pfc / f_iso if f_iso > 1e-12 else float('nan')
+        phi_iso  = (abs(phi_l) + 2.0 * abs(phi_t)) / 3.0
+        xi       = mean_pfc / phi_iso if phi_iso > 1e-12 else float('nan')
         eta_pair = (abs(phi_l / phi_t)
                     if abs(phi_t) > 1e-12 else float('nan'))
-        augmented.append({**r, 'f_iso': f_iso, 'xi': xi, 'eta_pair': eta_pair})
+        augmented.append({**r, 'phi_iso': phi_iso, 'xi': xi, 'eta_pair': eta_pair})
     return augmented
 
 
@@ -481,7 +481,7 @@ def fit_badger_line(records, value_key='mean_pfc', min_pairs=4, shell_split=True
     ----------
     records     : list of dicts.  Must contain 'species1', 'species2',
                   'distance', 'atom1_idx', 'atom2_idx', and value_key.
-    value_key   : str — 'mean_pfc' for conventional, 'f_iso' for isotropic.
+    value_key   : str — 'mean_pfc' for conventional, 'phi_iso' for isotropic.
     min_pairs   : int — minimum valid pairs for regression (default 4).
     shell_split : bool — split by distance shells before fitting (default True).
 
@@ -600,16 +600,16 @@ class BadgerAnalysisResult:
     Attributes
     ----------
     records      : list of augmented dicts — each record from bulk_results with:
-                     'f_iso'         float  — isotropic mean stiffness
-                     'xi'            float  — anisotropy factor mean_pfc / f_iso
+                     'phi_iso'         float  — isotropic mean stiffness
+                     'xi'            float  — anisotropy factor mean_pfc / phi_iso
                      'cos2theta'     float  — geometric alignment with NN bond
                      'fan_slope'     float  — α = (Φ^{-1/3}−y*)/(r−r*); family ID
                      'family_id'     int    — cluster index (0 = stiffest family)
                      'conv_residual' float  — residual of mean_pfc^{-1/3} from fit
-                     'iso_residual'  float  — residual of f_iso^{-1/3} from fit
+                     'iso_residual'  float  — residual of phi_iso^{-1/3} from fit
                    NaN / −1 where a fit or assignment could not be made.
     conv_fits    : fit_badger_line() result for conventional (mean_pfc) Badger
-    iso_fits     : fit_badger_line() result for isotropic (f_iso) Badger
+    iso_fits     : fit_badger_line() result for isotropic (phi_iso) Badger
     family_fits  : fit_badger_families() result — per-(sp_key, family_id) fits
     """
     __slots__ = ('records', 'conv_fits', 'iso_fits', 'family_fits')
@@ -666,7 +666,7 @@ def analyze_badger(bulk_results, n_families=5):
     augmented    = compute_fan_slopes(augmented)
     augmented    = assign_families_kmeans(augmented, n_families=n_families)
     conv_fits    = fit_badger_line(augmented, value_key='mean_pfc')
-    iso_fits     = fit_badger_line(augmented, value_key='f_iso', shell_split=False)
+    iso_fits     = fit_badger_line(augmented, value_key='phi_iso', shell_split=False)
     family_fits  = fit_badger_families(augmented)
     _attach_residuals(augmented, conv_fits, 'conv_residual')
     _attach_residuals(augmented, iso_fits,  'iso_residual')

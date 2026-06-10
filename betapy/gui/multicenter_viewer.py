@@ -186,7 +186,7 @@ class _MulticenterWorker(QThread):
 
     def run(self):
         try:
-            from betapy.core.multicenter import _split_into_shells
+            from betapy.core.badger import compute_badger_quantities
             from scipy.stats import theilslopes, median_abs_deviation
 
             reliability_limit = (
@@ -194,6 +194,8 @@ class _MulticenterWorker(QThread):
             )
             reliable = [r for r in self._bulk
                         if r['distance'] <= reliability_limit]
+
+            reliable = compute_badger_quantities(reliable)
 
             # Deduplicate (full FC lists every bond twice)
             seen: set = set()
@@ -205,72 +207,51 @@ class _MulticenterWorker(QThread):
                     seen.add(key)
                     deduped.append(r)
 
-            # Group by species pair, split into distance shells, fit Theil-Sen.
-            # Single-distance shells (x_range < 0.05 Å) and perfect-fit shells
-            # (MAD ≈ 0) appear in the scatter but receive no Badger curve.
+            # Group by species pair; one global Theil-Sen fit per pair.
             by_pair: dict = defaultdict(list)
             for r in deduped:
                 sp_key = tuple(sorted([r['species1'], r['species2']]))
                 by_pair[sp_key].append(r)
 
-            sp_acc: dict = defaultdict(lambda: {'records': [], 'badger_lines': []})
-
-            for sp_key, records in by_pair.items():
-                for shell_records in _split_into_shells(records):
-                    pfcs  = np.array([r['mean_pfc'] for r in shell_records])
-                    dists = np.array([r['distance']  for r in shell_records])
-                    valid = pfcs > 0
-                    if valid.sum() < 2:
-                        continue
-                    v_pfcs    = pfcs[valid]
-                    v_dists   = dists[valid]
-                    v_records = [shell_records[i]
-                                 for i in range(len(shell_records)) if valid[i]]
-
-                    acc = sp_acc[sp_key]
-                    acc['records'].extend(v_records)
-
-                    if float(v_dists.max() - v_dists.min()) < 0.05:
-                        continue
-
-                    inv_cbrt = v_pfcs ** (-1.0 / 3.0)
-                    if valid.sum() >= 4:
-                        slope, intercept, *_ = theilslopes(inv_cbrt, v_dists)
-                        residuals = inv_cbrt - (slope * v_dists + intercept)
-                        std_raw = float(median_abs_deviation(residuals) * 1.4826)
-                        if std_raw < 1e-8:
-                            continue  # perfect fit, no meaningful scatter
-                        std = max(std_raw, 1e-6)
-                    else:
-                        slope = intercept = std = float('nan')
-
-                    acc['badger_lines'].append({
-                        'slope':     float(slope),
-                        'intercept': float(intercept),
-                        'std':       float(std),
-                        'x_min':     float(v_dists.min()),
-                        'x_max':     float(v_dists.max()),
-                    })
-
-            # Build final badger_data keyed by species pair
             badger_data: dict = {}
-            for sp_key, acc in sp_acc.items():
-                v_recs  = acc['records']
-                v_dists = np.array([r['distance'] for r in v_recs])
-                v_pfcs  = np.array([r['mean_pfc']  for r in v_recs])
-                lines   = acc['badger_lines']
-                first   = lines[0] if lines else {}
+            for sp_key, records in by_pair.items():
+                pfcs  = np.array([r.get('phi_iso', float('nan')) for r in records])
+                dists = np.array([r['distance'] for r in records])
+                valid = np.isfinite(pfcs) & (pfcs > 0)
+                v_pfcs    = pfcs[valid]
+                v_dists   = dists[valid]
+                v_records = [r for r, v in zip(records, valid) if v]
+
+                slope = intercept = std = std_raw = float('nan')
+                x_min = x_max = float('nan')
+                if valid.sum() >= 4 and (
+                        float(v_dists.max() - v_dists.min()) >= 0.05):
+                    inv_cbrt = v_pfcs ** (-1.0 / 3.0)
+                    _rd = np.round(v_dists, 3)
+                    _, _ux = np.unique(_rd, return_index=True)
+                    if len(_ux) >= 4:
+                        slope, intercept, *_ = theilslopes(
+                            inv_cbrt[_ux], v_dists[_ux])
+                        fit_res = inv_cbrt[_ux] - (
+                            slope * v_dists[_ux] + intercept)
+                        std_raw = float(
+                            median_abs_deviation(fit_res) * 1.4826)
+                        std   = max(std_raw, 1e-6)
+                        x_min = float(v_dists.min())
+                        x_max = float(v_dists.max())
+
                 badger_data[sp_key] = {
                     'distances':   v_dists,
                     'pfcs':        v_pfcs,
-                    'flagged':     np.zeros(len(v_recs), dtype=bool),
+                    'flagged':     np.zeros(valid.sum(), dtype=bool),
                     'n_flagged':   0,
-                    'records':     v_recs,
-                    'badger_lines': lines,
-                    # Legacy scalar fields kept for backward compatibility
-                    'slope':       first.get('slope',     float('nan')),
-                    'intercept':   first.get('intercept', float('nan')),
-                    'std':         first.get('std',       float('nan')),
+                    'records':     v_records,
+                    'slope':       float(slope),
+                    'intercept':   float(intercept),
+                    'std':         float(std),
+                    'std_raw':     float(std_raw),   # MAD before 1e-6 floor
+                    'x_min':       x_min,
+                    'x_max':       x_max,
                 }
 
             # Directive pipeline (needs POSCAR for chain detection)
@@ -285,7 +266,9 @@ class _MulticenterWorker(QThread):
             else:
                 from betapy.core.multicenter import detect_anomalous_pairs
                 flagged_pairs = detect_anomalous_pairs(
-                    reliable, n_sigma=self._sigma)
+                    reliable,
+                    n_sigma=self._sigma, value_key='phi_iso',
+                    max_detect_dist=reliability_limit * 0.75)
                 result = {
                     'flagged_pairs': flagged_pairs,
                     'chains':        [],
@@ -366,7 +349,7 @@ class MulticenterWidget(QWidget):
         self._spin_sigma = QDoubleSpinBox()
         self._spin_sigma.setRange(0.5, 20.0)
         self._spin_sigma.setSingleStep(0.5)
-        self._spin_sigma.setValue(2.0)
+        self._spin_sigma.setValue(2.5)
         self._spin_sigma.setDecimals(1)
         self._spin_sigma.setFixedWidth(68)
         _spin_row('σ threshold:', self._spin_sigma)
@@ -385,6 +368,14 @@ class MulticenterWidget(QWidget):
         self._spin_angle.setSuffix(' °')
         self._spin_angle.setFixedWidth(68)
         _spin_row('Min angle:', self._spin_angle)
+
+        self._chk_badger_space = QCheckBox('Linearise (Φ⁻¹/³)')
+        self._chk_badger_space.setChecked(False)
+        self._chk_badger_space.setToolTip(
+            'Show Φ_iso^{-1/3} vs r (Badger space) instead of Φ_iso vs r.\n'
+            'In Badger space the baseline fit is a straight line.')
+        self._chk_badger_space.stateChanged.connect(self._refresh_plot)
+        pf.addWidget(self._chk_badger_space)
 
         lv.addWidget(param_box)
 
@@ -582,16 +573,24 @@ class MulticenterWidget(QWidget):
         self._btn_run.setEnabled(True)
         self._result = result
 
-        # Override the worker's independent per-pair flagging with the
-        # authoritative result from detect_anomalous_pairs.  The worker has no
-        # monotone fallback (used when a species pair has < min_pairs valid
-        # records), so bonds caught only by that path would otherwise appear in
-        # the directives but not be coloured red in the scatter plot.
+        # Collect atom-pair keys that should be shown as red:
+        #   (a) trigger pairs — anomalous individual bonds from detect_anomalous_pairs
+        #   (b) outer pairs of every multicenter sub-chain — the actual delocalized
+        #       bonds that cobiBetween asks LOBSTER to characterise.  Their FCs are
+        #       often NOT anomalously large (they may even be weaker than the Badger
+        #       prediction), so they are never in flagged_pairs themselves but they
+        #       are the bonds the user wants to see highlighted.
         flagged_keys = {
             (min(int(r['atom1_idx']), int(r['atom2_idx'])),
              max(int(r['atom1_idx']), int(r['atom2_idx'])))
             for r in result.get('flagged_pairs', [])
         }
+        for chain in result.get('chains', []):
+            for sub in chain.get('sub_chains', []):
+                idx = sub.get('indices', [])
+                if len(idx) >= 3:
+                    flagged_keys.add((min(int(idx[0]), int(idx[-1])),
+                                      max(int(idx[0]), int(idx[-1]))))
         for bd in result['badger_data'].values():
             corrected = np.array([
                 (min(int(rec['atom1_idx']), int(rec['atom2_idx'])),
@@ -693,7 +692,7 @@ class MulticenterWidget(QWidget):
         self._figure.clear()
         ax = self._figure.add_subplot(111)
         ax.text(0.5, 0.5,
-                'Run detection to see the pFC vs r plot\nwith Badger curve overlay.',
+                'Run detection to see the Φ_iso vs r plot\nwith Badger curve overlay.',
                 ha='center', va='center', transform=ax.transAxes,
                 color='#bbb', fontsize=12)
         ax.set_axis_off()
@@ -711,8 +710,11 @@ class MulticenterWidget(QWidget):
 
         checked_pairs = {pk for pk, cb in self._checkboxes.items()
                          if cb.isChecked()}
-        n_sigma = self._spin_sigma.value()
-        _effective_n = n_sigma
+        n_sigma      = self._spin_sigma.value()
+        badger_mode  = self._chk_badger_space.isChecked()
+
+        def _display_y(phi):
+            return phi ** (-1.0 / 3.0) if badger_mode else phi
 
         self._figure.clear()
         ax = self._figure.add_subplot(111)
@@ -737,51 +739,99 @@ class MulticenterWidget(QWidget):
             is_checked = pk in checked_pairs
 
             for d, pfc, rec, fl in zip(dists, pfcs, records, flagged):
+                # Store raw phi_iso; display transformation applied on demand.
                 self._plot_points.append((d, pfc, rec, bool(fl), pk))
+                y = _display_y(pfc)
                 if not is_checked:
                     gray_xs.append(d)
-                    gray_ys.append(pfc)
+                    gray_ys.append(y)
                 elif fl:
                     flag_xs.append(d)
-                    flag_ys.append(pfc)
+                    flag_ys.append(y)
                 else:
                     colored[pk]['xs'].append(d)
-                    colored[pk]['ys'].append(pfc)
+                    colored[pk]['ys'].append(y)
 
         # Layer 1: unchecked-pair points (grey, provides visual context)
         if gray_xs:
             ax.scatter(gray_xs, gray_ys, s=18, c=_GREY_COLOR,
                        alpha=_GREY_ALPHA, linewidths=0, zorder=1)
 
-        # Layer 2: Badger curves + bands (checked pairs only, under colored dots)
+        # Layer 2: Badger curve + band (one per checked species pair, under dots)
         for pk in self._pair_keys:
             if pk not in checked_pairs or pk not in badger_data:
                 continue
             bd = badger_data[pk]
+            slope     = bd['slope']
+            intercept = bd['intercept']
+            std       = bd['std']
+            x_min     = bd['x_min']
+            x_max     = bd['x_max']
+            if math.isnan(slope) or math.isnan(std):
+                continue
             sp1, sp2 = pk
-            c1, _ = (self.structure_view.pair_colours_hex(sp1, sp2)
-                     if self._supercell is not None else ('#888888', '#888888'))
+            c1, c2 = (self.structure_view.pair_colours_hex(sp1, sp2)
+                      if self._supercell is not None else ('#888888', '#888888'))
+            mixed = (c1 != c2)
 
-            for bl in bd.get('badger_lines', []):
-                slope, intercept, std = bl['slope'], bl['intercept'], bl['std']
-                if math.isnan(slope) or math.isnan(std):
-                    continue
-                x_line   = np.linspace(bl['x_min'], bl['x_max'], 200)
-                lin_base = slope * x_line + intercept
-                # Clip to the x-range where both the Badger curve AND the
-                # detection-band upper edge are positive.  Where lin_hi ≤ 0
-                # the threshold maps to infinite pFC and is undefined.
-                lin_hi_full = lin_base - _effective_n * std
-                valid = (lin_base > 0) & (lin_hi_full > 0)
-                if valid.any():
-                    xc     = x_line[valid]
-                    yc     = lin_base[valid] ** -3
-                    lin_lo = lin_base[valid] + _effective_n * std
-                    lin_hi = lin_hi_full[valid]
-                    ax.plot(xc, yc, color=c1, lw=1.5, alpha=_CURVE_ALPHA,
+            x_line   = np.linspace(x_min, x_max, 300)
+            lin_base = slope * x_line + intercept   # Φ^{-1/3} linear fit
+            lin_flag = lin_base - n_sigma * std     # flagging threshold
+            ok = (lin_base > 0) & (lin_flag > 0)
+            if not ok.any():
+                continue
+            xc     = x_line[ok]
+            lin_c  = lin_base[ok]
+            lin_lo = lin_c + n_sigma * std   # weaker (higher Φ) side
+            lin_hi = lin_flag[ok]            # stronger (flagging threshold) side
+
+            # Use the pre-floor MAD: if std_raw≈0 the band would be ~4µ wide
+            # (invisible at plot scale) but has_band = std>1e-8 would still pass
+            # because of the 1e-6 detection floor.  Gate on the actual scatter.
+            has_band = bd.get('std_raw', 0.0) > 1e-8
+
+            # Mixed species: alternate dash colors (phase-offset overlapping lines)
+            # to mirror the split-circle scatter markers.
+            def _draw_curve(xs, ys):
+                if mixed:
+                    # Phase-offset dashes: c1 at [0–6], gap, c2 at [8–14], gap, …
+                    # Combined period=16, 2-unit gaps — visually matches '--'.
+                    ax.plot(xs, ys, color=c1, lw=1.5, alpha=_CURVE_ALPHA,
+                            linestyle=(0, (6, 10)), zorder=3)
+                    ax.plot(xs, ys, color=c2, lw=1.5, alpha=_CURVE_ALPHA,
+                            linestyle=(8, (6, 10)), zorder=3)
+                else:
+                    ax.plot(xs, ys, color=c1, lw=1.5, alpha=_CURVE_ALPHA,
                             linestyle='--', zorder=3)
-                    ax.fill_between(xc, lin_lo ** -3, lin_hi ** -3,
+
+            label_txt = f'{sp1}–{sp2}'
+            if badger_mode:
+                # Linearised view: straight line + ±nσ band
+                _draw_curve(xc, lin_c)
+                if has_band:
+                    # Overlay both colors at half alpha for mixed pairs
+                    ax.fill_between(xc, lin_lo, lin_hi,
                                     color=c1, alpha=_BAND_ALPHA, zorder=2)
+                    if mixed:
+                        ax.fill_between(xc, lin_lo, lin_hi,
+                                        color=c2, alpha=_BAND_ALPHA, zorder=2)
+                    # Label at the right edge of the band (mid-band y)
+                    label_y = float(0.5 * (lin_lo[-1] + lin_hi[-1]))
+                    ax.text(float(xc[-1]), label_y, f' {label_txt}',
+                            color=c1, fontsize=7, va='center',
+                            alpha=_CURVE_ALPHA, zorder=3)
+                else:
+                    # No band (zero scatter) — label the line itself
+                    ax.text(float(xc[-1]), float(lin_c[-1]), f' {label_txt}',
+                            color=c1, fontsize=7, va='center',
+                            alpha=_CURVE_ALPHA, zorder=3)
+            else:
+                # Real-space view: dashed Badger curve + label at right end
+                yc = lin_c ** -3
+                _draw_curve(xc, yc)
+                ax.text(float(xc[-1]), float(yc[-1]), f' {label_txt}',
+                        color=c1, fontsize=7, va='center',
+                        alpha=_CURVE_ALPHA, zorder=3)
 
         # Layer 3: checked-pair normal points (species color)
         for pk, data in colored.items():
@@ -820,9 +870,10 @@ class MulticenterWidget(QWidget):
 
         # Selection ring around the last clicked point
         if self._selected_record is not None:
-            sr = self._selected_record
+            sr  = self._selected_record
+            phi = sr.get('phi_iso', sr.get('mean_pfc', 0.0))
             ax.plot(
-                sr['distance'], sr['mean_pfc'],
+                sr['distance'], _display_y(phi),
                 'o', markersize=16,
                 markerfacecolor='none', markeredgecolor='#c8a000',
                 markeredgewidth=2.5, zorder=6,
@@ -830,19 +881,27 @@ class MulticenterWidget(QWidget):
 
         # Pin y-axis to the actual data point range — the Badger curve can
         # reach extreme values near its left edge and would otherwise dominate.
-        if self._plot_points:
-            all_pfcs = [pt[1] for pt in self._plot_points]
-            pfc_min  = min(all_pfcs)
-            pfc_max  = max(all_pfcs)
-            margin   = (pfc_max - pfc_min) * 0.08 if pfc_max > pfc_min else pfc_max * 0.1
-            ax.set_ylim(max(0.0, pfc_min - margin), pfc_max + margin)
+        active_ys = (
+            [_display_y(pt[1]) for pt in self._plot_points
+             if pt[4] in checked_pairs]
+            if self._plot_points else []
+        )
+        if active_ys:
+            y_lo = min(active_ys)
+            y_hi = max(active_ys)
+            margin = (y_hi - y_lo) * 0.08 if y_hi > y_lo else abs(y_hi) * 0.1
+            ax.set_ylim(max(0.0, y_lo - margin), y_hi + margin)
 
         ax.set_xlabel('Interatomic distance (Å)', fontsize=12)
-        ax.set_ylabel('Projected force constant (eV/Å²)', fontsize=12)
-        ax.set_title(
-            'Multicenter bonding — pFC vs r  '
-            '(dashed: Theil-Sen Badger fit, ±σ band)',
-            fontsize=12)
+        if badger_mode:
+            ax.set_ylabel('Φ_iso^{-1/3}  ((eV/Å²)^{-1/3})', fontsize=12)
+        else:
+            ax.set_ylabel('Φ_iso  (eV/Å²)', fontsize=12)
+        if badger_mode:
+            title = 'Multicenter bonding — Φ_iso^{-1/3} vs r  (dashed: Badger fit, ±nσ band)'
+        else:
+            title = 'Multicenter bonding — Φ_iso vs r  (dashed: Badger fit)'
+        ax.set_title(title, fontsize=12)
         ax.grid(True, linestyle='--', alpha=0.4)
 
         if colored or flag_xs:
@@ -866,9 +925,11 @@ class MulticenterWidget(QWidget):
         xs = (xlim[1] - xlim[0]) or 1.0
         ys = (ylim[1] - ylim[0]) or 1.0
 
+        badger_mode = self._chk_badger_space.isChecked()
         best_d2, best_pt = float('inf'), None
         for pt in self._plot_points:
-            d2 = ((pt[0] - cx) / xs) ** 2 + ((pt[1] - cy) / ys) ** 2
+            dy = pt[1] ** (-1.0 / 3.0) if badger_mode else pt[1]
+            d2 = ((pt[0] - cx) / xs) ** 2 + ((dy - cy) / ys) ** 2
             if d2 < best_d2:
                 best_d2, best_pt = d2, pt
 
@@ -883,7 +944,7 @@ class MulticenterWidget(QWidget):
         sp1 = rec['species1']
         sp2 = rec['species2']
         d   = rec['distance']
-        pfc = rec['mean_pfc']
+        pfc = rec.get('phi_iso', rec.get('mean_pfc', float('nan')))
 
         if self._supercell is not None:
             self.structure_view.highlight_bond(a1, a2)
@@ -891,7 +952,7 @@ class MulticenterWidget(QWidget):
         info = 'Multicenter' if is_flagged else 'Selected'
         self._selection_bar.setText(
             f'{info}:  atom {a1} ({sp1}) – atom {a2} ({sp2})   '
-            f'd = {d:.4f} Å   pFC = {pfc:.6f} eV/Å²'
+            f'd = {d:.4f} Å   Φ_iso = {pfc:.6f} eV/Å²'
         )
 
         self._refresh_plot()
