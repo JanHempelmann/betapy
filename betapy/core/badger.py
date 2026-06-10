@@ -5,7 +5,7 @@ Fits the Badger-type law Φ^{-1/3} = a·r + b to projected force constants
 using two complementary quantities:
 
   conventional  Φ_p   — projected along bond direction (existing approach)
-  isotropic     F_iso — |Tr(Φ)| / 3  =  |phi_l + 2·phi_t| / 3
+  isotropic     F_iso — (|phi_l| + 2·|phi_t|) / 3  =  mean absolute eigenvalue
 
 F_iso is rotationally invariant: it does not depend on which direction the
 force-constant matrix is projected along, and therefore collapses the multiple
@@ -22,9 +22,9 @@ scatter in the conventional Badger plot decomposes exactly as
 so the isotropic fit removes ξ-driven scatter while preserving the physically
 motivated −1/3 exponent and its dimensional consistency.
 
-Sign note: Phonopy's off-diagonal FC blocks for bonded pairs are negative
-(restoring convention), so phi_l < 0, phi_t < 0, Tr(Φ) < 0 for bonded pairs.
-F_iso takes the absolute value so it is always a positive stiffness.
+Using the sum of absolute eigenvalues rather than the absolute trace avoids
+the sign-cancellation outliers that arise when phi_l ≈ −2·phi_t (Tr ≈ 0)
+for long-range or non-bonding pairs.
 
 Both phi_l and phi_t are already stored in bulk_results by
 compute_bulk_pfcs(); no re-reading of force-constant matrices is required.
@@ -74,17 +74,98 @@ def _split_into_shells(records, rel_gap=0.50):
 
 
 # ---------------------------------------------------------------------------
-# Augment records with isotropic quantities
+# NN-anchor helpers shared by fan-slope and nn-bond routines
+# ---------------------------------------------------------------------------
+
+def _nn_cutoffs(records, abs_gap=0.10):
+    """
+    Return per-species-pair NN cutoff distances (1st-shell max × 1.05).
+
+    Uses an absolute distance gap rather than the relative-gap heuristic in
+    _split_into_shells.  The relative criterion (default 50 %) fails for
+    species pairs whose first two shells are close together in absolute terms
+    but similar in relative distance — e.g. Si-Si in quartz sits at ~3.07 Å
+    and ~3.30 Å (7 % relative gap), so the 50 %-threshold misses the boundary
+    and treats the entire dataset as the first shell.  An absolute threshold of
+    0.10 Å (0.22 Å gap for Si-Si in quartz) is robust across all typical
+    crystalline bond lengths without affecting well-separated shells such as
+    C-C in diamond (0.98 Å gap).
+    """
+    seen, by_sp = set(), defaultdict(list)
+    for r in records:
+        key = (min(r['atom1_idx'], r['atom2_idx']),
+               max(r['atom1_idx'], r['atom2_idx']))
+        if key in seen:
+            continue
+        seen.add(key)
+        by_sp[tuple(sorted([r['species1'], r['species2']]))].append(r)
+
+    cutoffs = {}
+    for sp_key, sp_recs in by_sp.items():
+        dists = np.sort([r['distance'] for r in sp_recs if r['distance'] > 1e-6])
+        if len(dists) == 0:
+            continue
+        cutoff = float(dists[-1])          # fallback: no gap found
+        for k in range(len(dists) - 1):
+            if dists[k + 1] - dists[k] > abs_gap:
+                cutoff = float(dists[k]) * 1.05
+                break
+        cutoffs[sp_key] = cutoff
+    return cutoffs
+
+
+def _find_nn_anchor(records, value_key='mean_pfc'):
+    """
+    Return per-species-pair NN anchor points (r*, y*) for the fan model.
+
+    (r*, y*) is the mean (distance, value^{-1/3}) of the first coordination
+    shell — the approximate left-side convergence point of the Badger fan.
+    """
+    cutoffs = _nn_cutoffs(records)
+
+    seen, by_sp = set(), defaultdict(list)
+    for r in records:
+        key = (min(r['atom1_idx'], r['atom2_idx']),
+               max(r['atom1_idx'], r['atom2_idx']))
+        if key in seen:
+            continue
+        seen.add(key)
+        by_sp[tuple(sorted([r['species1'], r['species2']]))].append(r)
+
+    anchors = {}
+    for sp_key, sp_recs in by_sp.items():
+        cutoff = cutoffs.get(sp_key, float('inf'))
+        valid  = [r for r in sp_recs
+                  if r['distance'] <= cutoff
+                  and np.isfinite(r.get(value_key, float('nan')))
+                  and r[value_key] > 0]
+        if not valid:
+            continue
+        anchors[sp_key] = (
+            float(np.mean([r['distance']                       for r in valid])),
+            float(np.mean([r[value_key] ** (-1.0 / 3.0)       for r in valid])),
+        )
+    return anchors
+
+
+# ---------------------------------------------------------------------------
+# Augment records with isotropic quantities and bond-anisotropy ratio
 # ---------------------------------------------------------------------------
 
 def compute_badger_quantities(bulk_results):
     """
-    Add 'f_iso' and 'xi' to each bulk result record.
+    Add 'f_iso', 'xi', and 'eta_pair' to each bulk result record.
 
     Uses phi_l and phi_t already computed by compute_bulk_pfcs().
 
-        F_iso = |phi_l + 2·phi_t| / 3  =  |Tr(Φ)| / 3
-        ξ     = mean_pfc / F_iso
+        F_iso    = (|phi_l| + 2·|phi_t|) / 3  — mean absolute eigenvalue;
+                   rotationally invariant and free of sign-cancellation
+                   outliers (cf. |Tr(Φ)|/3 which → 0 when phi_l ≈ −2·phi_t)
+        ξ        = mean_pfc / F_iso
+        eta_pair = |phi_l / phi_t|  — longitudinal-to-transverse anisotropy
+                   of the actual FC matrix for this pair; independent of
+                   projection direction.  Large (>>1) for covalent bonds,
+                   ~1–2 for ionic or isotropic interactions.
 
     Parameters
     ----------
@@ -102,13 +183,231 @@ def compute_badger_quantities(bulk_results):
         mean_pfc = r.get('mean_pfc', float('nan'))
 
         if not (np.isfinite(phi_l) and np.isfinite(phi_t) and np.isfinite(mean_pfc)):
-            augmented.append({**r, 'f_iso': float('nan'), 'xi': float('nan')})
+            augmented.append({**r, 'f_iso': float('nan'), 'xi': float('nan'),
+                               'eta_pair': float('nan')})
             continue
 
-        f_iso = abs(phi_l + 2.0 * phi_t) / 3.0
-        xi    = mean_pfc / f_iso if f_iso > 1e-12 else float('nan')
-        augmented.append({**r, 'f_iso': f_iso, 'xi': xi})
+        f_iso    = (abs(phi_l) + 2.0 * abs(phi_t)) / 3.0
+        xi       = mean_pfc / f_iso if f_iso > 1e-12 else float('nan')
+        eta_pair = (abs(phi_l / phi_t)
+                    if abs(phi_t) > 1e-12 else float('nan'))
+        augmented.append({**r, 'f_iso': f_iso, 'xi': xi, 'eta_pair': eta_pair})
     return augmented
+
+
+# ---------------------------------------------------------------------------
+# Geometric bond-family classifier
+# ---------------------------------------------------------------------------
+
+def _compute_nn_bonds(records):
+    """
+    Build a per-atom dict of nearest-neighbor bond unit vectors.
+
+    Uses the 1st coordination shell (smallest distance group per species
+    pair, found by _split_into_shells).  Duplicate (i,j)/(j,i) records are
+    collapsed so each physical bond is added exactly once per atom.
+
+    Returns
+    -------
+    dict : atom_idx -> list of np.ndarray unit vectors pointing *away* from
+           that atom toward each nearest neighbor.
+    """
+    nn_cutoffs = _nn_cutoffs(records)
+
+    # Collect bond directions for each atom
+    nn_bonds = defaultdict(list)
+    seen = set()
+    for r in records:
+        i, j = r['atom1_idx'], r['atom2_idx']
+        key  = (min(i, j), max(i, j))
+        if key in seen:
+            continue
+        seen.add(key)
+
+        sp_key = tuple(sorted([r['species1'], r['species2']]))
+        cutoff = nn_cutoffs.get(sp_key)
+        if cutoff is None or r['distance'] > cutoff:
+            continue
+
+        d    = r.get('direction', [0., 0., 0.])
+        d_arr = np.array(d, dtype=float)
+        norm  = np.linalg.norm(d_arr)
+        if norm < 1e-10:
+            continue
+        d_hat = d_arr / norm
+
+        nn_bonds[i].append(d_hat)    # i → j
+        nn_bonds[j].append(-d_hat)   # j → i
+
+    return nn_bonds
+
+
+def compute_theta_geo(records):
+    """
+    Add 'cos2theta' to each record.
+
+    cos²θ_geo is the maximum squared dot-product between the pair unit
+    vector r̂_ij and any nearest-neighbor bond direction at either atom
+    end:
+
+        cos²θ = max( max_k (r̂_ij · b̂_k)²,
+                     max_k (-r̂_ij · b̂_k)² )
+
+    Interpretation
+    --------------
+    1   — pair vector is exactly along a nearest-neighbor bond (θ = 0°)
+    2/3 — pair bisects two tetrahedral bonds (e.g. ⟨110⟩ in diamond, θ ≈ 35°)
+    1/3 — pair along ⟨100⟩ in a tetrahedral lattice (θ ≈ 55°)
+    0   — pair is perpendicular to every nearest-neighbor bond (θ = 90°)
+
+    Purely geometric: computed from pair directions and crystal structure,
+    independent of force-constant values.
+    """
+    nn_bonds = _compute_nn_bonds(records)
+
+    augmented = []
+    for r in records:
+        i, j  = r['atom1_idx'], r['atom2_idx']
+        d_arr = np.array(r.get('direction', [0., 0., 0.]), dtype=float)
+        norm  = np.linalg.norm(d_arr)
+
+        bonds_i = nn_bonds.get(i, [])
+        bonds_j = nn_bonds.get(j, [])
+
+        if norm < 1e-10 or (not bonds_i and not bonds_j):
+            augmented.append({**r, 'cos2theta': float('nan')})
+            continue
+
+        r_hat     = d_arr / norm
+        candidates = []
+        if bonds_i:
+            candidates.append(max(float(np.dot( r_hat, b) ** 2) for b in bonds_i))
+        if bonds_j:
+            candidates.append(max(float(np.dot(-r_hat, b) ** 2) for b in bonds_j))
+        augmented.append({**r, 'cos2theta': max(candidates)})
+
+    return augmented
+
+
+# ---------------------------------------------------------------------------
+# Fan-slope family detection
+# ---------------------------------------------------------------------------
+
+def compute_fan_slopes(records, value_key='mean_pfc'):
+    """
+    Add 'fan_slope' to each record.
+
+    For a Badger fan whose lines approximately converge near the NN shell,
+    the slope from that anchor uniquely identifies each family:
+
+        α = (value^{-1/3} − y*) / (r − r*)
+
+    where (r*, y*) is the mean NN-shell point (the approximate left-side
+    convergence of the wedge).  Pairs at or within 0.1 Å of the anchor
+    receive NaN — they define the convergence point, not a family divergence.
+
+    Mathematical note: for pairs that truly lie on a line value^{-1/3} = a·r + b
+    passing through (r*, y*), α equals the Badger slope a exactly.  Imperfect
+    convergence introduces a small, distance-dependent bias that is small
+    provided r* is close to the true convergence.
+    """
+    anchors  = _find_nn_anchor(records, value_key)
+    cutoffs  = _nn_cutoffs(records)
+
+    augmented = []
+    for r in records:
+        sp_key = tuple(sorted([r['species1'], r['species2']]))
+        val    = r.get(value_key, float('nan'))
+        dist   = r['distance']
+        anchor = anchors.get(sp_key)
+        cutoff = cutoffs.get(sp_key, float('inf'))
+
+        if (anchor is None
+                or not np.isfinite(val) or val <= 0
+                or dist <= cutoff
+                or dist - anchor[0] < 0.1):
+            augmented.append({**r, 'fan_slope': float('nan')})
+            continue
+
+        r_star, y_star = anchor
+        alpha = (val ** (-1.0 / 3.0) - y_star) / (dist - r_star)
+        augmented.append({**r, 'fan_slope': float(alpha)})
+    return augmented
+
+
+def _kmeans_1d(values, k, n_iter=150):
+    """
+    Simple 1-D k-means.  Returns sorted array of k cluster centres.
+    Initialises centres at evenly-spaced quantiles of *values*.
+    """
+    arr = np.sort(values)
+    idx = np.linspace(0, len(arr) - 1, k, dtype=int)
+    centres = arr[idx].astype(float)
+    for _ in range(n_iter):
+        dists     = np.abs(arr[:, None] - centres[None, :])   # (n, k)
+        labels    = np.argmin(dists, axis=1)
+        new_c     = np.array([arr[labels == j].mean()
+                               if (labels == j).any() else centres[j]
+                               for j in range(k)])
+        if np.allclose(new_c, centres, rtol=1e-6):
+            break
+        centres = new_c
+    return np.sort(centres)
+
+
+def assign_families_kmeans(records, n_families=5, fuzzy_frac=0.30):
+    """
+    Add 'family_ids' (list of ints) to each record.
+
+    1-D k-means is run on the fan_slope values per species pair.  Each pair is
+    assigned to its nearest cluster (hard assignment) plus any adjacent cluster
+    whose boundary it is within fuzzy_frac × inter-centre distance of — so one
+    pair can belong to two families simultaneously.
+
+    Families are numbered 0 … (k-1) in order of increasing fan_slope
+    (0 = shallowest decay = stiffest).  Pairs without a valid fan_slope
+    (NN shell) receive family_ids = [-1].
+
+    Parameters
+    ----------
+    n_families  : int   — requested k for k-means
+    fuzzy_frac  : float — fraction of inter-centre gap used as overlap zone
+    """
+    by_sp = defaultdict(list)
+    for i, r in enumerate(records):
+        sp_key = tuple(sorted([r['species1'], r['species2']]))
+        by_sp[sp_key].append((i, r))
+
+    fam_ids_all = [[-1] for _ in range(len(records))]
+
+    for sp_key, idx_recs in by_sp.items():
+        valid = [(i, r) for i, r in idx_recs
+                 if np.isfinite(r.get('fan_slope', float('nan')))]
+        if not valid:
+            continue
+
+        k_eff   = min(n_families, len(valid))
+        slopes  = np.array([r['fan_slope'] for _, r in valid])
+        centres = _kmeans_1d(slopes, k_eff)
+        bounds  = (centres[:-1] + centres[1:]) / 2.0
+
+        for idx, (i, _) in enumerate(valid):
+            s    = slopes[idx]
+            hard = int(np.searchsorted(bounds, s))
+            mems = {hard}
+
+            if hard > 0:
+                gap = centres[hard] - centres[hard - 1]
+                if gap > 0 and s - bounds[hard - 1] < fuzzy_frac * gap:
+                    mems.add(hard - 1)
+            if hard < k_eff - 1:
+                gap = centres[hard + 1] - centres[hard]
+                if gap > 0 and bounds[hard] - s < fuzzy_frac * gap:
+                    mems.add(hard + 1)
+
+            fam_ids_all[i] = sorted(mems)
+
+    return [{**r, 'family_ids': fam_ids_all[i]} for i, r in enumerate(records)]
 
 
 # ---------------------------------------------------------------------------
@@ -227,6 +526,69 @@ def fit_badger_line(records, value_key='mean_pfc', min_pairs=4, shell_split=True
     return fit_results
 
 
+def fit_badger_families(records, value_key='mean_pfc'):
+    """
+    Fit one Badger line per (species pair, family_id), constrained to pass
+    through the 1NN anchor (r*, y*).
+
+    Because all gleichergestalt families share the same nearest-neighbour bond
+    (same distance, same force constant), their Badger lines must converge at
+    the 1NN point.  Enforcing this reduces each family fit to a single free
+    parameter: the slope α (the median fan_slope of the family's members).
+    The intercept follows as  b = y* − α·r*.
+
+    This makes every family line well-determined regardless of how few
+    members it has — even two points uniquely fix the median slope.
+
+    Returns
+    -------
+    dict : {(sp_key, family_id): fit_dict}
+        fit_dict keys: slope, intercept, r_min, r_max, n_pairs, r_anchor
+    """
+    anchors = _find_nn_anchor(records, value_key)
+
+    seen, deduped = set(), []
+    for r in records:
+        key = (min(r['atom1_idx'], r['atom2_idx']),
+               max(r['atom1_idx'], r['atom2_idx']))
+        if key not in seen:
+            seen.add(key)
+            deduped.append(r)
+
+    by_key = defaultdict(list)
+    for r in deduped:
+        sp_key = tuple(sorted([r['species1'], r['species2']]))
+        for fid in r.get('family_ids', [-1]):
+            if fid < 0:
+                continue
+            by_key[(sp_key, fid)].append(r)
+
+    fits = {}
+    for (sp_key, fid), recs in by_key.items():
+        anchor = anchors.get(sp_key)
+        if anchor is None:
+            continue
+        r_star, y_star = anchor
+
+        valid_slopes = [r['fan_slope'] for r in recs
+                        if np.isfinite(r.get('fan_slope', float('nan')))]
+        if not valid_slopes:
+            continue
+
+        slope     = float(np.median(valid_slopes))
+        intercept = y_star - slope * r_star
+        dists     = [r['distance'] for r in recs]
+        fits[(sp_key, fid)] = {
+            'slope':     slope,
+            'intercept': intercept,
+            'r_min':     float(min(dists)),
+            'r_max':     float(max(dists)),
+            'n_pairs':   len(recs),
+            'r_anchor':  r_star,
+        }
+    return fits
+
+
 # ---------------------------------------------------------------------------
 # Result container and residual attachment
 # ---------------------------------------------------------------------------
@@ -237,21 +599,26 @@ class BadgerAnalysisResult:
 
     Attributes
     ----------
-    records    : list of augmented dicts — each record from bulk_results with:
-                   'f_iso'         float  — isotropic mean stiffness |Tr(Φ)|/3
-                   'xi'            float  — anisotropy factor mean_pfc / f_iso
-                   'conv_residual' float  — residual of mean_pfc^{-1/3} from fit
-                   'iso_residual'  float  — residual of f_iso^{-1/3} from fit
-                 NaN where a fit could not be assigned.
-    conv_fits  : fit_badger_line() result for conventional (mean_pfc) Badger
-    iso_fits   : fit_badger_line() result for isotropic (f_iso) Badger
+    records      : list of augmented dicts — each record from bulk_results with:
+                     'f_iso'         float  — isotropic mean stiffness
+                     'xi'            float  — anisotropy factor mean_pfc / f_iso
+                     'cos2theta'     float  — geometric alignment with NN bond
+                     'fan_slope'     float  — α = (Φ^{-1/3}−y*)/(r−r*); family ID
+                     'family_id'     int    — cluster index (0 = stiffest family)
+                     'conv_residual' float  — residual of mean_pfc^{-1/3} from fit
+                     'iso_residual'  float  — residual of f_iso^{-1/3} from fit
+                   NaN / −1 where a fit or assignment could not be made.
+    conv_fits    : fit_badger_line() result for conventional (mean_pfc) Badger
+    iso_fits     : fit_badger_line() result for isotropic (f_iso) Badger
+    family_fits  : fit_badger_families() result — per-(sp_key, family_id) fits
     """
-    __slots__ = ('records', 'conv_fits', 'iso_fits')
+    __slots__ = ('records', 'conv_fits', 'iso_fits', 'family_fits')
 
-    def __init__(self, records, conv_fits, iso_fits):
-        self.records   = records
-        self.conv_fits = conv_fits
-        self.iso_fits  = iso_fits
+    def __init__(self, records, conv_fits, iso_fits, family_fits):
+        self.records      = records
+        self.conv_fits    = conv_fits
+        self.iso_fits     = iso_fits
+        self.family_fits  = family_fits
 
 
 def _attach_residuals(records, fit_results, res_key):
@@ -277,25 +644,30 @@ def _attach_residuals(records, fit_results, res_key):
 # Main entry point
 # ---------------------------------------------------------------------------
 
-def analyze_badger(bulk_results):
+def analyze_badger(bulk_results, n_families=5):
     """
     Run Badger analysis on bulk pFC results.
 
     Computes F_iso and ξ per pair, fits both the conventional (Φ_p) and
-    isotropic (F_iso) Badger lines per species pair, and attaches per-record
-    residuals.
+    isotropic (F_iso) Badger lines per species pair, detects Badger families
+    via fan-slope k-means clustering, and attaches per-record residuals.
 
     Parameters
     ----------
     bulk_results : list of dicts from compute_bulk_pfcs().
+    n_families   : int — number of Badger families to detect (default 5).
 
     Returns
     -------
     BadgerAnalysisResult
     """
-    augmented = compute_badger_quantities(bulk_results)
-    conv_fits = fit_badger_line(augmented, value_key='mean_pfc')
-    iso_fits  = fit_badger_line(augmented, value_key='f_iso')
+    augmented    = compute_badger_quantities(bulk_results)
+    augmented    = compute_theta_geo(augmented)
+    augmented    = compute_fan_slopes(augmented)
+    augmented    = assign_families_kmeans(augmented, n_families=n_families)
+    conv_fits    = fit_badger_line(augmented, value_key='mean_pfc')
+    iso_fits     = fit_badger_line(augmented, value_key='f_iso', shell_split=False)
+    family_fits  = fit_badger_families(augmented)
     _attach_residuals(augmented, conv_fits, 'conv_residual')
     _attach_residuals(augmented, iso_fits,  'iso_residual')
-    return BadgerAnalysisResult(augmented, conv_fits, iso_fits)
+    return BadgerAnalysisResult(augmented, conv_fits, iso_fits, family_fits)

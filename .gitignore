@@ -17,6 +17,7 @@ venv/
 
 # betapy calculation outputs — belong to specific runs, not the codebase
 unique_pFCs.csv
+bulk_pFCs.csv
 refsite_pFCs.csv
 refsite_onsite_pFCs.csv
 stiffness_shift.csv
