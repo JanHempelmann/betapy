@@ -56,3 +56,4 @@ internaltesting_examples/
 !examples/**/POSCAR
 !examples/**/FORCE_CONSTANTS
 !examples/**/REFPOS
+examples/GeTe/GeTe_ph/debug_gete.py
