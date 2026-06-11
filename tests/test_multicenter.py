@@ -168,15 +168,14 @@ class TestDetectAnomalousPairs:
         detect_anomalous_pairs(pairs, min_pairs=4, value_key='mean_pfc')
 
     def test_robust_to_multiple_outliers(self):
-        # Theil-Sen slope is unaffected by anomalous pairs even when they
-        # represent 25 % of the data.  With the log-ratio std, the scipy
-        # intercept (median(y) - slope*median(x)) is biased by outliers that
-        # shift median(y), inflating std; a 1000× factor ensures log_ratio
-        # clears the elevated n_sigma*std threshold.
+        # Theil-Sen baseline is unaffected by anomalous pairs — both outliers
+        # should be flagged even when they represent 25 % of the data.
+        # method='joint' intercept (median of y_i - slope*x_i) is used so
+        # anomalous pairs cannot bias the intercept via median(y).
         dists = [1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0]
         pairs = self._badger_pairs(dists)
-        pairs[2]['mean_pfc'] *= 1000.0   # d=3.0 — anomalous
-        pairs[6]['mean_pfc'] *= 1000.0   # d=7.0 — anomalous
+        pairs[2]['mean_pfc'] *= 100.0   # d=3.0 — anomalous
+        pairs[6]['mean_pfc'] *= 100.0   # d=7.0 — anomalous
         flagged = detect_anomalous_pairs(pairs, min_pairs=4, n_sigma=2.0,
                                          value_key='mean_pfc')
         flagged_dists = {f['distance'] for f in flagged}

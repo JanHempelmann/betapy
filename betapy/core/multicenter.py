@@ -287,7 +287,8 @@ def detect_anomalous_pairs(bulk_results, n_sigma=2.5, min_pairs=4,
         _, _ux = np.unique(_rd, return_index=True)
 
         if len(_ux) >= min_pairs:
-            slope, intercept, *_ = theilslopes(inv_cbrt[_ux], v_dists[_ux])
+            slope, intercept, *_ = theilslopes(inv_cbrt[_ux], v_dists[_ux],
+                                               method='joint')
             pred_uniq = slope * v_dists[_ux] + intercept
             # Residuals in log(phi_iso) space: log(phi_actual / phi_expected).
             # Positive = bond is stronger than the Badger baseline.
@@ -681,7 +682,7 @@ def suggest_cobi_directives(
     bulk_results         : list of dicts from compute_bulk_pfcs()
     supercell            : Supercell
     poscar_lobster_path  : path-like, POSCAR used for the LOBSTER calculation
-    n_sigma              : float, anomaly detection threshold (sigma). Default 2.0.
+    n_sigma              : float, anomaly detection threshold (sigma). Default 2.5.
     min_pairs            : int, min pairs for regression detection. Default 4.
     min_angle_deg        : float, minimum bond angle for chain extension. Default 150.
     max_order            : int, maximum atoms per chain. Default 5.

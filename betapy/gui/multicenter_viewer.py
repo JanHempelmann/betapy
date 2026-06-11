@@ -231,7 +231,7 @@ class _MulticenterWorker(QThread):
                     _, _ux = np.unique(_rd, return_index=True)
                     if len(_ux) >= 4:
                         slope, intercept, *_ = theilslopes(
-                            inv_cbrt[_ux], v_dists[_ux])
+                            inv_cbrt[_ux], v_dists[_ux], method='joint')
                         pred_uniq = slope * v_dists[_ux] + intercept
                         log_ratio_uniq = 3.0 * np.log(
                             np.maximum(pred_uniq, 1e-12) / inv_cbrt[_ux])

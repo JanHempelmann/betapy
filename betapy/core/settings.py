@@ -403,8 +403,8 @@ def _build_parser() -> argparse.ArgumentParser:
              '--lobster-dir).',
     )
     parser.add_argument(
-        '--mc-sigma', type=float, default=2.0, metavar='N',
-        help='Detection threshold in standard deviations (default: 2.0). '
+        '--mc-sigma', type=float, default=2.5, metavar='N',
+        help='Detection threshold in standard deviations (default: 2.5). '
              'Lower values flag more shells; raise to reduce false positives.',
     )
     parser.add_argument(
