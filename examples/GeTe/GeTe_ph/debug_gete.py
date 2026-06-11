@@ -61,8 +61,10 @@ def compute_viz_fits(results, sc):
             _, _ux = np.unique(_rd, return_index=True)
             if len(_ux) >= 4:
                 slope, intercept, *_ = theilslopes(ic[_ux], v_dists[_ux])
-                fit_res = ic[_ux] - (slope * v_dists[_ux] + intercept)
-                std_raw = float(median_abs_deviation(fit_res) * 1.4826)
+                pred_uniq = slope * v_dists[_ux] + intercept
+                log_ratio_uniq = 3.0 * np.log(
+                    np.maximum(pred_uniq, 1e-12) / ic[_ux])
+                std_raw = float(median_abs_deviation(log_ratio_uniq) * 1.4826)
                 std     = max(std_raw, 1e-6)
 
         fits[sp_key] = {'slope': slope, 'intercept': intercept,
@@ -88,9 +90,11 @@ def check_pair(fp, fits, n_sigma):
         return np.nan, None
     pred     = sl * dist + ic
     phi_cbrt = phi ** (-1.0 / 3.0)
-    residual = phi_cbrt - pred          # negative = FC too large (flaggable)
-    viz_nsig = -residual / std
-    in_band  = phi_cbrt > (pred - n_sigma * std)
+    if pred <= 0 or phi_cbrt <= 0:
+        return np.nan, None
+    log_ratio = 3.0 * np.log(pred / phi_cbrt)   # positive = stronger than predicted
+    viz_nsig  = log_ratio / std
+    in_band   = log_ratio < n_sigma * std
     return viz_nsig, in_band
 
 

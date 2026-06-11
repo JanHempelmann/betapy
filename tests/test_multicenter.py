@@ -111,7 +111,8 @@ class TestDetectAnomalousPairs:
         dists = [1.0, 2.0, 3.0, 4.0, 5.0, 6.0]
         # Inject anomaly at index 3 (d=4.0): pFC × 100 → clear regression outlier
         pairs = self._badger_pairs(dists, anomaly_idx=3, anomaly_factor=100.0)
-        flagged = detect_anomalous_pairs(pairs, min_pairs=4, n_sigma=2.0)
+        flagged = detect_anomalous_pairs(pairs, min_pairs=4, n_sigma=2.0,
+                                         value_key='mean_pfc')
         assert len(flagged) == 1
         assert flagged[0]['distance'] == pytest.approx(4.0)
         assert flagged[0]['method'] == 'regression'
@@ -120,7 +121,8 @@ class TestDetectAnomalousPairs:
     def test_no_flag_on_clean_decay(self):
         dists = [1.0, 2.0, 3.0, 4.0, 5.0, 6.0]
         pairs = self._badger_pairs(dists)
-        flagged = detect_anomalous_pairs(pairs, min_pairs=4, n_sigma=2.0)
+        flagged = detect_anomalous_pairs(pairs, min_pairs=4, n_sigma=2.0,
+                                         value_key='mean_pfc')
         assert flagged == []
 
     def test_monotone_fallback_flags_increase(self):
@@ -129,7 +131,7 @@ class TestDetectAnomalousPairs:
             make_pair('I', 'I', 2.8, 10.0, atom1_idx=1, atom2_idx=2),
             make_pair('I', 'I', 5.6, 20.0, atom1_idx=1, atom2_idx=3),
         ]
-        flagged = detect_anomalous_pairs(pairs, min_pairs=4)
+        flagged = detect_anomalous_pairs(pairs, min_pairs=4, value_key='mean_pfc')
         assert len(flagged) == 1
         assert flagged[0]['method'] == 'monotone'
         assert math.isnan(flagged[0]['n_sigma'])
@@ -139,7 +141,7 @@ class TestDetectAnomalousPairs:
             make_pair('I', 'I', 2.8, 20.0, atom1_idx=1, atom2_idx=2),
             make_pair('I', 'I', 5.6,  5.0, atom1_idx=1, atom2_idx=3),
         ]
-        assert detect_anomalous_pairs(pairs, min_pairs=4) == []
+        assert detect_anomalous_pairs(pairs, min_pairs=4, value_key='mean_pfc') == []
 
     def test_different_species_pairs_independent(self):
         # Ge-Te clean, Te-Te anomalous — only Te-Te should be flagged
@@ -148,7 +150,7 @@ class TestDetectAnomalousPairs:
                           atom1_idx=i+1, atom2_idx=i+10)
                 for i, d in enumerate(dists)]
         tete = self._badger_pairs(dists, anomaly_idx=4, anomaly_factor=200.0)
-        flagged = detect_anomalous_pairs(gete + tete, n_sigma=2.0)
+        flagged = detect_anomalous_pairs(gete + tete, n_sigma=2.0, value_key='mean_pfc')
         species_pairs = {(f['species1'], f['species2']) for f in flagged}
         # (Te, Te) may appear as (Te, Te) since both species are Te
         assert all(sp in {('Te', 'Te')} for sp in species_pairs)
@@ -163,16 +165,20 @@ class TestDetectAnomalousPairs:
             make_pair('X', 'Y', 5.0, 0.5, atom1_idx=1, atom2_idx=6),
         ]
         # Should not crash; 4 valid pairs available for regression
-        detect_anomalous_pairs(pairs, min_pairs=4)
+        detect_anomalous_pairs(pairs, min_pairs=4, value_key='mean_pfc')
 
     def test_robust_to_multiple_outliers(self):
-        # Theil-Sen baseline is unaffected by anomalous pairs — both outliers
-        # should be flagged even when they represent 25 % of the data.
+        # Theil-Sen slope is unaffected by anomalous pairs even when they
+        # represent 25 % of the data.  With the log-ratio std, the scipy
+        # intercept (median(y) - slope*median(x)) is biased by outliers that
+        # shift median(y), inflating std; a 1000× factor ensures log_ratio
+        # clears the elevated n_sigma*std threshold.
         dists = [1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0]
         pairs = self._badger_pairs(dists)
-        pairs[2]['mean_pfc'] *= 100.0   # d=3.0 — anomalous
-        pairs[6]['mean_pfc'] *= 100.0   # d=7.0 — anomalous
-        flagged = detect_anomalous_pairs(pairs, min_pairs=4, n_sigma=2.0)
+        pairs[2]['mean_pfc'] *= 1000.0   # d=3.0 — anomalous
+        pairs[6]['mean_pfc'] *= 1000.0   # d=7.0 — anomalous
+        flagged = detect_anomalous_pairs(pairs, min_pairs=4, n_sigma=2.0,
+                                         value_key='mean_pfc')
         flagged_dists = {f['distance'] for f in flagged}
         assert 3.0 in flagged_dists
         assert 7.0 in flagged_dists

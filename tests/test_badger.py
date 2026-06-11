@@ -46,12 +46,12 @@ class TestComputeBadgerQuantities:
 
     def test_f_iso_formula(self):
         # phi_l = -k_L, phi_t = -k_T  (Phonopy restoring convention)
-        # F_iso = |phi_l + 2*phi_t| / 3 = (k_L + 2*k_T) / 3
+        # F_iso = (|phi_l| + 2*|phi_t|) / 3 = (k_L + 2*k_T) / 3
         k_L, k_T = 10.0, 2.0
         r = make_pair('Na', 'Cl', 2.8, k_L, phi_l=-k_L, phi_t=-k_T)
         aug = compute_badger_quantities([r])
         expected = (k_L + 2.0 * k_T) / 3.0
-        assert abs(aug[0]['f_iso'] - expected) < 1e-10
+        assert abs(aug[0]['phi_iso'] - expected) < 1e-10
 
     def test_xi_formula(self):
         k_L, k_T = 9.0, 0.0   # purely longitudinal → xi = 3
@@ -66,21 +66,30 @@ class TestComputeBadgerQuantities:
         # phi_t = (3*(-k) - (-k))/2 = -k
         r = make_pair('Ge', 'Te', 3.0, k, phi_l=-k, phi_t=-k)
         aug = compute_badger_quantities([r])
-        assert abs(aug[0]['f_iso'] - k) < 1e-10
+        assert abs(aug[0]['phi_iso'] - k) < 1e-10
         assert abs(aug[0]['xi'] - 1.0) < 1e-10
 
     def test_nan_propagation(self):
         r = make_pair('C', 'C', 1.5, 5.0, phi_l=float('nan'), phi_t=-1.0)
         aug = compute_badger_quantities([r])
-        assert math.isnan(aug[0]['f_iso'])
+        assert math.isnan(aug[0]['phi_iso'])
         assert math.isnan(aug[0]['xi'])
 
     def test_zero_f_iso_gives_nan_xi(self):
-        # phi_l + 2*phi_t = 0 → F_iso = 0 → xi = nan
+        # F_iso = (|phi_l| + 2*|phi_t|) / 3 = 0 only when both are zero → xi = nan
+        r = make_pair('X', 'Y', 2.0, 1.0, phi_l=0.0, phi_t=0.0)
+        aug = compute_badger_quantities([r])
+        assert aug[0]['phi_iso'] < 1e-12
+        assert math.isnan(aug[0]['xi'])
+
+    def test_mixed_sign_phi_no_cancellation(self):
+        # Old formula |phi_l + 2*phi_t|/3 cancels to 0 for phi_l=2, phi_t=-1;
+        # new formula uses absolute values to avoid sign cancellation
         r = make_pair('X', 'Y', 2.0, 1.0, phi_l=2.0, phi_t=-1.0)
         aug = compute_badger_quantities([r])
-        assert aug[0]['f_iso'] < 1e-12
-        assert math.isnan(aug[0]['xi'])
+        expected = (abs(2.0) + 2.0 * abs(-1.0)) / 3.0  # = 4/3
+        assert abs(aug[0]['phi_iso'] - expected) < 1e-10
+        assert not math.isnan(aug[0]['xi'])
 
     def test_original_records_not_mutated(self):
         r = make_pair('Na', 'Cl', 2.8, 5.0, phi_l=-5.0, phi_t=-1.0)
@@ -197,7 +206,7 @@ class TestAnalyzeBadger:
         records = _ionic_records(n=10)
         result = analyze_badger(records)
         for r in result.records:
-            assert 'f_iso' in r
+            assert 'phi_iso' in r
             assert 'xi' in r
 
     def test_residuals_attached(self):
@@ -224,11 +233,11 @@ class TestAnalyzeBadger:
         records = _ionic_records(n=20)
         result = analyze_badger(records)
         for r in result.records:
-            if not (math.isfinite(r['f_iso']) and r['f_iso'] > 0 and
+            if not (math.isfinite(r['phi_iso']) and r['phi_iso'] > 0 and
                     r['mean_pfc'] > 0 and math.isfinite(r['xi'])):
                 continue
             lhs = r['mean_pfc'] ** (-1.0 / 3.0)
-            rhs = r['f_iso']    ** (-1.0 / 3.0) * r['xi'] ** (-1.0 / 3.0)
+            rhs = r['phi_iso']  ** (-1.0 / 3.0) * r['xi'] ** (-1.0 / 3.0)
             assert abs(lhs - rhs) < 1e-10, (
                 f"decomposition failed: lhs={lhs}, rhs={rhs}")
 

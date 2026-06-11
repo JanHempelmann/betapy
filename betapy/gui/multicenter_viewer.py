@@ -232,10 +232,11 @@ class _MulticenterWorker(QThread):
                     if len(_ux) >= 4:
                         slope, intercept, *_ = theilslopes(
                             inv_cbrt[_ux], v_dists[_ux])
-                        fit_res = inv_cbrt[_ux] - (
-                            slope * v_dists[_ux] + intercept)
+                        pred_uniq = slope * v_dists[_ux] + intercept
+                        log_ratio_uniq = 3.0 * np.log(
+                            np.maximum(pred_uniq, 1e-12) / inv_cbrt[_ux])
                         std_raw = float(
-                            median_abs_deviation(fit_res) * 1.4826)
+                            median_abs_deviation(log_ratio_uniq) * 1.4826)
                         std   = max(std_raw, 1e-6)
                         x_min = float(v_dists.min())
                         x_max = float(v_dists.max())
@@ -776,14 +777,17 @@ class MulticenterWidget(QWidget):
 
             x_line   = np.linspace(x_min, x_max, 300)
             lin_base = slope * x_line + intercept   # Φ^{-1/3} linear fit
-            lin_flag = lin_base - n_sigma * std     # flagging threshold
-            ok = (lin_base > 0) & (lin_flag > 0)
+            # σ is in log(phi_iso) space, so bands are multiplicative in
+            # Φ^{-1/3}: a ±σ_log shift in log(phi_iso) maps to
+            # Φ^{-1/3}_band = Φ^{-1/3}_fit × exp(∓σ_log / 3).
+            lin_strong = lin_base * np.exp(-n_sigma * std / 3.0)  # detection side
+            ok = (lin_base > 0) & (lin_strong > 0)
             if not ok.any():
                 continue
             xc     = x_line[ok]
             lin_c  = lin_base[ok]
-            lin_lo = lin_c + n_sigma * std   # weaker (higher Φ) side
-            lin_hi = lin_flag[ok]            # stronger (flagging threshold) side
+            lin_lo = lin_c * np.exp(+n_sigma * std / 3.0)  # weaker (higher Φ^{-1/3})
+            lin_hi = lin_strong[ok]                          # stronger (detection threshold)
 
             # Use the pre-floor MAD: if std_raw≈0 the band would be ~4µ wide
             # (invisible at plot scale) but has_band = std>1e-8 would still pass

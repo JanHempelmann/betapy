@@ -180,7 +180,7 @@ def _split_into_shells(records, rel_gap=0.50):
 # ---------------------------------------------------------------------------
 
 def detect_anomalous_pairs(bulk_results, n_sigma=2.5, min_pairs=4,
-                           value_key='phi_iso', min_rel_residual=0.08,
+                           value_key='mean_pfc', min_rel_residual=0.08,
                            max_detect_dist=None):
     """
     Flag individual pFC pairs with anomalously large values relative to distance.
@@ -288,21 +288,35 @@ def detect_anomalous_pairs(bulk_results, n_sigma=2.5, min_pairs=4,
 
         if len(_ux) >= min_pairs:
             slope, intercept, *_ = theilslopes(inv_cbrt[_ux], v_dists[_ux])
-            fit_res   = inv_cbrt[_ux] - (slope * v_dists[_ux] + intercept)
-            std_raw   = float(median_abs_deviation(fit_res) * 1.4826)
-            std       = max(std_raw, 1e-6)
-            predicted = slope * v_dists + intercept
-            residuals = inv_cbrt - predicted    # negative => FC too large
-            for rec, res, pred in zip(v_records, residuals, predicted):
-                if res < -n_sigma * std:
-                    if pred > 0 and (-res / pred) < min_rel_residual:
-                        continue
+            pred_uniq = slope * v_dists[_ux] + intercept
+            # Residuals in log(phi_iso) space: log(phi_actual / phi_expected).
+            # Positive = bond is stronger than the Badger baseline.
+            # Using log space makes scatter approximately distance-invariant
+            # (multiplicative noise), so one σ applies across all distances —
+            # unlike additive phi^{-1/3} residuals which under-weight short-range
+            # anomalies where phi^{-1/3} is small.
+            log_ratio_uniq = 3.0 * np.log(
+                np.maximum(pred_uniq, 1e-12) / inv_cbrt[_ux])
+            std_raw = float(median_abs_deviation(log_ratio_uniq) * 1.4826)
+            std     = max(std_raw, 1e-6)
+            # Minimum log-ratio for physical significance: equivalent to the
+            # old min_rel_residual floor in phi^{-1/3} space, prevents σ→0
+            # floor from triggering on numerically tiny deviations.
+            min_log_r   = 3.0 * np.log(1.0 / max(1.0 - min_rel_residual, 1e-9))
+            pred_all      = slope * v_dists + intercept
+            safe_pred     = np.where(pred_all > 0, pred_all, 1.0)
+            log_ratio_all = np.where(
+                pred_all > 0,
+                3.0 * np.log(safe_pred / inv_cbrt),
+                -np.inf)
+            for rec, log_r, pred in zip(v_records, log_ratio_all, pred_all):
+                if log_r > n_sigma * std and log_r >= min_log_r:
                     if max_detect_dist is not None and rec['distance'] > max_detect_dist:
                         continue
                     flagged.append({**rec,
                                     'method':   'regression',
-                                    'residual': float(res),
-                                    'n_sigma':  float(-res / std)})
+                                    'residual': float(log_r),
+                                    'n_sigma':  float(log_r / std)})
         else:
             order  = np.argsort(v_dists)
             s_fcs  = v_fcs[order]
