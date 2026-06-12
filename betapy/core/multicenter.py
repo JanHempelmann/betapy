@@ -181,7 +181,7 @@ def _split_into_shells(records, rel_gap=0.50):
 
 def detect_anomalous_pairs(bulk_results, n_sigma=2.5, min_pairs=4,
                            value_key='mean_pfc', min_rel_residual=0.08,
-                           max_detect_dist=None):
+                           max_detect_dist=None, max_nn_ratio=2.5):
     """
     Flag individual pFC pairs with anomalously large values relative to distance.
 
@@ -229,6 +229,16 @@ def detect_anomalous_pairs(bulk_results, n_sigma=2.5, min_pairs=4,
                        pairs whose tiny FC values produce spurious statistical
                        outliers near the aliasing boundary are excluded.
                        Default None (no extra cutoff).
+    max_nn_ratio    : float or None, maximum allowed ratio of pair distance to
+                       the species-pair nearest-neighbour distance.  Pairs at
+                       more than this multiple of the NN distance are not flagged
+                       even if their log-ratio exceeds the threshold — this
+                       eliminates zig-zag chain artefacts (e.g. diamond C-C at
+                       3.3–5.7× NN) while retaining genuine multicenter bonds
+                       (GeTe ~1.0×, Sb₂Te₃ ~2.0×, Lillianite ~1.5–2.0×).
+                       Physically motivated by the van-der-Waals / covalent
+                       radius ratio never exceeding ~2.5 for any element.
+                       Default 2.5.  Pass None to disable.
 
     Returns
     -------
@@ -310,9 +320,12 @@ def detect_anomalous_pairs(bulk_results, n_sigma=2.5, min_pairs=4,
                 pred_all > 0,
                 3.0 * np.log(safe_pred / inv_cbrt),
                 -np.inf)
+            min_d_sp = float(v_dists.min())
             for rec, log_r, pred in zip(v_records, log_ratio_all, pred_all):
                 if log_r > n_sigma * std and log_r >= min_log_r:
                     if max_detect_dist is not None and rec['distance'] > max_detect_dist:
+                        continue
+                    if max_nn_ratio is not None and rec['distance'] > max_nn_ratio * min_d_sp:
                         continue
                     flagged.append({**rec,
                                     'method':   'regression',
@@ -673,6 +686,7 @@ def suggest_cobi_directives(
         n_sigma=2.5, min_pairs=4,
         min_angle_deg=150.0, max_order=5, bond_cutoff=4.0,
         detect_cutoff_frac=0.75,
+        max_nn_ratio=2.5,
         fit_quantile=None):
     """
     Full pipeline: detect anomalous pFCs → trace chains → format directives.
@@ -693,6 +707,9 @@ def suggest_cobi_directives(
                            baseline but cannot be flagged.  Default 0.75.
                            Increase toward 1.0 only when multicenter bonds are
                            expected at unusually long range (> 8 Å).
+    max_nn_ratio         : float or None, passed to detect_anomalous_pairs.
+                           Pairs at more than this multiple of the species-pair
+                           NN distance are not flagged.  Default 2.5.
     fit_quantile         : ignored, kept for backward compatibility.
 
     Returns
@@ -716,7 +733,8 @@ def suggest_cobi_directives(
 
     flagged = detect_anomalous_pairs(
         reliable_pairs, n_sigma=n_sigma, min_pairs=min_pairs,
-        value_key='phi_iso', max_detect_dist=max_detect_dist)
+        value_key='phi_iso', max_detect_dist=max_detect_dist,
+        max_nn_ratio=max_nn_ratio)
 
     chains = find_chains(
         flagged, supercell, bulk_results,

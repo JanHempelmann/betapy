@@ -408,6 +408,14 @@ def _build_parser() -> argparse.ArgumentParser:
              'Lower values flag more shells; raise to reduce false positives.',
     )
     parser.add_argument(
+        '--mc-ratio', type=float, default=2.5, metavar='R',
+        help='Maximum allowed ratio of pair distance to the species-pair nearest-'
+             'neighbour distance (default: 2.5).  Pairs beyond this multiple of '
+             'the NN distance are not flagged even if statistically anomalous — '
+             'filters zig-zag chain artefacts (e.g. diamond) while passing '
+             'genuine multicenter bonds.  Pass 0 to disable.',
+    )
+    parser.add_argument(
         '--mc-max-order', type=int, default=5, metavar='N',
         help='Maximum number of atoms in a multicenter chain (default: 5).',
     )

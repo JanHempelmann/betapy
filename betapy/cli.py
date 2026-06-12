@@ -65,6 +65,7 @@ def run_multicenter(supercell, bulk_results, lobster_dir, args):
         n_sigma=args.mc_sigma,
         max_order=args.mc_max_order,
         min_angle_deg=args.mc_angle,
+        max_nn_ratio=args.mc_ratio if args.mc_ratio > 0 else None,
     )
 
     flagged    = result['flagged_pairs']

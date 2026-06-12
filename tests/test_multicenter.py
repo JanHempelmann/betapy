@@ -109,10 +109,11 @@ class TestDetectAnomalousPairs:
 
     def test_flags_regression_outlier(self):
         dists = [1.0, 2.0, 3.0, 4.0, 5.0, 6.0]
-        # Inject anomaly at index 3 (d=4.0): pFC × 100 → clear regression outlier
+        # Inject anomaly at index 3 (d=4.0): pFC × 100 → clear regression outlier.
+        # max_nn_ratio=None: this test exercises regression detection, not the NN filter.
         pairs = self._badger_pairs(dists, anomaly_idx=3, anomaly_factor=100.0)
         flagged = detect_anomalous_pairs(pairs, min_pairs=4, n_sigma=2.0,
-                                         value_key='mean_pfc')
+                                         value_key='mean_pfc', max_nn_ratio=None)
         assert len(flagged) == 1
         assert flagged[0]['distance'] == pytest.approx(4.0)
         assert flagged[0]['method'] == 'regression'
@@ -144,13 +145,15 @@ class TestDetectAnomalousPairs:
         assert detect_anomalous_pairs(pairs, min_pairs=4, value_key='mean_pfc') == []
 
     def test_different_species_pairs_independent(self):
-        # Ge-Te clean, Te-Te anomalous — only Te-Te should be flagged
+        # Ge-Te clean, Te-Te anomalous — only Te-Te should be flagged.
+        # max_nn_ratio=None: tests species independence, not the NN ratio filter.
         dists = [1.0, 2.0, 3.0, 4.0, 5.0, 6.0]
         gete = [make_pair('Ge', 'Te', d, (0.5*d + 0.1)**(-3),
                           atom1_idx=i+1, atom2_idx=i+10)
                 for i, d in enumerate(dists)]
         tete = self._badger_pairs(dists, anomaly_idx=4, anomaly_factor=200.0)
-        flagged = detect_anomalous_pairs(gete + tete, n_sigma=2.0, value_key='mean_pfc')
+        flagged = detect_anomalous_pairs(gete + tete, n_sigma=2.0, value_key='mean_pfc',
+                                         max_nn_ratio=None)
         species_pairs = {(f['species1'], f['species2']) for f in flagged}
         # (Te, Te) may appear as (Te, Te) since both species are Te
         assert all(sp in {('Te', 'Te')} for sp in species_pairs)
@@ -172,15 +175,32 @@ class TestDetectAnomalousPairs:
         # should be flagged even when they represent 25 % of the data.
         # method='joint' intercept (median of y_i - slope*x_i) is used so
         # anomalous pairs cannot bias the intercept via median(y).
+        # max_nn_ratio=None: tests regression robustness, not the NN ratio filter.
         dists = [1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0]
         pairs = self._badger_pairs(dists)
         pairs[2]['mean_pfc'] *= 100.0   # d=3.0 — anomalous
         pairs[6]['mean_pfc'] *= 100.0   # d=7.0 — anomalous
         flagged = detect_anomalous_pairs(pairs, min_pairs=4, n_sigma=2.0,
-                                         value_key='mean_pfc')
+                                         value_key='mean_pfc', max_nn_ratio=None)
         flagged_dists = {f['distance'] for f in flagged}
         assert 3.0 in flagged_dists
         assert 7.0 in flagged_dists
+
+    def test_max_nn_ratio_filters_far_pairs(self):
+        # Anomaly at d=3.0 is 3.0× the NN (d=1.0).
+        # With max_nn_ratio=2.5, it must be suppressed; with None it must be flagged.
+        dists = [1.0, 2.0, 3.0, 4.0, 5.0, 6.0]
+        pairs = self._badger_pairs(dists, anomaly_idx=2, anomaly_factor=100.0)
+        flagged_no_filter = detect_anomalous_pairs(pairs, min_pairs=4, n_sigma=2.0,
+                                                    value_key='mean_pfc',
+                                                    max_nn_ratio=None)
+        flagged_filtered  = detect_anomalous_pairs(pairs, min_pairs=4, n_sigma=2.0,
+                                                    value_key='mean_pfc',
+                                                    max_nn_ratio=2.5)
+        assert any(f['distance'] == pytest.approx(3.0) for f in flagged_no_filter), \
+            "anomaly at 3×NN must be flagged when filter is disabled"
+        assert not any(f['distance'] == pytest.approx(3.0) for f in flagged_filtered), \
+            "anomaly at 3×NN must be suppressed by max_nn_ratio=2.5"
 
 
 # ---------------------------------------------------------------------------
