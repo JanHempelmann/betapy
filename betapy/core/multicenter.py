@@ -277,14 +277,14 @@ def detect_anomalous_pairs(bulk_results, n_sigma=2.5, min_pairs=4,
 
         inv_cbrt = v_fcs ** (-1.0 / 3.0)
 
-        # One representative per unique distance shell (0.001 Å bins).
-        # High-multiplicity symmetry-equivalent clusters (e.g. all Ge-Ge pairs
-        # at the 3-center distance) would otherwise bias the Theil-Sen slope
-        # toward threading through the anomalous cluster, collapsing the MAD
-        # to near zero and preventing detection.  All pairs are still evaluated
-        # against the resulting fit for flagging.
-        _rd = np.round(v_dists, 3)
-        _, _ux = np.unique(_rd, return_index=True)
+        # One representative per unique (distance, value) pair.
+        # Symmetry-equivalent bonds share both distance and force constant, so
+        # collapsing on the pair correctly deduplicates them without merging
+        # geometrically distinct bonds that happen to sit at the same distance
+        # (e.g. NaCl has two bond types at 1.5a with different force constants).
+        # All pairs are still evaluated against the resulting fit for flagging.
+        _keys = np.stack([np.round(v_dists, 3), np.round(inv_cbrt, 4)], axis=1)
+        _, _ux = np.unique(_keys, axis=0, return_index=True)
 
         if len(_ux) >= min_pairs:
             slope, intercept, *_ = theilslopes(inv_cbrt[_ux], v_dists[_ux],

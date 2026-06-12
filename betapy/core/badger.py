@@ -441,7 +441,15 @@ def _fit_one_shell(records, value_key, min_pairs):
 
     inv_cbrt = v_vals ** (-1.0 / 3.0)
 
-    slope, intercept, *_ = theilslopes(inv_cbrt, v_dists)
+    # One representative per unique (distance, value) pair for the slope fit.
+    # Symmetry-equivalent bonds share both, so this collapses them without
+    # merging geometrically distinct bonds at the same distance (e.g. NaCl has
+    # two bond types at 1.5a with different force constants).
+    # Residuals are still evaluated for all points.
+    _keys = np.stack([np.round(v_dists, 3), np.round(inv_cbrt, 4)], axis=1)
+    _, ux = np.unique(_keys, axis=0, return_index=True)
+    slope, intercept, *_ = theilslopes(inv_cbrt[ux], v_dists[ux],
+                                       method='joint')
 
     predicted = slope * v_dists + intercept
     residuals = inv_cbrt - predicted       # negative => value larger than fit predicts
