@@ -80,7 +80,17 @@ def run_multicenter(supercell, bulk_results, lobster_dir, args):
               f'pFC={f["mean_pfc"]:.4f}  [{f["method"]}, {sig}]')
 
     if not directives:
-        print('  No multicenter chains found at this threshold.')
+        if not flagged:
+            print('  No anomalous pairs detected at this σ threshold.')
+        else:
+            print(f'\n  {len(flagged)} anomalous pair(s) detected but no multicenter '
+                  f'chains could form.')
+            if args.mc_ratio > 0:
+                print(f'  Chain steps exceeding {args.mc_ratio:.1f}× NN were blocked '
+                      f'(--mc-ratio).  If genuine multicenter bonds are expected here, '
+                      f'try a higher value.')
+            else:
+                print('  No linear chain geometry was found.')
         return
 
     print(f'\n  Chains found    : {len(chains)}')

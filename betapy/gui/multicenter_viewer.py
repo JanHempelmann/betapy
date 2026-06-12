@@ -227,8 +227,9 @@ class _MulticenterWorker(QThread):
                 if valid.sum() >= 4 and (
                         float(v_dists.max() - v_dists.min()) >= 0.05):
                     inv_cbrt = v_pfcs ** (-1.0 / 3.0)
-                    _rd = np.round(v_dists, 3)
-                    _, _ux = np.unique(_rd, return_index=True)
+                    _keys = np.stack([np.round(v_dists, 3),
+                                      np.round(inv_cbrt, 4)], axis=1)
+                    _, _ux = np.unique(_keys, axis=0, return_index=True)
                     if len(_ux) >= 4:
                         slope, intercept, *_ = theilslopes(
                             inv_cbrt[_ux], v_dists[_ux], method='joint')
@@ -350,7 +351,7 @@ class MulticenterWidget(QWidget):
         self._spin_sigma = QDoubleSpinBox()
         self._spin_sigma.setRange(0.5, 20.0)
         self._spin_sigma.setSingleStep(0.5)
-        self._spin_sigma.setValue(2.5)
+        self._spin_sigma.setValue(1.5)
         self._spin_sigma.setDecimals(1)
         self._spin_sigma.setFixedWidth(68)
         _spin_row('σ threshold:', self._spin_sigma)
@@ -574,18 +575,20 @@ class MulticenterWidget(QWidget):
         self._btn_run.setEnabled(True)
         self._result = result
 
-        # Collect atom-pair keys that should be shown as red:
-        #   (a) trigger pairs — anomalous individual bonds from detect_anomalous_pairs
-        #   (b) outer pairs of every multicenter sub-chain — the actual delocalized
-        #       bonds that cobiBetween asks LOBSTER to characterise.  Their FCs are
-        #       often NOT anomalously large (they may even be weaker than the Badger
-        #       prediction), so they are never in flagged_pairs themselves but they
-        #       are the bonds the user wants to see highlighted.
-        flagged_keys = {
-            (min(int(r['atom1_idx']), int(r['atom2_idx'])),
-             max(int(r['atom1_idx']), int(r['atom2_idx'])))
-            for r in result.get('flagged_pairs', [])
-        }
+        # Collect atom-pair keys that should be shown as red.
+        # When chain detection ran (POSCAR loaded) only highlight pairs that are
+        # actually part of a confirmed chain — anomalous pairs that could not form
+        # any valid chain (e.g. diamond zig-zag artefacts) are not shown.
+        # When no POSCAR is available chain detection is skipped entirely, so we
+        # fall back to highlighting all statistically anomalous pairs.
+        if self._poscar_path is None:
+            flagged_keys = {
+                (min(int(r['atom1_idx']), int(r['atom2_idx'])),
+                 max(int(r['atom1_idx']), int(r['atom2_idx'])))
+                for r in result.get('flagged_pairs', [])
+            }
+        else:
+            flagged_keys = set()
         for chain in result.get('chains', []):
             for sub in chain.get('sub_chains', []):
                 idx = sub.get('indices', [])

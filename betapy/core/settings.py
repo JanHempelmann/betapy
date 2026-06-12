@@ -403,17 +403,18 @@ def _build_parser() -> argparse.ArgumentParser:
              '--lobster-dir).',
     )
     parser.add_argument(
-        '--mc-sigma', type=float, default=2.5, metavar='N',
-        help='Detection threshold in standard deviations (default: 2.5). '
-             'Lower values flag more shells; raise to reduce false positives.',
+        '--mc-sigma', type=float, default=1.5, metavar='N',
+        help='Detection threshold in standard deviations (default: 1.5). '
+             'Lower values flag more pairs; raise to reduce false positives.',
     )
     parser.add_argument(
-        '--mc-ratio', type=float, default=2.5, metavar='R',
-        help='Maximum allowed ratio of pair distance to the species-pair nearest-'
-             'neighbour distance (default: 2.5).  Pairs beyond this multiple of '
-             'the NN distance are not flagged even if statistically anomalous — '
-             'filters zig-zag chain artefacts (e.g. diamond) while passing '
-             'genuine multicenter bonds.  Pass 0 to disable.',
+        '--mc-ratio', type=float, default=1.5, metavar='R',
+        help='Maximum allowed ratio of a chain step distance to the species-pair '
+             'nearest-neighbour distance (default: 1.5).  Chain growth is blocked '
+             'whenever a candidate step would exceed this multiple of the NN — '
+             'prevents chains from forming through non-bonded contacts '
+             '(e.g. diamond 2nd-NN at 1.63× vs genuine multicenter segments '
+             'at ≤1.0×).  Pass 0 to disable.',
     )
     parser.add_argument(
         '--mc-max-order', type=int, default=5, metavar='N',

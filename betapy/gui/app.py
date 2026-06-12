@@ -211,17 +211,15 @@ class MainWindow(QMainWindow):
         from betapy.gui.site_picker            import SitePickerWidget
         from betapy.gui.stiffness_shift_widget import StiffnessShiftWidget
         from betapy.gui.lt_viewer              import LTDecompositionWidget
-        from betapy.gui.multicenter_viewer     import MulticenterWidget
-        from betapy.gui.badger_viewer          import BadgerWidget
 
-        # Instantiate all widgets upfront; only *add* them to the tab bar
-        # selectively via _update_tab_visibility().
         self.pfc_viewer      = PFCViewerWidget()
         self.site_picker     = SitePickerWidget()
         self.stiffness_shift = StiffnessShiftWidget()
         self.lt_viewer       = LTDecompositionWidget()
-        self.multicenter     = MulticenterWidget()
-        self.badger          = BadgerWidget()
+        # Created lazily the first time the user opens the tab via the + menu,
+        # so their VTK contexts (expensive) are not allocated on every startup.
+        self.multicenter     = None
+        self.badger          = None
 
         # pFC Viewer is always present; track permanent tabs (no close button).
         self.tabs.addTab(self.pfc_viewer, 'pFC Viewer')
@@ -347,6 +345,8 @@ class MainWindow(QMainWindow):
 
     def _set_tab_visible(self, widget, label, preferred_idx, show):
         """Insert or remove a tab without destroying the widget."""
+        if widget is None:
+            return
         current_idx = self.tabs.indexOf(widget)
         if show and current_idx == -1:
             idx = min(preferred_idx, self.tabs.count())
@@ -373,7 +373,34 @@ class MainWindow(QMainWindow):
         self.site_picker.set_unit(unit)
         self.stiffness_shift.set_unit(unit)
         self.lt_viewer.set_unit(unit)
-        self.badger.set_unit(unit)
+        if self.badger is not None:
+            self.badger.set_unit(unit)
+
+    def _ensure_multicenter(self):
+        """Create MulticenterWidget on first use and push any existing data."""
+        if self.multicenter is None:
+            from betapy.gui.multicenter_viewer import MulticenterWidget
+            self.multicenter = MulticenterWidget()
+            if self._bulk_results is not None and self.supercell is not None:
+                self.multicenter.load_data(
+                    self._bulk_results, self.supercell,
+                    lobster_dir=self._lobster_dir,
+                )
+        return self.multicenter
+
+    def _ensure_badger(self):
+        """Create BadgerWidget on first use and push any existing data."""
+        if self.badger is None:
+            from betapy.gui.badger_viewer import BadgerWidget
+            self.badger = BadgerWidget()
+            self.badger.set_unit(self._unit_combo.currentData())
+            if self._bulk_results is not None:
+                self.badger.load_data(
+                    self._bulk_results,
+                    reliability_cutoff=self.pfc_viewer._reliability_cutoff,
+                    supercell=self.supercell,
+                )
+        return self.badger
 
     # ------------------------------------------------------------------
     # Tab bar — "+" overlay button and close handling
@@ -441,8 +468,10 @@ class MainWindow(QMainWindow):
         has_refsite = self.tabs.indexOf(self.site_picker)     != -1
         has_shift   = self.tabs.indexOf(self.stiffness_shift) != -1
         has_lt      = self.tabs.indexOf(self.lt_viewer)       != -1
-        has_mc      = self.tabs.indexOf(self.multicenter)     != -1
-        has_badger  = self.tabs.indexOf(self.badger)          != -1
+        has_mc      = (self.multicenter is not None and
+                       self.tabs.indexOf(self.multicenter) != -1)
+        has_badger  = (self.badger is not None and
+                       self.tabs.indexOf(self.badger) != -1)
 
         label_ref    = ('• ' if has_refsite else '  ') + 'Ref. Site Projection'
         label_shift  = ('• ' if has_shift   else '  ') + 'Stiffness Shift'
@@ -451,9 +480,9 @@ class MainWindow(QMainWindow):
         label_badger = ('• ' if has_badger  else '  ') + 'Badger Analysis  (β)'
 
         menu.addAction(label_mc,     lambda: self._add_optional_tab(
-            self.multicenter, 'Multicenter Bonding  (β)'))
+            self._ensure_multicenter(), 'Multicenter Bonding  (β)'))
         menu.addAction(label_badger, lambda: self._add_optional_tab(
-            self.badger, 'Badger Analysis  (β)'))
+            self._ensure_badger(), 'Badger Analysis  (β)'))
         menu.addAction(label_ref,    lambda: self._add_optional_tab(
             self.site_picker, 'Ref. Site Projection'))
         menu.addAction(label_shift,  lambda: self._add_optional_tab(
@@ -739,14 +768,16 @@ class MainWindow(QMainWindow):
             reliability_cutoff=self.pfc_viewer._reliability_cutoff,
         )
         self._bulk_results = results
-        self.multicenter.load_data(
-            results, self.supercell, lobster_dir=self._lobster_dir
-        )
-        self.badger.load_data(
-            results,
-            reliability_cutoff=self.pfc_viewer._reliability_cutoff,
-            supercell=self.supercell,
-        )
+        if self.multicenter is not None:
+            self.multicenter.load_data(
+                results, self.supercell, lobster_dir=self._lobster_dir
+            )
+        if self.badger is not None:
+            self.badger.load_data(
+                results,
+                reliability_cutoff=self.pfc_viewer._reliability_cutoff,
+                supercell=self.supercell,
+            )
         self._update_tab_visibility()
 
     def _run_analysis(self):

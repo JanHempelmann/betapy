@@ -179,9 +179,9 @@ def _split_into_shells(records, rel_gap=0.50):
 # Anomaly detection — individual pairs, robust regression
 # ---------------------------------------------------------------------------
 
-def detect_anomalous_pairs(bulk_results, n_sigma=2.5, min_pairs=4,
+def detect_anomalous_pairs(bulk_results, n_sigma=1.5, min_pairs=4,
                            value_key='mean_pfc', min_rel_residual=0.08,
-                           max_detect_dist=None, max_nn_ratio=2.5):
+                           max_detect_dist=None, max_nn_ratio=None):
     """
     Flag individual pFC pairs with anomalously large values relative to distance.
 
@@ -229,16 +229,15 @@ def detect_anomalous_pairs(bulk_results, n_sigma=2.5, min_pairs=4,
                        pairs whose tiny FC values produce spurious statistical
                        outliers near the aliasing boundary are excluded.
                        Default None (no extra cutoff).
-    max_nn_ratio    : float or None, maximum allowed ratio of pair distance to
-                       the species-pair nearest-neighbour distance.  Pairs at
-                       more than this multiple of the NN distance are not flagged
-                       even if their log-ratio exceeds the threshold — this
-                       eliminates zig-zag chain artefacts (e.g. diamond C-C at
-                       3.3–5.7× NN) while retaining genuine multicenter bonds
-                       (GeTe ~1.0×, Sb₂Te₃ ~2.0×, Lillianite ~1.5–2.0×).
-                       Physically motivated by the van-der-Waals / covalent
-                       radius ratio never exceeding ~2.5 for any element.
-                       Default 2.5.  Pass None to disable.
+    max_nn_ratio    : float or None, advanced override: skip flagging pairs whose
+                       distance exceeds this multiple of the species-pair NN
+                       distance.  In the normal pipeline this filter is applied
+                       at the CHAIN SEGMENT level inside find_chains / _grow_chain
+                       (where it correctly targets non-bonded contacts rather than
+                       the end-to-end span of a multi-center chain).  Applying it
+                       at the pair level is rarely correct — use only when calling
+                       detect_anomalous_pairs directly outside the chain pipeline.
+                       Default None (disabled).
 
     Returns
     -------
@@ -490,7 +489,8 @@ def _build_neighbor_lookup_from_structure(supercell, bond_cutoff, _chunk=128):
 
 
 def _grow_chain(start_idx, init_direction, neighbors,
-                min_cos, max_order, reliability_limit):
+                min_cos, max_order, reliability_limit,
+                atom_species=None, nn_distances=None, max_nn_ratio=None):
     """
     Greedily extend a chain from *start_idx* in *init_direction*.
 
@@ -501,9 +501,11 @@ def _grow_chain(start_idx, init_direction, neighbors,
 
     Cumulative length is used rather than end-to-end distance so that the
     check is not fooled by the minimum-image convention wrapping a long chain
-    back to a short periodic distance.  Neighbours flagged as boundary-crossing
-    (where minimum-image wrapping changes the fractional vector) are skipped so
-    that chains never extend across a supercell boundary.
+    back to a short periodic distance.  At most one supercell boundary crossing
+    is permitted: this allows gap-crossing chains (e.g. vdW-gap multicenter
+    bonds in layered materials) whose collinear entry path crosses a cell image,
+    while still preventing wrap-around chains that would require two or more
+    boundary crossings in the same direction.
 
     Parameters
     ----------
@@ -518,9 +520,10 @@ def _grow_chain(start_idx, init_direction, neighbors,
     -------
     list of 1-based SPOSCAR atom indices (length >= 1)
     """
-    chain        = [start_idx]
-    current_dir  = np.asarray(init_direction, dtype=float)
-    chain_length = 0.0   # cumulative sum of step distances
+    chain                = [start_idx]
+    current_dir          = np.asarray(init_direction, dtype=float)
+    chain_length         = 0.0   # cumulative sum of step distances
+    n_boundary_crossings = 0     # allow at most 1 to reach gap-crossing chains
 
     while len(chain) < max_order:
         last_idx = chain[-1]
@@ -531,13 +534,21 @@ def _grow_chain(start_idx, init_direction, neighbors,
             nb_idx = nb['idx']
             if nb_idx in chain:
                 continue
-            if nb.get('boundary', False):
+            if nb.get('boundary', False) and n_boundary_crossings >= 1:
                 continue
             cos_angle = float(np.dot(current_dir, nb['dir']))
             if cos_angle <= best_cos:
                 continue
             if chain_length + nb['dist'] > reliability_limit:
                 continue
+            if (max_nn_ratio is not None and atom_species is not None
+                    and nn_distances is not None):
+                sp_curr = atom_species.get(last_idx)
+                sp_nb   = atom_species.get(nb_idx)
+                if sp_curr and sp_nb:
+                    nn_d = nn_distances.get(tuple(sorted([sp_curr, sp_nb])))
+                    if nn_d is not None and nb['dist'] > max_nn_ratio * nn_d:
+                        continue
             best_cos = cos_angle
             best_nb  = nb
 
@@ -547,12 +558,15 @@ def _grow_chain(start_idx, init_direction, neighbors,
         chain.append(best_nb['idx'])
         chain_length += best_nb['dist']
         current_dir   = best_nb['dir']   # unit vector already normalised
+        if best_nb.get('boundary', False):
+            n_boundary_crossings += 1
 
     return chain
 
 
 def find_chains(flagged_records, supercell, bulk_results=None,
-                min_angle_deg=150.0, max_order=5, bond_cutoff=4.0):
+                min_angle_deg=150.0, max_order=5, bond_cutoff=4.0,
+                nn_distances=None, max_nn_ratio=1.5):
     """
     Trace multicenter bonding chains starting from anomalous pFC pair records.
 
@@ -591,13 +605,21 @@ def find_chains(flagged_records, supercell, bulk_results=None,
     min_cos   = np.cos(np.radians(180.0 - min_angle_deg))
     neighbors = _build_neighbor_lookup_from_structure(supercell, bond_cutoff)
 
+    atom_species = None
+    if max_nn_ratio is not None and nn_distances is not None:
+        atom_species = {idx: supercell.species(idx)
+                        for idx in range(1, supercell.n_atoms + 1)}
+
     results = []
     for rec in flagged_records:
         start     = rec['atom1_idx']
         direction = np.array(rec['direction'], dtype=float)
 
         chain = _grow_chain(start, direction, neighbors,
-                            min_cos, max_order, reliability_limit)
+                            min_cos, max_order, reliability_limit,
+                            atom_species=atom_species,
+                            nn_distances=nn_distances,
+                            max_nn_ratio=max_nn_ratio)
 
         if len(chain) < 3:
             continue
@@ -683,10 +705,10 @@ def format_cobi_directive(chain_sc_indices, supercell, lob_poscar):
 
 def suggest_cobi_directives(
         bulk_results, supercell, poscar_lobster_path,
-        n_sigma=2.5, min_pairs=4,
+        n_sigma=1.5, min_pairs=4,
         min_angle_deg=150.0, max_order=5, bond_cutoff=4.0,
         detect_cutoff_frac=0.75,
-        max_nn_ratio=2.5,
+        max_nn_ratio=1.5,
         fit_quantile=None):
     """
     Full pipeline: detect anomalous pFCs → trace chains → format directives.
@@ -707,9 +729,12 @@ def suggest_cobi_directives(
                            baseline but cannot be flagged.  Default 0.75.
                            Increase toward 1.0 only when multicenter bonds are
                            expected at unusually long range (> 8 Å).
-    max_nn_ratio         : float or None, passed to detect_anomalous_pairs.
-                           Pairs at more than this multiple of the species-pair
-                           NN distance are not flagged.  Default 2.5.
+    max_nn_ratio         : float or None, maximum allowed ratio of a single chain
+                           step distance to the species-pair NN distance.  Steps
+                           longer than this multiple of the NN are not traversed,
+                           preventing chains from forming through non-bonded
+                           contacts (e.g. diamond 2nd-NN at 1.63× vs genuine
+                           multicenter segments at ≤1.0×).  Default 1.5.
     fit_quantile         : ignored, kept for backward compatibility.
 
     Returns
@@ -733,12 +758,27 @@ def suggest_cobi_directives(
 
     flagged = detect_anomalous_pairs(
         reliable_pairs, n_sigma=n_sigma, min_pairs=min_pairs,
-        value_key='phi_iso', max_detect_dist=max_detect_dist,
-        max_nn_ratio=max_nn_ratio)
+        value_key='phi_iso', max_detect_dist=max_detect_dist)
+
+    # NN distance per species pair — used to reject chain steps that jump
+    # through non-bonded contacts (segment-level max_nn_ratio check).
+    import math as _math
+    from collections import defaultdict as _dd
+    _seen: set = set()
+    _by_sp: dict = _dd(list)
+    for r in reliable_pairs:
+        _k = (min(r['atom1_idx'], r['atom2_idx']), max(r['atom1_idx'], r['atom2_idx']))
+        if _k not in _seen:
+            _seen.add(_k)
+            phi = r.get('phi_iso', float('nan'))
+            if _math.isfinite(phi) and phi > 0:
+                _by_sp[tuple(sorted([r['species1'], r['species2']]))].append(r['distance'])
+    nn_distances = {sp: min(ds) for sp, ds in _by_sp.items()}
 
     chains = find_chains(
         flagged, supercell, bulk_results,
         min_angle_deg=min_angle_deg, max_order=max_order, bond_cutoff=bond_cutoff,
+        nn_distances=nn_distances, max_nn_ratio=max_nn_ratio,
     )
 
     seen_keys: set = set()
