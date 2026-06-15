@@ -770,7 +770,8 @@ class MainWindow(QMainWindow):
         self._bulk_results = results
         if self.multicenter is not None:
             self.multicenter.load_data(
-                results, self.supercell, lobster_dir=self._lobster_dir
+                results, self.supercell, lobster_dir=self._lobster_dir,
+                reliability_cutoff=self.pfc_viewer._reliability_cutoff,
             )
         if self.badger is not None:
             self.badger.load_data(

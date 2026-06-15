@@ -50,15 +50,30 @@ def run_multicenter(supercell, bulk_results, lobster_dir, args):
     """
     Detect anomalous pFCs, trace multicenter chains, and print cobiBetween
     directives.  Called after run_bulk_analysis so bulk_results are available.
+    lobster_dir may be None; in that case chain detection still runs but
+    cobiBetween directives cannot be generated.
     """
     import math
     from betapy.core.multicenter import suggest_cobi_directives, append_cobi_directives
 
-    poscar_path = Path(lobster_dir) / 'POSCAR'
-    if not poscar_path.exists():
-        print(f'  Error: {poscar_path} not found.  Provide a POSCAR in the '
-              'LOBSTER directory for coordinate mapping.')
-        return
+    poscar_path = None
+    if lobster_dir is not None:
+        _p = Path(lobster_dir) / 'POSCAR'
+        if _p.exists():
+            poscar_path = _p
+        else:
+            print(f'  Warning: {_p} not found — chains will be detected '
+                  'but cobiBetween directives cannot be generated.')
+
+    import numpy as np
+    L = supercell.lattice
+    a, b, c = L[0], L[1], L[2]
+    V = abs(float(np.dot(a, np.cross(b, c))))
+    rc = min(
+        V / np.linalg.norm(np.cross(b, c)),
+        V / np.linalg.norm(np.cross(a, c)),
+        V / np.linalg.norm(np.cross(a, b)),
+    ) / 2.0
 
     result = suggest_cobi_directives(
         bulk_results, supercell, poscar_path,
@@ -66,6 +81,7 @@ def run_multicenter(supercell, bulk_results, lobster_dir, args):
         max_order=args.mc_max_order,
         min_angle_deg=args.mc_angle,
         max_nn_ratio=args.mc_ratio if args.mc_ratio > 0 else None,
+        reliability_cutoff=rc,
     )
 
     flagged    = result['flagged_pairs']
@@ -79,18 +95,19 @@ def run_multicenter(supercell, bulk_results, lobster_dir, args):
               f'd={f["distance"]:.3f} Å  '
               f'pFC={f["mean_pfc"]:.4f}  [{f["method"]}, {sig}]')
 
-    if not directives:
-        if not flagged:
-            print('  No anomalous pairs detected at this σ threshold.')
+    if not flagged:
+        print('  No anomalous pairs detected at this σ threshold.')
+        return
+
+    if not chains:
+        print(f'\n  {len(flagged)} anomalous pair(s) detected but no multicenter '
+              f'chains could form.')
+        if args.mc_ratio > 0:
+            print(f'  Chain steps exceeding {args.mc_ratio:.1f}× NN were blocked '
+                  f'(--mc-ratio).  If genuine multicenter bonds are expected here, '
+                  f'try a higher value.')
         else:
-            print(f'\n  {len(flagged)} anomalous pair(s) detected but no multicenter '
-                  f'chains could form.')
-            if args.mc_ratio > 0:
-                print(f'  Chain steps exceeding {args.mc_ratio:.1f}× NN were blocked '
-                      f'(--mc-ratio).  If genuine multicenter bonds are expected here, '
-                      f'try a higher value.')
-            else:
-                print('  No linear chain geometry was found.')
+            print('  No linear chain geometry was found.')
         return
 
     print(f'\n  Chains found    : {len(chains)}')
@@ -98,8 +115,16 @@ def run_multicenter(supercell, bulk_results, lobster_dir, args):
         sp = '-'.join(chain['species_chain'])
         print(f'\n  Chain  {sp}  ({chain["total_distance"]:.2f} Å end-to-end)')
         for sub in chain['sub_chains']:
-            d = sub["directive"] or '(mapping failed)'
+            if sub["directive"] is None:
+                d = '(no POSCAR — provide --lobster-dir to generate directive)'
+            else:
+                d = sub["directive"] or '(mapping failed)'
             print(f'    {sub["order"]}-center:  {d}')
+
+    if poscar_path is None:
+        print('\n  Note: cobiBetween directives require a LOBSTER directory with '
+              'a POSCAR.  Use --lobster-dir to enable.')
+        return
 
     print(f'\n  Unique directives ({len(directives)}):')
     for d in directives:
@@ -418,12 +443,8 @@ def main():
     bulk_results, _ = run_bulk_analysis(supercell, fc_data, settings, lobster_pairs=lobster_pairs)
 
     if args.multicenter:
-        if _ldir is None:
-            print('\n[Multicenter analysis]')
-            print('  Error: no LOBSTER directory found.  Use --lobster-dir to specify one.')
-        else:
-            print(f'\n[Multicenter bonding analysis]')
-            run_multicenter(supercell, bulk_results, _ldir, args)
+        print(f'\n[Multicenter bonding analysis]')
+        run_multicenter(supercell, bulk_results, _ldir, args)
 
     if settings.refsite is not None:
         print(f'\n[Reference-site analysis — cutoff {settings.refsite.cutoff} Å]')

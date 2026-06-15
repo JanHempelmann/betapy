@@ -405,6 +405,17 @@ def _map_sc_atom_to_poscar(sc_idx, supercell, lob_poscar, tol=0.15):
             "Ensure POSCAR.lobster is commensurate with SPOSCAR."
         )
 
+    sc_species  = supercell.species(sc_idx)
+    lob_species = lob_poscar['species'][best_idx]
+    if sc_species != lob_species:
+        raise ValueError(
+            f"Species mismatch: SPOSCAR atom {sc_idx} is {sc_species!r} but "
+            f"the geometrically matched POSCAR atom {best_idx + 1} is "
+            f"{lob_species!r}. The POSCAR and SPOSCAR appear to describe "
+            "different structures — check that you are using the POSCAR from "
+            "the same LOBSTER run."
+        )
+
     return f"atom{best_idx + 1}", cell.tolist()
 
 
@@ -566,7 +577,8 @@ def _grow_chain(start_idx, init_direction, neighbors,
 
 def find_chains(flagged_records, supercell, bulk_results=None,
                 min_angle_deg=150.0, max_order=5, bond_cutoff=4.0,
-                nn_distances=None, max_nn_ratio=1.5):
+                nn_distances=None, max_nn_ratio=1.5,
+                reliability_cutoff=None):
     """
     Trace multicenter bonding chains starting from anomalous pFC pair records.
 
@@ -601,7 +613,17 @@ def find_chains(flagged_records, supercell, bulk_results=None,
             Keys: 'order' (int), 'indices' (list of int), 'directive' (None
             until filled by format_cobi_directive / suggest_cobi_directives).
     """
-    reliability_limit = min(np.linalg.norm(v) for v in supercell.lattice) / 2.0
+    if reliability_cutoff is not None:
+        reliability_limit = float(reliability_cutoff)
+    else:
+        L = supercell.lattice
+        a, b, c = L[0], L[1], L[2]
+        V = abs(float(np.dot(a, np.cross(b, c))))
+        reliability_limit = min(
+            V / np.linalg.norm(np.cross(b, c)),
+            V / np.linalg.norm(np.cross(a, c)),
+            V / np.linalg.norm(np.cross(a, b)),
+        ) / 2.0
     min_cos   = np.cos(np.radians(180.0 - min_angle_deg))
     neighbors = _build_neighbor_lookup_from_structure(supercell, bond_cutoff)
 
@@ -704,12 +726,13 @@ def format_cobi_directive(chain_sc_indices, supercell, lob_poscar):
 # ---------------------------------------------------------------------------
 
 def suggest_cobi_directives(
-        bulk_results, supercell, poscar_lobster_path,
+        bulk_results, supercell, poscar_lobster_path=None,
         n_sigma=1.5, min_pairs=4,
         min_angle_deg=150.0, max_order=5, bond_cutoff=4.0,
         detect_cutoff_frac=0.75,
         max_nn_ratio=1.5,
-        fit_quantile=None):
+        fit_quantile=None,
+        reliability_cutoff=None):
     """
     Full pipeline: detect anomalous pFCs → trace chains → format directives.
 
@@ -717,7 +740,9 @@ def suggest_cobi_directives(
     ----------
     bulk_results         : list of dicts from compute_bulk_pfcs()
     supercell            : Supercell
-    poscar_lobster_path  : path-like, POSCAR used for the LOBSTER calculation
+    poscar_lobster_path  : path-like or None, POSCAR used for the LOBSTER
+                           calculation.  When None, chain detection still runs
+                           but cobiBetween directives are not generated.
     n_sigma              : float, anomaly detection threshold (sigma). Default 2.5.
     min_pairs            : int, min pairs for regression detection. Default 4.
     min_angle_deg        : float, minimum bond angle for chain extension. Default 150.
@@ -742,13 +767,26 @@ def suggest_cobi_directives(
     dict with:
         'flagged_pairs' : list of detection entries from detect_anomalous_pairs()
         'chains'        : list of chain dicts; sub_chains[*]['directive'] is filled
+                          (or None when poscar_lobster_path was not provided)
         'directives'    : list[str], unique cobiBetween lines ready for lobsterin
+                          (empty when poscar_lobster_path is None)
     """
     from betapy.core.badger import compute_badger_quantities
 
-    lob_poscar = _parse_poscar_lobster(poscar_lobster_path)
+    lob_poscar = (_parse_poscar_lobster(poscar_lobster_path)
+                  if poscar_lobster_path is not None else None)
 
-    reliability_limit = min(np.linalg.norm(v) for v in supercell.lattice) / 2.0
+    if reliability_cutoff is not None:
+        reliability_limit = float(reliability_cutoff)
+    else:
+        L = supercell.lattice
+        a, b, c = L[0], L[1], L[2]
+        V = abs(float(np.dot(a, np.cross(b, c))))
+        reliability_limit = min(
+            V / np.linalg.norm(np.cross(b, c)),
+            V / np.linalg.norm(np.cross(a, c)),
+            V / np.linalg.norm(np.cross(a, b)),
+        ) / 2.0
     reliable_pairs = [r for r in bulk_results if r['distance'] <= reliability_limit]
 
     # Augment with Φ_iso so detection uses the orientation-invariant baseline.
@@ -779,12 +817,16 @@ def suggest_cobi_directives(
         flagged, supercell, bulk_results,
         min_angle_deg=min_angle_deg, max_order=max_order, bond_cutoff=bond_cutoff,
         nn_distances=nn_distances, max_nn_ratio=max_nn_ratio,
+        reliability_cutoff=reliability_limit,
     )
 
     seen_keys: set = set()
     unique_directives: list = []
     for chain in chains:
         for sub in chain['sub_chains']:
+            if lob_poscar is None:
+                sub['directive'] = None
+                continue
             sp_key = tuple(supercell.species(idx) for idx in sub['indices'])
             # Forward and reverse describe the same LOBSTER COBI interaction;
             # normalise so the lexicographically smaller direction is canonical.

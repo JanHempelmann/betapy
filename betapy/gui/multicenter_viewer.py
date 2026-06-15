@@ -25,6 +25,7 @@ from PyQt5.QtWidgets import (
     QPushButton, QLabel, QDoubleSpinBox, QSpinBox,
     QGroupBox, QListWidget, QProgressBar, QApplication,
     QMessageBox, QCheckBox, QScrollArea, QFrame, QDialog,
+    QTabWidget, QTreeWidget, QTreeWidgetItem, QStackedWidget,
 )
 from PyQt5.QtCore import Qt, QThread, pyqtSignal
 from PyQt5.QtGui import QFont, QFontDatabase
@@ -41,7 +42,9 @@ from betapy.gui.structure_view import StructureView
 _GREY_COLOR  = '#aaaaaa'
 _GREY_ALPHA  = 0.22
 _NORM_ALPHA  = 0.75
-_FLAG_COLOR  = '#d03030'
+_CHAIN_COLOR = '#e07820'   # amber — chain segment bonds not individually flagged
+_CHAIN_ALPHA = 0.85
+_FLAG_COLOR  = '#d03030'   # red   — statistically anomalous trigger pairs
 _FLAG_ALPHA  = 0.90
 _CURVE_ALPHA = 0.65
 _BAND_ALPHA  = 0.10
@@ -175,23 +178,32 @@ class _MulticenterWorker(QThread):
     error    = pyqtSignal(str)
 
     def __init__(self, bulk_results, supercell, poscar_path,
-                 n_sigma, max_order, min_angle):
+                 n_sigma, max_order, min_angle, reliability_cutoff=None):
         super().__init__()
-        self._bulk   = bulk_results
-        self._sc     = supercell
-        self._poscar = poscar_path
-        self._sigma  = n_sigma
-        self._order  = max_order
-        self._angle  = min_angle
+        self._bulk              = bulk_results
+        self._sc                = supercell
+        self._poscar            = poscar_path
+        self._sigma             = n_sigma
+        self._order             = max_order
+        self._angle             = min_angle
+        self._reliability_cutoff = reliability_cutoff
 
     def run(self):
         try:
             from betapy.core.badger import compute_badger_quantities
             from scipy.stats import theilslopes, median_abs_deviation
 
-            reliability_limit = (
-                min(np.linalg.norm(v) for v in self._sc.lattice) / 2.0
-            )
+            if self._reliability_cutoff is not None:
+                reliability_limit = float(self._reliability_cutoff)
+            else:
+                L = self._sc.lattice
+                a, b, c = L[0], L[1], L[2]
+                V = abs(float(np.dot(a, np.cross(b, c))))
+                reliability_limit = min(
+                    V / np.linalg.norm(np.cross(b, c)),
+                    V / np.linalg.norm(np.cross(a, c)),
+                    V / np.linalg.norm(np.cross(a, b)),
+                ) / 2.0
             reliable = [r for r in self._bulk
                         if r['distance'] <= reliability_limit]
 
@@ -264,13 +276,14 @@ class _MulticenterWorker(QThread):
                     n_sigma=self._sigma,
                     max_order=self._order,
                     min_angle_deg=self._angle,
+                    detect_cutoff_frac=1.0,
                 )
             else:
                 from betapy.core.multicenter import detect_anomalous_pairs
                 flagged_pairs = detect_anomalous_pairs(
                     reliable,
                     n_sigma=self._sigma, value_key='phi_iso',
-                    max_detect_dist=reliability_limit * 0.75)
+                    max_detect_dist=reliability_limit)
                 result = {
                     'flagged_pairs': flagged_pairs,
                     'chains':        [],
@@ -312,6 +325,7 @@ class MulticenterWidget(QWidget):
         self._directive_lookup  = {}   # directive string → list of SPOSCAR indices
         self._directive_trigger = {}   # directive string → trigger pair record
         self._selected_record   = None
+        self._selected_chain_pairs: set = set()  # (min,max) atom-idx pairs for active chain
         self._ax                = None
         # NcICOBI / NcCOBICAR
         self._lob_poscar         = None   # dict from parse_poscar_lobster()
@@ -409,22 +423,61 @@ class MulticenterWidget(QWidget):
         pair_scroll.setFixedHeight(110)
         lv.addWidget(pair_scroll)
 
-        # ── Directives box ────────────────────────────────────────────
-        dir_box = QGroupBox('cobiBetween directives')
-        dv = QVBoxLayout(dir_box)
+        # ── Chains / Directives tabs ──────────────────────────────────
+        self._left_tabs = QTabWidget()
+        self._left_tabs.setDocumentMode(True)
+
+        # Tab 0 — Chains ───────────────────────────────────────────────
+        chains_tab = QWidget()
+        ct = QVBoxLayout(chains_tab)
+        ct.setContentsMargins(2, 4, 2, 2)
+        ct.setSpacing(4)
+
+        self._lbl_chains_count = QLabel('—')
+        self._lbl_chains_count.setStyleSheet('font-size: 10px; color: #444;')
+        ct.addWidget(self._lbl_chains_count)
+
+        self._chains_tree = QTreeWidget()
+        self._chains_tree.setHeaderHidden(True)
+        self._chains_tree.setColumnCount(1)
+        self._chains_tree.setIndentation(12)
+        mono = QFontDatabase.systemFont(QFontDatabase.FixedFont)
+        mono.setPointSize(9)
+        self._chains_tree.setFont(mono)
+        self._chains_tree.setToolTip(
+            'Click a chain to highlight it in the 3D view.\n'
+            'Expanded sub-chains show individual COBI windows.')
+        self._chains_tree.itemClicked.connect(self._on_chain_item_clicked)
+        ct.addWidget(self._chains_tree, stretch=1)
+
+        self._left_tabs.addTab(chains_tab, 'Chains')
+
+        # Tab 1 — Directives ───────────────────────────────────────────
+        dir_tab = QWidget()
+        dv = QVBoxLayout(dir_tab)
+        dv.setContentsMargins(2, 4, 2, 2)
         dv.setSpacing(4)
+
+        self._dir_stack = QStackedWidget()
+
+        # Page 0: directive list (POSCAR present)
+        list_page = QWidget()
+        lp = QVBoxLayout(list_page)
+        lp.setContentsMargins(0, 0, 0, 0)
+        lp.setSpacing(4)
 
         self._lbl_count = QLabel('—')
         self._lbl_count.setStyleSheet('font-size: 10px; color: #444;')
-        dv.addWidget(self._lbl_count)
+        lp.addWidget(self._lbl_count)
 
         self._directive_list = QListWidget()
-        mono = QFontDatabase.systemFont(QFontDatabase.FixedFont)
-        mono.setPointSize(9)
-        self._directive_list.setFont(mono)
-        self._directive_list.setToolTip('Click a directive to highlight its chain in 3D.')
+        mono2 = QFontDatabase.systemFont(QFontDatabase.FixedFont)
+        mono2.setPointSize(9)
+        self._directive_list.setFont(mono2)
+        self._directive_list.setToolTip(
+            'Click a directive to highlight its chain in 3D.')
         self._directive_list.itemClicked.connect(self._on_directive_clicked)
-        dv.addWidget(self._directive_list, stretch=1)
+        lp.addWidget(self._directive_list, stretch=1)
 
         btn_row = QHBoxLayout()
         self._btn_copy = QPushButton('Copy')
@@ -438,9 +491,38 @@ class MulticenterWidget(QWidget):
         btn_row.addWidget(self._btn_copy)
         btn_row.addWidget(self._btn_save)
         btn_row.addStretch()
-        dv.addLayout(btn_row)
+        lp.addLayout(btn_row)
+        self._dir_stack.addWidget(list_page)   # index 0
 
-        lv.addWidget(dir_box, stretch=1)
+        # Page 1: no-POSCAR prompt
+        no_poscar_page = QWidget()
+        np_layout = QVBoxLayout(no_poscar_page)
+        np_layout.setContentsMargins(6, 8, 6, 8)
+        np_layout.setSpacing(10)
+        np_layout.addStretch()
+
+        _lbl_no_poscar = QLabel(
+            'No LOBSTER directory found.\n\n'
+            'cobiBetween directives require a POSCAR\n'
+            'for SPOSCAR → unit-cell atom mapping.'
+        )
+        _lbl_no_poscar.setWordWrap(True)
+        _lbl_no_poscar.setAlignment(Qt.AlignCenter)
+        _lbl_no_poscar.setStyleSheet('color: #666; font-size: 10px;')
+        np_layout.addWidget(_lbl_no_poscar)
+
+        self._btn_browse = QPushButton('Browse for LOBSTER dir…')
+        self._btn_browse.setToolTip(
+            'Select a LOBSTER calculation directory containing a POSCAR')
+        self._btn_browse.clicked.connect(self._browse_lobster_dir)
+        np_layout.addWidget(self._btn_browse)
+        np_layout.addStretch()
+        self._dir_stack.addWidget(no_poscar_page)  # index 1
+
+        dv.addWidget(self._dir_stack, stretch=1)
+        self._left_tabs.addTab(dir_tab, 'Directives (—)')
+
+        lv.addWidget(self._left_tabs, stretch=1)
         splitter.addWidget(left)
 
         # ── Middle panel — pFC vs r scatter ───────────────────────────
@@ -475,7 +557,8 @@ class MulticenterWidget(QWidget):
 
     # ------------------------------------------------------------------ data
 
-    def load_data(self, bulk_results, supercell, lobster_dir=None):
+    def load_data(self, bulk_results, supercell, lobster_dir=None,
+                  reliability_cutoff=None):
         """
         Supply analysis results and trigger automatic detection.
 
@@ -492,6 +575,7 @@ class MulticenterWidget(QWidget):
         self._bulk_results       = bulk_results
         self._supercell          = supercell
         self._lobster_dir        = lobster_dir
+        self._reliability_cutoff = reliability_cutoff
         self._poscar_path        = None
         self._lob_poscar         = None
         self._nc_icobi_records   = []
@@ -565,6 +649,7 @@ class MulticenterWidget(QWidget):
             self._spin_sigma.value(),
             self._spin_order.value(),
             self._spin_angle.value(),
+            reliability_cutoff=self._reliability_cutoff,
         )
         self._worker.finished.connect(self._on_done)
         self._worker.error.connect(self._on_error)
@@ -575,34 +660,34 @@ class MulticenterWidget(QWidget):
         self._btn_run.setEnabled(True)
         self._result = result
 
-        # Collect atom-pair keys that should be shown as red.
-        # When chain detection ran (POSCAR loaded) only highlight pairs that are
-        # actually part of a confirmed chain — anomalous pairs that could not form
-        # any valid chain (e.g. diamond zig-zag artefacts) are not shown.
-        # When no POSCAR is available chain detection is skipped entirely, so we
-        # fall back to highlighting all statistically anomalous pairs.
-        if self._poscar_path is None:
-            flagged_keys = {
-                (min(int(r['atom1_idx']), int(r['atom2_idx'])),
-                 max(int(r['atom1_idx']), int(r['atom2_idx'])))
-                for r in result.get('flagged_pairs', [])
-            }
-        else:
-            flagged_keys = set()
+        # Red  — all statistically anomalous pairs (honest Badger detection output).
+        # Amber — chain segment bonds (consecutive pairs in confirmed chains) that
+        #         are not themselves individually flagged; shows the full geometry
+        #         of the multicenter bond even when only the trigger bond diverges.
+        # Trigger pairs that are also chain segments stay red (priority).
+        trigger_keys = {
+            (min(int(r['atom1_idx']), int(r['atom2_idx'])),
+             max(int(r['atom1_idx']), int(r['atom2_idx'])))
+            for r in result.get('flagged_pairs', [])
+        }
+        chain_segment_keys: set = set()
         for chain in result.get('chains', []):
-            for sub in chain.get('sub_chains', []):
-                idx = sub.get('indices', [])
-                if len(idx) >= 3:
-                    flagged_keys.add((min(int(idx[0]), int(idx[-1])),
-                                      max(int(idx[0]), int(idx[-1]))))
+            idxs = chain.get('full_chain', [])
+            for i in range(len(idxs) - 1):
+                a, b = int(idxs[i]), int(idxs[i + 1])
+                chain_segment_keys.add((min(a, b), max(a, b)))
+
         for bd in result['badger_data'].values():
-            corrected = np.array([
-                (min(int(rec['atom1_idx']), int(rec['atom2_idx'])),
-                 max(int(rec['atom1_idx']), int(rec['atom2_idx']))) in flagged_keys
-                for rec in bd['records']
-            ])
-            bd['flagged']   = corrected
-            bd['n_flagged'] = int(corrected.sum())
+            flagged      = []
+            chain_member = []
+            for rec in bd['records']:
+                k = (min(int(rec['atom1_idx']), int(rec['atom2_idx'])),
+                     max(int(rec['atom1_idx']), int(rec['atom2_idx'])))
+                flagged.append(k in trigger_keys)
+                chain_member.append(k in chain_segment_keys and k not in trigger_keys)
+            bd['flagged']      = np.array(flagged)
+            bd['chain_member'] = np.array(chain_member)
+            bd['n_flagged']    = int(np.sum(flagged))
 
         # directive string → SPOSCAR atom indices + trigger pair record
         self._directive_lookup  = {}
@@ -615,8 +700,13 @@ class MulticenterWidget(QWidget):
                     self._directive_lookup[d]  = sub['indices']
                     self._directive_trigger[d] = trigger
 
+        # Clear any selection from the previous run so stale rings don't persist.
+        self._selected_chain_pairs = set()
+        self._selected_record      = None
+
         self._rebuild_checkboxes(result['badger_data'])
         self._refresh_plot()
+        self._update_chains_tree(result)
         self._update_directives(result)
 
     def _on_error(self, msg):
@@ -725,36 +815,45 @@ class MulticenterWidget(QWidget):
         self._ax = ax
         self._plot_points = []
 
-        # Separate points into rendering layers
-        gray_xs: list = []
-        gray_ys: list = []
-        colored: dict = defaultdict(lambda: {'xs': [], 'ys': []})
-        flag_xs: list = []
-        flag_ys: list = []
+        # Separate points into rendering layers.
+        # Halos (chain / trigger) are drawn behind species-coloured dots so
+        # species information is always visible in the foreground.
+        gray_xs:        list = []
+        gray_ys:        list = []
+        colored:        dict = defaultdict(lambda: {'xs': [], 'ys': []})
+        halo_chain_xs:  list = []
+        halo_chain_ys:  list = []
+        halo_trigger_xs: list = []
+        halo_trigger_ys: list = []
 
         for pk in self._pair_keys:
             if pk not in badger_data:
                 continue
-            bd        = badger_data[pk]
-            dists     = bd['distances']
-            pfcs      = bd['pfcs']
-            flagged   = bd['flagged']
-            records   = bd['records']
-            is_checked = pk in checked_pairs
+            bd           = badger_data[pk]
+            dists        = bd['distances']
+            pfcs         = bd['pfcs']
+            flagged      = bd['flagged']
+            chain_member = bd.get('chain_member',
+                                  np.zeros(len(dists), dtype=bool))
+            records      = bd['records']
+            is_checked   = pk in checked_pairs
 
-            for d, pfc, rec, fl in zip(dists, pfcs, records, flagged):
-                # Store raw phi_iso; display transformation applied on demand.
-                self._plot_points.append((d, pfc, rec, bool(fl), pk))
+            for d, pfc, rec, fl, cm in zip(
+                    dists, pfcs, records, flagged, chain_member):
+                self._plot_points.append((d, pfc, rec, bool(fl), pk, bool(cm)))
                 y = _display_y(pfc)
                 if not is_checked:
                     gray_xs.append(d)
                     gray_ys.append(y)
-                elif fl:
-                    flag_xs.append(d)
-                    flag_ys.append(y)
                 else:
                     colored[pk]['xs'].append(d)
                     colored[pk]['ys'].append(y)
+                    if fl:
+                        halo_trigger_xs.append(d)
+                        halo_trigger_ys.append(y)
+                    elif cm:
+                        halo_chain_xs.append(d)
+                        halo_chain_ys.append(y)
 
         # Layer 1: unchecked-pair points (grey, provides visual context)
         if gray_xs:
@@ -840,7 +939,19 @@ class MulticenterWidget(QWidget):
                         color=c1, fontsize=7, va='center',
                         alpha=_CURVE_ALPHA, zorder=3)
 
-        # Layer 3: checked-pair normal points (species color)
+        # Layer 3a: amber halos behind chain segment bonds
+        if halo_chain_xs:
+            ax.scatter(halo_chain_xs, halo_chain_ys, s=90,
+                       facecolors=_CHAIN_COLOR, edgecolors='none',
+                       alpha=0.35, linewidths=0, zorder=3)
+
+        # Layer 3b: red halos behind anomalous trigger pairs
+        if halo_trigger_xs:
+            ax.scatter(halo_trigger_xs, halo_trigger_ys, s=110,
+                       facecolors=_FLAG_COLOR, edgecolors='none',
+                       alpha=0.45, linewidths=0, zorder=3)
+
+        # Layer 4: checked-pair points (species colour) — drawn on top of halos
         for pk, data in colored.items():
             if not data['xs']:
                 continue
@@ -868,14 +979,41 @@ class MulticenterWidget(QWidget):
                            alpha=_NORM_ALPHA, linewidths=0, zorder=4,
                            label=f'{sp1}–{sp2}')
 
-        # Layer 4: flagged (multicenter) points — float visibly above the curve
-        if flag_xs:
-            ax.scatter(flag_xs, flag_ys, s=60, c=_FLAG_COLOR,
-                       alpha=_FLAG_ALPHA, linewidths=0.5,
-                       edgecolors='#800000', zorder=5,
-                       label=f'multicenter ({len(flag_xs)})')
+        # Teal rings for non-trigger chain bonds when a chain is selected in the tree.
+        # Dashed teal vertical lines for chain bonds absent from the scatter (no FC data).
+        # Golden ring for the trigger (or any directly-clicked point).
+        if self._selected_chain_pairs:
+            trigger_key = None
+            if self._selected_record is not None:
+                sr = self._selected_record
+                trigger_key = (min(int(sr['atom1_idx']), int(sr['atom2_idx'])),
+                               max(int(sr['atom1_idx']), int(sr['atom2_idx'])))
+            in_plot: set = set()
+            for pt in self._plot_points:
+                rec  = pt[2]
+                rkey = (min(int(rec['atom1_idx']), int(rec['atom2_idx'])),
+                        max(int(rec['atom1_idx']), int(rec['atom2_idx'])))
+                in_plot.add(rkey)
+                if rkey in self._selected_chain_pairs and rkey != trigger_key:
+                    phi = rec.get('phi_iso', rec.get('mean_pfc', 0.0))
+                    ax.plot(
+                        rec['distance'], _display_y(phi),
+                        'o', markersize=16,
+                        markerfacecolor='none', markeredgecolor='#00b8b8',
+                        markeredgewidth=2.0, zorder=6,
+                    )
+            # Bonds in the chain that have no force-constant entry at all:
+            # draw a dashed vertical line at the geometric distance so the user
+            # can see where the bond would sit in the scatter.
+            if self._supercell is not None:
+                for pair in self._selected_chain_pairs - in_plot:
+                    if pair == trigger_key:
+                        continue
+                    i, j = pair
+                    d = self._supercell.atom_distance(i, j)
+                    ax.axvline(d, color='#00b8b8', linestyle='--',
+                               linewidth=1.5, alpha=0.55, zorder=5)
 
-        # Selection ring around the last clicked point
         if self._selected_record is not None:
             sr  = self._selected_record
             phi = sr.get('phi_iso', sr.get('mean_pfc', 0.0))
@@ -883,7 +1021,7 @@ class MulticenterWidget(QWidget):
                 sr['distance'], _display_y(phi),
                 'o', markersize=16,
                 markerfacecolor='none', markeredgecolor='#c8a000',
-                markeredgewidth=2.5, zorder=6,
+                markeredgewidth=2.5, zorder=7,
             )
 
         # Pin y-axis to the actual data point range — the Badger curve can
@@ -911,8 +1049,23 @@ class MulticenterWidget(QWidget):
         ax.set_title(title, fontsize=12)
         ax.grid(True, linestyle='--', alpha=0.4)
 
-        if colored or flag_xs:
-            ax.legend(loc='upper right', framealpha=0.9, fontsize=9)
+        if colored or halo_chain_xs or halo_trigger_xs:
+            import matplotlib.lines as mlines
+            handles, labels = ax.get_legend_handles_labels()
+            if halo_chain_xs:
+                handles.append(mlines.Line2D(
+                    [], [], marker='o', linestyle='none',
+                    markersize=10, color=_CHAIN_COLOR, alpha=0.55,
+                    label=f'chain bond ({len(halo_chain_xs)})'))
+                labels.append(f'chain bond ({len(halo_chain_xs)})')
+            if halo_trigger_xs:
+                handles.append(mlines.Line2D(
+                    [], [], marker='o', linestyle='none',
+                    markersize=10, color=_FLAG_COLOR, alpha=0.65,
+                    label=f'anomalous trigger ({len(halo_trigger_xs)})'))
+                labels.append(f'anomalous trigger ({len(halo_trigger_xs)})')
+            ax.legend(handles=handles, loc='upper right',
+                      framealpha=0.9, fontsize=9)
 
         self._canvas.draw_idle()
 
@@ -943,8 +1096,9 @@ class MulticenterWidget(QWidget):
         if best_pt is None or best_d2 ** 0.5 > _PICK_TOL:
             return
 
-        _, _, rec, is_flagged, _ = best_pt
-        self._selected_record    = rec
+        _, _, rec, is_flagged, _, is_chain = best_pt
+        self._selected_record      = rec
+        self._selected_chain_pairs = set()   # clear chain selection on direct click
 
         a1  = int(rec['atom1_idx'])
         a2  = int(rec['atom2_idx'])
@@ -956,7 +1110,12 @@ class MulticenterWidget(QWidget):
         if self._supercell is not None:
             self.structure_view.highlight_bond(a1, a2)
 
-        info = 'Multicenter' if is_flagged else 'Selected'
+        if is_flagged:
+            info = 'Anomalous trigger'
+        elif is_chain:
+            info = 'Chain bond'
+        else:
+            info = 'Selected'
         self._selection_bar.setText(
             f'{info}:  atom {a1} ({sp1}) – atom {a2} ({sp2})   '
             f'd = {d:.4f} Å   Φ_iso = {pfc:.6f} eV/Å²'
@@ -967,15 +1126,20 @@ class MulticenterWidget(QWidget):
     # ------------------------------------------------------------------ directives
 
     def _update_directives(self, result):
-        directives    = result.get('directives',    [])
-        flagged_pairs = result.get('flagged_pairs', [])
-        chains        = result.get('chains',        [])
+        directives = result.get('directives', [])
 
+        if self._poscar_path is None:
+            self._dir_stack.setCurrentIndex(1)
+            self._left_tabs.setTabText(1, 'Directives (—)')
+            self._btn_copy.setEnabled(False)
+            self._btn_save.setEnabled(False)
+            return
+
+        self._dir_stack.setCurrentIndex(0)
         self._directive_list.clear()
         for d in directives:
             from PyQt5.QtWidgets import QListWidgetItem
             item = QListWidgetItem(d)
-            # Tooltip: show order and species chain if known
             idxs = self._directive_lookup.get(d, [])
             if idxs and self._supercell is not None:
                 try:
@@ -988,18 +1152,247 @@ class MulticenterWidget(QWidget):
                     pass
             self._directive_list.addItem(item)
 
-        parts = [
-            f'{len(flagged_pairs)} flagged pair(s)',
-            f'{len(chains)} chain(s)',
-            f'{len(directives)} unique directive(s)',
-        ]
-        if self._poscar_path is None:
-            parts.append('(no POSCAR — directives suppressed)')
-        self._lbl_count.setText('  ·  '.join(parts))
-
+        n = len(directives)
+        self._lbl_count.setText(f'{n} unique directive(s)')
+        self._left_tabs.setTabText(1, f'Directives ({n})')
         has = bool(directives)
         self._btn_copy.setEnabled(has)
         self._btn_save.setEnabled(has)
+
+    def _update_chains_tree(self, result):
+        chains        = result.get('chains', [])
+        flagged_pairs = result.get('flagged_pairs', [])
+
+        self._chains_tree.clear()
+
+        # Group instances by canonical species chain (A-B-C == C-B-A).
+        groups: dict = {}   # canon_key → list of chain dicts
+        for chain in chains:
+            sp = tuple(chain['species_chain'])
+            canon = min(sp, sp[::-1])
+            groups.setdefault(canon, []).append(chain)
+
+        # Sort groups: highest max-σ first (monotone chains treated as σ=0).
+        def _max_sigma(chain_list):
+            vals = []
+            for c in chain_list:
+                s = c.get('trigger_pair', {}).get('n_sigma', float('nan'))
+                vals.append(s if not math.isnan(s) else 0.0)
+            return max(vals, default=0.0)
+
+        sorted_groups = sorted(groups.items(),
+                               key=lambda kv: _max_sigma(kv[1]),
+                               reverse=True)
+
+        for canon_key, chain_list in sorted_groups:
+            order   = len(canon_key)
+            sp_str  = '–'.join(canon_key)
+            n_inst  = len(chain_list)
+
+            # Representative: instance with highest trigger σ.
+            rep = max(
+                chain_list,
+                key=lambda c: (
+                    c.get('trigger_pair', {}).get('n_sigma', float('nan'))
+                    if not math.isnan(
+                        c.get('trigger_pair', {}).get('n_sigma', float('nan')))
+                    else -1.0
+                ),
+            )
+            rep_trigger = rep.get('trigger_pair', {})
+            rep_sig     = rep_trigger.get('n_sigma', float('nan'))
+            sig_str     = f'{rep_sig:.1f}σ' if not math.isnan(rep_sig) else 'monotone'
+
+            # Distance range across all instances.
+            distances = [c['total_distance'] for c in chain_list]
+            d_lo, d_hi = min(distances), max(distances)
+            dist_str = (f'{d_lo:.2f} Å' if abs(d_hi - d_lo) < 0.05
+                        else f'{d_lo:.2f}–{d_hi:.2f} Å')
+
+            count_str = f'  ×{n_inst}' if n_inst > 1 else ''
+            label = (f'{sp_str}  ·  {order}-center  ·  '
+                     f'{dist_str}  ·  {sig_str}{count_str}')
+
+            top = QTreeWidgetItem([label])
+            top.setData(0, Qt.UserRole, {
+                'type':    'chain',
+                'indices': rep['full_chain'],
+                'chain':   rep,
+            })
+
+            # Tooltip on the parent shows the representative instance.
+            phi = rep_trigger.get(
+                'phi_iso', rep_trigger.get('mean_pfc', float('nan')))
+            tip_lines = [
+                f'Showing representative instance of {n_inst} total.',
+                (f'Trigger: {rep_trigger.get("species1","")}'
+                 f'-{rep_trigger.get("species2","")}  '
+                 f'd={rep_trigger.get("distance", 0):.3f} Å  '
+                 f'Φ_iso={phi:.4f}  [{rep_trigger.get("method","")}]'),
+            ]
+            if self._supercell is not None:
+                segs = self._chain_segment_distances(rep['full_chain'])
+                tip_lines.append(
+                    f'Segments: {" + ".join(f"{d:.3f}" for d in segs)} Å')
+            top.setToolTip(0, '\n'.join(tip_lines))
+
+            # Children — one per instance when there are multiple.
+            if n_inst > 1:
+                for i, c in enumerate(chain_list, 1):
+                    idxs  = c['full_chain']
+                    tr    = c.get('trigger_pair', {})
+                    ns    = tr.get('n_sigma', float('nan'))
+                    s_str = f'{ns:.1f}σ' if not math.isnan(ns) else 'monotone'
+                    idx_str = ' → '.join(str(x) for x in idxs)
+                    child = QTreeWidgetItem(
+                        [f'  #{i}  {idx_str}  ·  {c["total_distance"]:.2f} Å  ·  {s_str}'])
+                    child.setData(0, Qt.UserRole, {
+                        'type':    'chain',
+                        'indices': idxs,
+                        'chain':   c,
+                    })
+                    if self._supercell is not None:
+                        segs = self._chain_segment_distances(idxs)
+                        child.setToolTip(
+                            0,
+                            f'Segments: {" + ".join(f"{d:.3f}" for d in segs)} Å\n'
+                            f'Trigger Φ_iso={tr.get("phi_iso", float("nan")):.4f}  [{tr.get("method","")}]'
+                        )
+                    top.addChild(child)
+
+            self._chains_tree.addTopLevelItem(top)
+
+        n_types = self._chains_tree.topLevelItemCount()
+        n_total = len(chains)
+        self._left_tabs.setTabText(0, f'Chains ({n_types})')
+        if flagged_pairs:
+            summary = f'{len(flagged_pairs)} flagged pair(s)  →  {n_types} unique type(s)'
+            if n_total > n_types:
+                summary += f'  ({n_total} instances)'
+            self._lbl_chains_count.setText(summary)
+        else:
+            self._lbl_chains_count.setText('No anomalous pairs detected.')
+
+        # Auto-select and highlight first chain type.
+        if n_types > 0:
+            first = self._chains_tree.topLevelItem(0)
+            self._chains_tree.setCurrentItem(first)
+            self._on_chain_item_clicked(first, 0)
+
+    def _on_chain_item_clicked(self, item, _column):
+        data = item.data(0, Qt.UserRole)
+        if data is None:
+            return
+
+        indices = data['indices']
+        chain   = data['chain']
+
+        if self._supercell is not None and len(indices) >= 2:
+            pairs = [(indices[i], indices[i + 1])
+                     for i in range(len(indices) - 1)]
+            self.structure_view.highlight_bonds(
+                pairs, center_on=indices[0], highlight_atoms=True)
+
+        trigger = chain.get('trigger_pair', {})
+        # Build the set of consecutive-pair keys for this chain segment.
+        self._selected_chain_pairs = {
+            (min(int(indices[i]), int(indices[i + 1])),
+             max(int(indices[i]), int(indices[i + 1])))
+            for i in range(len(indices) - 1)
+        }
+
+        if self._supercell is not None:
+            try:
+                sp = [self._supercell.species(i) for i in indices]
+            except Exception:
+                sp = ['?'] * len(indices)
+            label   = '  →  '.join(f'{s}({i})' for s, i in zip(sp, indices))
+            n_sig   = trigger.get('n_sigma', float('nan'))
+            sig_str = f'{n_sig:.1f}σ' if not math.isnan(n_sig) else 'monotone'
+            kind    = 'Sub-chain' if data['type'] == 'sub_chain' else 'Chain'
+            # Count chain bonds that have no force-constant data in the scatter.
+            plot_keys = {(min(int(pt[2]['atom1_idx']), int(pt[2]['atom2_idx'])),
+                          max(int(pt[2]['atom1_idx']), int(pt[2]['atom2_idx'])))
+                         for pt in self._plot_points}
+            n_missing = len(self._selected_chain_pairs - plot_keys)
+            bar_text  = f'{kind} ({len(indices)}-center):  {label}   [{sig_str}]'
+            if n_missing:
+                bar_text += f'   ⚠ {n_missing} bond(s) missing from FC data'
+            self._selection_bar.setText(bar_text)
+        # Reset before search so a stale record never leaks into the new render.
+        self._selected_record = None
+        if trigger and self._plot_points:
+            tkey = (min(int(trigger['atom1_idx']), int(trigger['atom2_idx'])),
+                    max(int(trigger['atom1_idx']), int(trigger['atom2_idx'])))
+            for pt in self._plot_points:
+                rec  = pt[2]
+                rkey = (min(int(rec['atom1_idx']), int(rec['atom2_idx'])),
+                        max(int(rec['atom1_idx']), int(rec['atom2_idx'])))
+                if rkey == tkey:
+                    self._selected_record = rec
+                    break
+        self._refresh_plot()
+
+    def _chain_segment_distances(self, indices):
+        dists = []
+        for i in range(len(indices) - 1):
+            pos_a = self._supercell.positions[indices[i]     - 1]
+            pos_b = self._supercell.positions[indices[i + 1] - 1]
+            dists.append(
+                float(np.linalg.norm(self._supercell.cart_diff(pos_a, pos_b))))
+        return dists
+
+    def _browse_lobster_dir(self):
+        from PyQt5.QtWidgets import QFileDialog
+        start = str(self._lobster_dir) if self._lobster_dir else str(Path.home())
+        path  = QFileDialog.getExistingDirectory(
+            self, 'Select LOBSTER calculation directory', start)
+        if not path:
+            return
+
+        ldir   = Path(path)
+        poscar = ldir / 'POSCAR'
+        if not poscar.exists():
+            QMessageBox.warning(
+                self, 'No POSCAR found',
+                f'No POSCAR file found in:\n{ldir}\n\n'
+                'The LOBSTER directory must contain a POSCAR for atom mapping.')
+            return
+
+        self._lobster_dir = ldir
+        self._poscar_path = poscar
+
+        from betapy.core.lobster import (
+            parse_poscar_lobster, parse_ncicobi_list, parse_car_header,
+        )
+        self._lob_poscar = None
+        for _name in ('POSCAR.lobster', 'POSCAR.lobster.vasp', 'POSCAR'):
+            _pl = ldir / _name
+            if _pl.exists():
+                try:
+                    self._lob_poscar = parse_poscar_lobster(_pl)
+                    break
+                except Exception:
+                    pass
+
+        self._nc_icobi_records = []
+        ni = ldir / 'NcICOBILIST.lobster'
+        if ni.exists():
+            try:
+                self._nc_icobi_records = parse_ncicobi_list(ni)
+            except Exception:
+                pass
+
+        self._nc_cobicar_header = None
+        nc = ldir / 'COBICAR.lobster'
+        if nc.exists():
+            try:
+                self._nc_cobicar_header = parse_car_header(nc)
+            except Exception:
+                pass
+
+        self._lbl_status.setText(f'POSCAR: {ldir.name}/POSCAR  ✓')
+        self._run_detection()
 
     def _on_directive_clicked(self, item):
         directive = item.text()

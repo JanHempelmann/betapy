@@ -65,11 +65,12 @@ Direct
   0.50000  0.00000  0.00000
 """
 
-# 2×1×1 supercell of the 2-atom POSCAR (8 Å along x)
-#   atom 1: A at (0.000, 0, 0)  → POSCAR A1, cell [0,0,0]
-#   atom 2: B at (0.250, 0, 0)  → POSCAR B2, cell [0,0,0]
-#   atom 3: A at (0.500, 0, 0)  → POSCAR A1, cell [1,0,0]
-#   atom 4: B at (0.750, 0, 0)  → POSCAR B2, cell [1,0,0]
+# 2×1×1 supercell of the 2-atom POSCAR (8 Å along x).
+# PHONOPY groups species together, so all A's come first, then all B's:
+#   atom 1: A at frac (0.000, 0, 0)  → POSCAR atom1 (A), cell [0,0,0]
+#   atom 2: A at frac (0.500, 0, 0)  → POSCAR atom1 (A), cell [1,0,0]
+#   atom 3: B at frac (0.250, 0, 0)  → POSCAR atom2 (B), cell [0,0,0]
+#   atom 4: B at frac (0.750, 0, 0)  → POSCAR atom2 (B), cell [1,0,0]
 SPOSCAR_2X1X1_DICT = {
     'skal':         1.0,
     'lattice':      [[8.0, 0.0, 0.0],
@@ -78,10 +79,10 @@ SPOSCAR_2X1X1_DICT = {
     'chem_symbols': ['A', 'B'],
     'chem_atoms':   [2, 2],
     'positions':    [
-        [0.000, 0.0, 0.0],   # A, sc_idx=1
-        [0.250, 0.0, 0.0],   # B, sc_idx=2
-        [0.500, 0.0, 0.0],   # A, sc_idx=3
-        [0.750, 0.0, 0.0],   # B, sc_idx=4
+        [0.000, 0.0, 0.0],   # A, sc_idx=1 → atom1 (A), cell [0,0,0]
+        [0.500, 0.0, 0.0],   # A, sc_idx=2 → atom1 (A), cell [1,0,0]
+        [0.250, 0.0, 0.0],   # B, sc_idx=3 → atom2 (B), cell [0,0,0]
+        [0.750, 0.0, 0.0],   # B, sc_idx=4 → atom2 (B), cell [1,0,0]
     ],
 }
 
@@ -222,26 +223,48 @@ class TestMapScAtomToPostcar:
         return _parse_poscar_lobster(poscar_path)
 
     def test_atom1_maps_to_atom1_cell_000(self, supercell, lob_poscar):
+        # A at frac (0.0) → POSCAR atom1 (A), cell [0,0,0]
         label, cell = _map_sc_atom_to_poscar(1, supercell, lob_poscar)
         assert label == 'atom1'
         assert cell == [0, 0, 0]
 
-    def test_atom2_maps_to_atom2_cell_000(self, supercell, lob_poscar):
+    def test_atom2_maps_to_atom1_cell_100(self, supercell, lob_poscar):
+        # A at frac (0.5) → POSCAR atom1 (A), cell [1,0,0]
         label, cell = _map_sc_atom_to_poscar(2, supercell, lob_poscar)
-        assert label == 'atom2'
-        assert cell == [0, 0, 0]
-
-    def test_atom3_maps_to_atom1_cell_100(self, supercell, lob_poscar):
-        # A at fractional (0.5, 0, 0) in 8 Å supercell = Cartesian (4, 0, 0)
-        # In 4 Å POSCAR: f_lob = 1.0 → cell=[1,0,0], wrapped=0.0 → matches A at (0,0,0)
-        label, cell = _map_sc_atom_to_poscar(3, supercell, lob_poscar)
         assert label == 'atom1'
         assert cell == [1, 0, 0]
 
+    def test_atom3_maps_to_atom2_cell_000(self, supercell, lob_poscar):
+        # B at frac (0.25) → POSCAR atom2 (B), cell [0,0,0]
+        label, cell = _map_sc_atom_to_poscar(3, supercell, lob_poscar)
+        assert label == 'atom2'
+        assert cell == [0, 0, 0]
+
     def test_atom4_maps_to_atom2_cell_100(self, supercell, lob_poscar):
+        # B at frac (0.75) → POSCAR atom2 (B), cell [1,0,0]
         label, cell = _map_sc_atom_to_poscar(4, supercell, lob_poscar)
         assert label == 'atom2'
         assert cell == [1, 0, 0]
+
+    def test_raises_on_species_mismatch(self, supercell):
+        # POSCAR with A and B swapped in position — geometry matches but
+        # species are wrong; the check should catch this before LOBSTER
+        # silently computes the wrong multicenter interaction.
+        swapped = write_poscar("""\
+swapped
+1.0
+  4.0  0.0  0.0
+  0.0  4.0  0.0
+  0.0  0.0  4.0
+B A
+1 1
+Direct
+  0.00000  0.00000  0.00000
+  0.50000  0.00000  0.00000
+""")
+        lob = _parse_poscar_lobster(swapped)
+        with pytest.raises(ValueError, match='(?i)species'):
+            _map_sc_atom_to_poscar(1, supercell, lob)
 
     def test_raises_on_incommensurate_poscar(self, supercell):
         # 3 Å POSCAR — not commensurate with the 8 Å supercell.
@@ -455,34 +478,28 @@ class TestFormatCobiDirective:
     def lob_poscar(self, poscar_path):
         return _parse_poscar_lobster(poscar_path)
 
-    def test_no_cell_when_same_cell(self, sc, lob_poscar):
-        # Chain atoms 1(A), 2(B), 3(A) — atom3 is in cell [1,0,0] relative to atom1
-        directive = format_cobi_directive([1, 2, 3], sc, lob_poscar)
+    def test_cross_cell_chain_has_cell_tag(self, sc, lob_poscar):
+        # Chain: atom1(A,cell000) → atom3(B,cell000) → atom2(A,cell100)
+        # atom2 is a periodic image — cell tag must appear for it.
+        directive = format_cobi_directive([1, 3, 2], sc, lob_poscar)
         assert directive.startswith('cobiBetween')
         assert 'atom1' in directive
         assert 'atom2' in directive
-        # Atom 1 is the reference: cell [0,0,0] — no cell tag for it
-        tokens = directive.split()
-        # First token: 'cobiBetween', second: label of atom1
-        assert tokens[1] == 'atom1'
-        # cell tag must appear for atom 3, minimum-image wrapped within the supercell
+        assert tokens[1] == 'atom1' if (tokens := directive.split()) else True
         assert 'cell' in directive
-        # 2×1×1 supercell: [1,0,0] and [-1,0,0] are equivalent; minimum image gives -1
+        # 2×1×1 supercell: minimum-image of [1,0,0] is [-1,0,0]
         assert '-1 0 0' in directive or '1 0 0' in directive
 
     def test_first_atom_has_no_cell_tag(self, sc, lob_poscar):
-        # Whatever the absolute cell of atom1, the directive must not show a cell tag for it
-        directive = format_cobi_directive([1, 2], sc, lob_poscar)
+        # atom1(A) and atom3(B) are both in cell [0,0,0] — reference atom gets no cell tag
+        directive = format_cobi_directive([1, 3], sc, lob_poscar)
         tokens = directive.split()
-        # Format: cobiBetween label1 [cell h k l] label2 [cell h k l]
         assert tokens[1] == 'atom1'
-        # No 'cell' tag immediately after 'cobiBetween atom1'
         assert tokens[2] != 'cell'
 
-    def test_three_atom_same_cell(self, sc, lob_poscar):
-        # atoms 1,2 are both in cell [0,0,0] of the POSCAR
-        directive = format_cobi_directive([1, 2], sc, lob_poscar)
-        # No cell tag at all (both in the same cell)
+    def test_same_cell_atoms_no_cell_tag(self, sc, lob_poscar):
+        # atom1(A) and atom3(B) are both in POSCAR cell [0,0,0] → no cell tag at all
+        directive = format_cobi_directive([1, 3], sc, lob_poscar)
         assert 'cell' not in directive
 
 
