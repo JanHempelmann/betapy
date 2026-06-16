@@ -732,7 +732,8 @@ def suggest_cobi_directives(
         detect_cutoff_frac=0.75,
         max_nn_ratio=1.5,
         fit_quantile=None,
-        reliability_cutoff=None):
+        reliability_cutoff=None,
+        _skip_symmetry_expand=False):
     """
     Full pipeline: detect anomalous pFCs → trace chains → format directives.
 
@@ -775,6 +776,13 @@ def suggest_cobi_directives(
 
     lob_poscar = (_parse_poscar_lobster(poscar_lobster_path)
                   if poscar_lobster_path is not None else None)
+
+    if not _skip_symmetry_expand:
+        try:
+            from betapy.core.symmetry import expand_by_symmetry
+            bulk_results = expand_by_symmetry(bulk_results, supercell, bond_cutoff)
+        except Exception:
+            pass
 
     if reliability_cutoff is not None:
         reliability_limit = float(reliability_cutoff)

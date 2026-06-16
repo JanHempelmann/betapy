@@ -204,7 +204,14 @@ class _MulticenterWorker(QThread):
                     V / np.linalg.norm(np.cross(a, c)),
                     V / np.linalg.norm(np.cross(a, b)),
                 ) / 2.0
-            reliable = [r for r in self._bulk
+            # Expand compact FC files via crystal symmetry before filtering.
+            try:
+                from betapy.core.symmetry import expand_by_symmetry
+                _bulk_expanded = expand_by_symmetry(self._bulk, self._sc)
+            except Exception:
+                _bulk_expanded = self._bulk
+
+            reliable = [r for r in _bulk_expanded
                         if r['distance'] <= reliability_limit]
 
             reliable = compute_badger_quantities(reliable)
@@ -272,11 +279,12 @@ class _MulticenterWorker(QThread):
             if self._poscar is not None:
                 from betapy.core.multicenter import suggest_cobi_directives
                 result = suggest_cobi_directives(
-                    self._bulk, self._sc, self._poscar,
+                    _bulk_expanded, self._sc, self._poscar,
                     n_sigma=self._sigma,
                     max_order=self._order,
                     min_angle_deg=self._angle,
                     detect_cutoff_frac=1.0,
+                    _skip_symmetry_expand=True,
                 )
             else:
                 from betapy.core.multicenter import detect_anomalous_pairs
@@ -325,7 +333,8 @@ class MulticenterWidget(QWidget):
         self._directive_lookup  = {}   # directive string → list of SPOSCAR indices
         self._directive_trigger = {}   # directive string → trigger pair record
         self._selected_record   = None
-        self._selected_chain_pairs: set = set()  # (min,max) atom-idx pairs for active chain
+        self._selected_chain_pairs: set = set()  # ALL (min,max) pairs within active chain
+        self._selected_chain_consecutive_pairs: set = set()  # consecutive-only (for missing-FC)
         self._ax                = None
         # NcICOBI / NcCOBICAR
         self._lob_poscar         = None   # dict from parse_poscar_lobster()
@@ -673,9 +682,12 @@ class MulticenterWidget(QWidget):
         chain_segment_keys: set = set()
         for chain in result.get('chains', []):
             idxs = chain.get('full_chain', [])
-            for i in range(len(idxs) - 1):
-                a, b = int(idxs[i]), int(idxs[i + 1])
-                chain_segment_keys.add((min(a, b), max(a, b)))
+            # Mark ALL pairs within the chain (not just consecutive neighbours)
+            # so that e.g. Bi-Bi in a Bi-S-Bi-S chain gets an amber halo.
+            for i in range(len(idxs)):
+                for j in range(i + 1, len(idxs)):
+                    a, b = int(idxs[i]), int(idxs[j])
+                    chain_segment_keys.add((min(a, b), max(a, b)))
 
         for bd in result['badger_data'].values():
             flagged      = []
@@ -701,8 +713,9 @@ class MulticenterWidget(QWidget):
                     self._directive_trigger[d] = trigger
 
         # Clear any selection from the previous run so stale rings don't persist.
-        self._selected_chain_pairs = set()
-        self._selected_record      = None
+        self._selected_chain_pairs             = set()
+        self._selected_chain_consecutive_pairs = set()
+        self._selected_record                  = None
 
         self._rebuild_checkboxes(result['badger_data'])
         self._refresh_plot()
@@ -1002,11 +1015,12 @@ class MulticenterWidget(QWidget):
                         markerfacecolor='none', markeredgecolor='#00b8b8',
                         markeredgewidth=2.0, zorder=6,
                     )
-            # Bonds in the chain that have no force-constant entry at all:
+            # Consecutive chain bonds missing from the scatter (compact FC file):
             # draw a dashed vertical line at the geometric distance so the user
-            # can see where the bond would sit in the scatter.
+            # can see where the bond would sit. Non-consecutive pairs (A-C, A-D…)
+            # are expected to be absent at longer range, so no dashed line for those.
             if self._supercell is not None:
-                for pair in self._selected_chain_pairs - in_plot:
+                for pair in self._selected_chain_consecutive_pairs - in_plot:
                     if pair == trigger_key:
                         continue
                     i, j = pair
@@ -1097,8 +1111,9 @@ class MulticenterWidget(QWidget):
             return
 
         _, _, rec, is_flagged, _, is_chain = best_pt
-        self._selected_record      = rec
-        self._selected_chain_pairs = set()   # clear chain selection on direct click
+        self._selected_record                  = rec
+        self._selected_chain_pairs             = set()
+        self._selected_chain_consecutive_pairs = set()
 
         a1  = int(rec['atom1_idx'])
         a2  = int(rec['atom2_idx'])
@@ -1172,6 +1187,54 @@ class MulticenterWidget(QWidget):
             canon = min(sp, sp[::-1])
             groups.setdefault(canon, []).append(chain)
 
+        # Also surface sub-chains (shorter consecutive sub-sequences of each
+        # detected chain) as independent top-level entries.  find_chains grows
+        # each trigger into the longest possible chain, so 3-center and
+        # 4-center chains only exist inside chain['sub_chains'] — they would
+        # never appear in the tree at all without this step.
+        # Deduplication is by canonical atom-index tuple so the same sub-chain
+        # encountered from two different parent chains is shown only once.
+        # Pre-seed with all full chains so independently-detected shorter chains
+        # don't get duplicated when they also appear as a sub-chain of a longer one.
+        seen_sub_keys: set = {
+            min(tuple(c['full_chain']), tuple(reversed(c['full_chain'])))
+            for c in chains
+        }
+        for chain in chains:
+            full    = chain.get('full_chain', [])
+            trigger = chain.get('trigger_pair', {})
+            t1 = int(trigger.get('atom1_idx', -1))
+            t2 = int(trigger.get('atom2_idx', -1))
+            for sub in chain.get('sub_chains', []):
+                if sub['order'] >= len(full):
+                    continue                # skip the full chain (already in groups)
+                idxs     = sub['indices']
+                sub_key  = min(tuple(idxs), tuple(reversed(idxs)))
+                if sub_key in seen_sub_keys:
+                    continue
+                seen_sub_keys.add(sub_key)
+                if self._supercell is not None:
+                    try:
+                        sub_sp = [self._supercell.species(i) for i in idxs]
+                    except Exception:
+                        sub_sp = ['?'] * len(idxs)
+                    pos0       = self._supercell.positions[idxs[0]  - 1]
+                    posN       = self._supercell.positions[idxs[-1] - 1]
+                    total_dist = float(np.linalg.norm(
+                        self._supercell.cart_diff(pos0, posN)))
+                else:
+                    sub_sp     = ['?'] * len(idxs)
+                    total_dist = 0.0
+                sub_canon   = min(tuple(sub_sp), tuple(reversed(sub_sp)))
+                sub_trigger = trigger if (t1 in idxs and t2 in idxs) else {}
+                groups.setdefault(sub_canon, []).append({
+                    'trigger_pair':   sub_trigger,
+                    'full_chain':     idxs,
+                    'species_chain':  sub_sp,
+                    'total_distance': total_dist,
+                    'sub_chains':     [],  # no further nesting at top level
+                })
+
         # Sort groups: highest max-σ first (monotone chains treated as σ=0).
         def _max_sigma(chain_list):
             vals = []
@@ -1184,19 +1247,40 @@ class MulticenterWidget(QWidget):
                                key=lambda kv: _max_sigma(kv[1]),
                                reverse=True)
 
+        # Scatter pair keys — used to tiebreak representative selection so that
+        # the chosen instance maximises the number of all-pair combinations
+        # (including non-consecutive end-to-end pairs) that are visible in the
+        # scatter plot.  Built once here; _refresh_plot() has already run.
+        _scatter_keys = {
+            (min(int(pt[2]['atom1_idx']), int(pt[2]['atom2_idx'])),
+             max(int(pt[2]['atom1_idx']), int(pt[2]['atom2_idx'])))
+            for pt in self._plot_points
+        }
+
+        def _scatter_coverage(c):
+            idxs = c.get('full_chain', [])
+            return sum(
+                1 for ii in range(len(idxs))
+                for jj in range(ii + 1, len(idxs))
+                if (min(int(idxs[ii]), int(idxs[jj])),
+                    max(int(idxs[ii]), int(idxs[jj]))) in _scatter_keys
+            )
+
         for canon_key, chain_list in sorted_groups:
             order   = len(canon_key)
             sp_str  = '–'.join(canon_key)
             n_inst  = len(chain_list)
 
-            # Representative: instance with highest trigger σ.
+            # Representative: highest trigger σ, tiebroken by scatter coverage
+            # so the chosen instance shows as many all-pair rings as possible.
             rep = max(
                 chain_list,
                 key=lambda c: (
                     c.get('trigger_pair', {}).get('n_sigma', float('nan'))
                     if not math.isnan(
                         c.get('trigger_pair', {}).get('n_sigma', float('nan')))
-                    else -1.0
+                    else -1.0,
+                    _scatter_coverage(c),
                 ),
             )
             rep_trigger = rep.get('trigger_pair', {})
@@ -1236,7 +1320,7 @@ class MulticenterWidget(QWidget):
                     f'Segments: {" + ".join(f"{d:.3f}" for d in segs)} Å')
             top.setToolTip(0, '\n'.join(tip_lines))
 
-            # Children — one per instance when there are multiple.
+            # Children — instances (when multiple), then sub-chains.
             if n_inst > 1:
                 for i, c in enumerate(chain_list, 1):
                     idxs  = c['full_chain']
@@ -1258,7 +1342,11 @@ class MulticenterWidget(QWidget):
                             f'Segments: {" + ".join(f"{d:.3f}" for d in segs)} Å\n'
                             f'Trigger Φ_iso={tr.get("phi_iso", float("nan")):.4f}  [{tr.get("method","")}]'
                         )
+                    self._add_subchain_children(child, c)
                     top.addChild(child)
+            else:
+                # Single instance: sub-chains as direct children of the top item.
+                self._add_subchain_children(top, rep)
 
             self._chains_tree.addTopLevelItem(top)
 
@@ -1273,11 +1361,60 @@ class MulticenterWidget(QWidget):
         else:
             self._lbl_chains_count.setText('No anomalous pairs detected.')
 
-        # Auto-select and highlight first chain type.
+        # Auto-select and highlight first chain type; expand to reveal sub-chains.
         if n_types > 0:
             first = self._chains_tree.topLevelItem(0)
             self._chains_tree.setCurrentItem(first)
+            first.setExpanded(True)
             self._on_chain_item_clicked(first, 0)
+
+    def _add_subchain_children(self, parent_item, chain_dict):
+        """Attach sub-chain tree items as children of *parent_item*."""
+        full       = chain_dict.get('full_chain', [])
+        sub_chains = chain_dict.get('sub_chains', [])
+        trigger    = chain_dict.get('trigger_pair', {})
+        t1 = int(trigger.get('atom1_idx', -1))
+        t2 = int(trigger.get('atom2_idx', -1))
+
+        # Only sub-chains shorter than the full chain, sorted by order then
+        # by their start position within the full chain.
+        full_idx = {idx: pos for pos, idx in enumerate(full)}
+        shorter  = [s for s in sub_chains if s['order'] < len(full)]
+        shorter.sort(key=lambda s: (s['order'], full_idx.get(s['indices'][0], 0)))
+
+        for sub in shorter:
+            idxs  = sub['indices']
+            order = sub['order']
+
+            if self._supercell is not None:
+                try:
+                    parts = [f'{self._supercell.species(i)}({i})' for i in idxs]
+                except Exception:
+                    parts = [str(i) for i in idxs]
+                segs = self._chain_segment_distances(idxs)
+                dist = f'{sum(segs):.2f} Å'
+            else:
+                parts = [str(i) for i in idxs]
+                dist  = ''
+
+            label = (f'  {order}-center:  '
+                     + '  →  '.join(parts)
+                     + (f'   {dist}' if dist else ''))
+            child = QTreeWidgetItem([label])
+
+            # Pass the parent trigger only when both trigger atoms are in this
+            # sub-chain, so the golden ring appears on the correct scatter point.
+            sub_trigger = trigger if (t1 in idxs and t2 in idxs) else {}
+            child.setData(0, Qt.UserRole, {
+                'type':    'sub_chain',
+                'indices': idxs,
+                'chain':   {
+                    'trigger_pair': sub_trigger,
+                    'full_chain':   idxs,
+                    'sub_chains':   [],
+                },
+            })
+            parent_item.addChild(child)
 
     def _on_chain_item_clicked(self, item, _column):
         data = item.data(0, Qt.UserRole)
@@ -1294,11 +1431,21 @@ class MulticenterWidget(QWidget):
                 pairs, center_on=indices[0], highlight_atoms=True)
 
         trigger = chain.get('trigger_pair', {})
-        # Build the set of consecutive-pair keys for this chain segment.
-        self._selected_chain_pairs = {
+
+        # Consecutive pairs — the bonds that chain detection actually traversed.
+        # Used for the missing-FC warning and dashed fallback lines.
+        self._selected_chain_consecutive_pairs = {
             (min(int(indices[i]), int(indices[i + 1])),
              max(int(indices[i]), int(indices[i + 1])))
             for i in range(len(indices) - 1)
+        }
+        # All pairwise combinations within the chain atoms — used for teal ring
+        # highlighting so that e.g. A-C, A-D, B-D also get rings, not just A-B, B-C.
+        self._selected_chain_pairs = {
+            (min(int(indices[i]), int(indices[j])),
+             max(int(indices[i]), int(indices[j])))
+            for i in range(len(indices))
+            for j in range(i + 1, len(indices))
         }
 
         if self._supercell is not None:
@@ -1310,11 +1457,11 @@ class MulticenterWidget(QWidget):
             n_sig   = trigger.get('n_sigma', float('nan'))
             sig_str = f'{n_sig:.1f}σ' if not math.isnan(n_sig) else 'monotone'
             kind    = 'Sub-chain' if data['type'] == 'sub_chain' else 'Chain'
-            # Count chain bonds that have no force-constant data in the scatter.
+            # Count consecutive bonds missing from FC data (compact FORCE_CONSTANTS).
             plot_keys = {(min(int(pt[2]['atom1_idx']), int(pt[2]['atom2_idx'])),
                           max(int(pt[2]['atom1_idx']), int(pt[2]['atom2_idx'])))
                          for pt in self._plot_points}
-            n_missing = len(self._selected_chain_pairs - plot_keys)
+            n_missing = len(self._selected_chain_consecutive_pairs - plot_keys)
             bar_text  = f'{kind} ({len(indices)}-center):  {label}   [{sig_str}]'
             if n_missing:
                 bar_text += f'   ⚠ {n_missing} bond(s) missing from FC data'
