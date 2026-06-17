@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "betapy"
-version = "1.1.0"
+version = "1.2.0"
 description = "Projected force constant analysis for Phonopy supercells"
 readme = "README.md"
 requires-python = ">=3.8"
@@ -47,7 +47,7 @@ dependencies = [
 Repository = "https://github.com/JanHempelmann/betapy"
 
 [project.optional-dependencies]
-gui      = ["matplotlib", "pyqt5", "pyvista", "pyvistaqt"]
+gui      = ["matplotlib", "pyqt5", "pyvista", "pyvistaqt", "spglib"]
 symmetry = ["spglib"]
 full     = ["matplotlib", "pyqt5", "pyvista", "pyvistaqt", "spglib"]
 test     = ["pytest"]

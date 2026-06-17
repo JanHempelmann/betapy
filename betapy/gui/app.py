@@ -87,7 +87,7 @@ class PreferencesDialog(QDialog):
             'or --refsite flag used\n'
             '  Stiffness Shift — settings file contains stiffness_shift: section, '
             'or --stiffness-shift flag used\n'
-            '  Multicenter Bonding  (β) — must be opened manually via the + menu'
+            '  Multicenter Bonding — must be opened manually via the + menu'
         )
         note.setWordWrap(True)
         note.setStyleSheet('color: #666; font-size: 11px; padding: 4px 0 8px 0;')
@@ -101,7 +101,7 @@ class PreferencesDialog(QDialog):
         self._mc_combo      = self._make_combo('tab/multicenter')
         form.addRow('Ref. Site Projection:', self._refsite_combo)
         form.addRow('Stiffness Shift:',      self._shift_combo)
-        form.addRow('Multicenter Bonding  (β):',  self._mc_combo)
+        form.addRow('Multicenter Bonding:',  self._mc_combo)
         layout.addLayout(form)
 
         btns = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
@@ -318,7 +318,7 @@ class MainWindow(QMainWindow):
             (pref_mc == _AUTO and self._should_show_multicenter_tab())
         )
 
-        self._set_tab_visible(self.multicenter,     'Multicenter Bonding  (β)',  1, show_mc)
+        self._set_tab_visible(self.multicenter,     'Multicenter Bonding',  1, show_mc)
         self._set_tab_visible(self.site_picker,     'Ref. Site Projection', 2, show_refsite)
         self._set_tab_visible(self.stiffness_shift, 'Stiffness Shift',      3, show_shift)
         self._sync_close_buttons()
@@ -340,7 +340,7 @@ class MainWindow(QMainWindow):
         return False
 
     def _should_show_multicenter_tab(self):
-        """Auto condition: disabled — tab must be opened manually (beta feature)."""
+        """Auto condition: disabled — tab must be opened manually."""
         return False
 
     def _set_tab_visible(self, widget, label, preferred_idx, show):
@@ -476,11 +476,11 @@ class MainWindow(QMainWindow):
         label_ref    = ('• ' if has_refsite else '  ') + 'Ref. Site Projection'
         label_shift  = ('• ' if has_shift   else '  ') + 'Stiffness Shift'
         label_lt     = ('• ' if has_lt      else '  ') + 'LT Decomposition  (β)'
-        label_mc     = ('• ' if has_mc      else '  ') + 'Multicenter Bonding  (β)'
+        label_mc     = ('• ' if has_mc      else '  ') + 'Multicenter Bonding'
         label_badger = ('• ' if has_badger  else '  ') + 'Badger Analysis  (β)'
 
         menu.addAction(label_mc,     lambda: self._add_optional_tab(
-            self._ensure_multicenter(), 'Multicenter Bonding  (β)'))
+            self._ensure_multicenter(), 'Multicenter Bonding'))
         menu.addAction(label_badger, lambda: self._add_optional_tab(
             self._ensure_badger(), 'Badger Analysis  (β)'))
         menu.addAction(label_ref,    lambda: self._add_optional_tab(

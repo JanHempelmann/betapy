@@ -5,6 +5,43 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ---
 
+## [1.2.0] — 2026-06-17
+
+### Added
+- **`betapy/core/symmetry.py`** — new module for symmetry-based expansion of
+  compact FORCE_CONSTANTS files using spglib.  Phonopy writes compact files storing
+  only one representative atom per Wyckoff orbit; the missing pairs are recovered
+  by applying crystal symmetry operations.  phi_iso, mean_pfc, rms_pfc, phi_l, and
+  phi_t are scalar invariants under orthogonal transformations and are copied
+  directly from the equivalent pair; geometry is computed from SPOSCAR positions.
+- **`betapy/core/multicenter.py`** — `suggest_cobi_directives` now calls
+  `expand_by_symmetry` by default (`_skip_symmetry_expand=False`) so that the CLI
+  multicenter detector works correctly with compact FORCE_CONSTANTS files
+- **`spglib`** added to the `[gui]` optional-dependency group (already in
+  `[symmetry]` and `[full]`); expansion silently degrades to a no-op when spglib
+  is absent so the package remains usable without it
+- **GUI: all-pairs chain highlighting** — when a multicenter chain is selected,
+  amber halos and teal rings are shown for all pairwise atom combinations within
+  the chain (not only the consecutive nearest-neighbour segments); for a 5-center
+  chain A–B–C–D–E this means all 10 pairs (A-B, A-C, A-D, A-E, B-C, …) are
+  highlighted, making every partial and full sub-chain visible in the scatter plot
+- **GUI: sub-chain tree entries** — 3-center and 4-center fragments of longer
+  chains are exposed as independent top-level tree entries in the Multicenter
+  Bonding tab (in addition to appearing as children under the parent chain item),
+  so they are directly clickable without expanding a parent node
+- **GUI: scatter coverage tiebreaker** — when multiple instances of a chain type
+  are available, the representative is chosen first by n_sigma and then by the
+  number of pairwise atom combinations visible in the scatter plot; this ensures
+  the selected instance actually shows the end-to-end data point for chains with
+  long-range pairs
+
+### Changed
+- **Multicenter Bonding detector graduated from beta (β) to experimental** — the
+  `(β)` label has been removed from the GUI tab and preferences dialog; the feature
+  is documented in the README under Experimental Features
+
+---
+
 ## [1.1.0] — 2026-05-28
 
 ### Added

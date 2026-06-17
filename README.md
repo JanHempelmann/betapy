@@ -30,10 +30,11 @@ The interactive GUI provides a scatter plot of pFC vs bond length alongside a 3D
 
 ### Experimental Features
 
-These features implement methods described in a forthcoming manuscript. They are fully functional and actively used in ongoing research, but their scientific basis has not yet been formally published.
+These features implement methods described in forthcoming manuscripts. They are fully functional and actively used in ongoing research, but their algorithmic details have not yet been formally published.
 
 - **Reference-site projection** — project force constants around any fractional coordinate in the cell (vacancy, interstitial, or arbitrary point); does not need to coincide with an atom
 - **Stiffness-shift parameter** — compare pFC sums between two structures (e.g. intercalated vs deintercalated) using position-based atom matching across structures; falls back to distance-ordered equal-count comparison if matching fails
+- **Multicenter bond detection** — automatically detect anomalously large pFCs that indicate multicenter (3-center, 4-center, …) bonding; traces chains of anomalous pairs through the structure using a Badger-law baseline and Theil-Sen linear fit; generates cobiBetween directives for LOBSTER; available as `--multicenter` on the CLI and as the **Multicenter Bonding** tab in the GUI.  Works with compact FORCE_CONSTANTS files via symmetry-based pair expansion (requires `spglib`).  See [docs/multicenter.md](docs/multicenter.md) for a full parameter guide and worked example.
 ---
 
 ## Requirements
@@ -41,7 +42,8 @@ These features implement methods described in a forthcoming manuscript. They are
 - Python 3.8 or later
 - [Phonopy](https://phonopy.github.io/phonopy/) — for generating `SPOSCAR` and `FORCE_CONSTANTS` inputs
 - **Core dependencies** (installed automatically): `numpy`, `pandas`, `pyyaml`, `scipy`, `tqdm`
-- **GUI dependencies** (optional, see Installation): `matplotlib`, `PyQt5`, `PyVista`, `pyvistaqt`
+- **GUI dependencies** (optional, see Installation): `matplotlib`, `PyQt5`, `PyVista`, `pyvistaqt`, `spglib`
+- **`spglib`** (included in `[gui]` and `[full]`) — required for compact FORCE_CONSTANTS expansion in multicenter detection; gracefully skipped when absent
 
 ---
 
@@ -142,6 +144,10 @@ betapy --write-template
 # Output values in N/m instead of eV/Å²
 betapy --unit N/m --settings betapy.yaml
 
+# Multicenter bond detection (experimental)
+betapy --multicenter
+betapy --multicenter --mc-sigma 1.5 --mc-max-order 5 --mc-angle 150
+
 # Launch GUI
 betapy-gui
 # or
@@ -190,6 +196,8 @@ The **unit toggle** in the toolbar switches all displayed pFC values between eV/
 
 **Stiffness Shift** - load two structures (intercalated and deintercalated), configure the reference site and cutoff, and compute the stiffness-shift parameter. Atom pairs are matched across structures by fractional coordinate proximity.
 
+**Multicenter Bonding** (experimental) — available via the **"+"** tab menu. Detects anomalously large pFCs using a Badger-law baseline and Theil-Sen linear fit, then traces multicenter chains through the structure. Detected chains are listed in a tree grouped by species type; clicking a chain item highlights all pairwise atom combinations (not just nearest-neighbour segments) with amber halos and teal rings in the scatter plot, so every partial sub-chain is visible. 3-center and 4-center fragments of longer chains appear both as children under their parent entry and as independent top-level entries for direct access. When a POSCAR.lobster is present, cobiBetween directives are generated automatically and can be copied from the output panel. Compact FORCE_CONSTANTS files (one representative atom per Wyckoff orbit) are handled transparently via spglib symmetry expansion.
+
 The 3D structure views use full Jmol colours by default (80+ elements). Switch to the VESTA colour scheme at any time via the `Preset` dropdown in the colour panel, or override individual species colours with the colour picker.
 
 ---
@@ -235,21 +243,24 @@ Covalent radii used for automatic bond detection are from:
 betapy/
 ├── betapy/
 │   ├── core/
-│   │   ├── cache.py       # file-keyed result cache (~/.betapy_cache/)
-│   │   ├── constants.py   # shared constants (rounding precision, metal sets)
-│   │   ├── io.py          # file reading/writing (SPOSCAR, FORCE_CONSTANTS, REFPOS)
-│   │   ├── lobster.py     # LOBSTER output parser, energy-resolved bonding curves
-│   │   ├── structure.py   # Supercell class, PBC distance calculations
-│   │   ├── projection.py  # pFC mathematics, shell identification, stiffness shift
-│   │   └── settings.py    # Settings dataclass, YAML loading, CLI parser
+│   │   ├── cache.py        # file-keyed result cache (~/.betapy_cache/)
+│   │   ├── constants.py    # shared constants (rounding precision, metal sets)
+│   │   ├── io.py           # file reading/writing (SPOSCAR, FORCE_CONSTANTS, REFPOS)
+│   │   ├── lobster.py      # LOBSTER output parser, energy-resolved bonding curves
+│   │   ├── multicenter.py  # multicenter chain detection, cobiBetween directives
+│   │   ├── structure.py    # Supercell class, PBC distance calculations
+│   │   ├── projection.py   # pFC mathematics, shell identification, stiffness shift
+│   │   ├── settings.py     # Settings dataclass, YAML loading, CLI parser
+│   │   └── symmetry.py     # spglib-based compact FC expansion by crystal symmetry
 │   ├── gui/
-│   │   ├── app.py              # main window, auto-loading, tab assembly
-│   │   ├── cohp_viewer.py      # energy-resolved bonding popup (COHP/COOP/COBI)
-│   │   ├── pfc_viewer.py       # scatter plot + 3D view, click-to-highlight
-│   │   ├── refsite_viewer.py   # refsite scatter plot and sortable pair table
-│   │   ├── site_picker.py      # reference site placement and projection tool
+│   │   ├── app.py                     # main window, auto-loading, tab assembly
+│   │   ├── cohp_viewer.py             # energy-resolved bonding popup (COHP/COOP/COBI)
+│   │   ├── multicenter_viewer.py      # multicenter chain tree, highlighting, directives
+│   │   ├── pfc_viewer.py              # scatter plot + 3D view, click-to-highlight
+│   │   ├── refsite_viewer.py          # refsite scatter plot and sortable pair table
+│   │   ├── site_picker.py             # reference site placement and projection tool
 │   │   ├── stiffness_shift_widget.py  # stiffness-shift comparison tab
-│   │   └── structure_view.py   # shared PyVista 3D renderer with colour presets
+│   │   └── structure_view.py          # shared PyVista 3D renderer with colour presets
 │   ├── data/
 │   │   └── elements.py    # covalent radii, Jmol/VESTA colour presets, display radii
 │   ├── _gui_entry.py      # betapy-gui entry point with graceful ImportError handling
