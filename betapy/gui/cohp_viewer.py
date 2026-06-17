@@ -9,7 +9,7 @@ Plot convention (standard LOBSTER style)
 -----------------------------------------
 - Energy (eV, Fermi = 0) on the vertical axis
 - Curve value on the horizontal axis
-- Blue fill: bonding region  (COHP/COOP < 0  |  COBI > 0)
+- Blue fill: bonding region  (COHP < 0  |  COOP > 0  |  COBI > 0)
 - Red fill : antibonding region
 - Dashed horizontal line at E = 0 (Fermi level)
 """
@@ -41,7 +41,7 @@ _LABELS = {
     'cobi': 'COBI',
 }
 
-_BONDING_NEGATIVE = {'cohp', 'coop'}   # negative values = bonding
+_BONDING_NEGATIVE = {'cohp'}   # negative values = bonding (COOP/COBI: positive = bonding)
 _COLOUR_BOND  = '#4d94ff'
 _COLOUR_ANTI  = '#ff6666'
 
