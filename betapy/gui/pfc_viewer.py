@@ -23,7 +23,7 @@ from PyQt5.QtWidgets import (
     QCheckBox, QPushButton, QLabel, QFileDialog, QMessageBox,
     QGroupBox, QScrollArea, QFrame,
 )
-from PyQt5.QtCore import Qt, pyqtSignal
+from PyQt5.QtCore import Qt, QSize, pyqtSignal
 
 from matplotlib.backends.backend_qt5agg import (
     FigureCanvasQTAgg as FigureCanvas,
@@ -100,6 +100,7 @@ class PFCViewerWidget(QWidget):
         self.figure = Figure(figsize=(6, 5), tight_layout=True)
         self.canvas = FigureCanvas(self.figure)
         self.mpl_toolbar = NavigationToolbar(self.canvas, self)
+        self.mpl_toolbar.setIconSize(QSize(24, 24))
         self.canvas.mpl_connect('button_press_event', self._on_scatter_click)
 
         left_layout.addWidget(self.mpl_toolbar)

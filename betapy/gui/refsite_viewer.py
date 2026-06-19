@@ -18,7 +18,7 @@ from PyQt5.QtWidgets import (
     QScrollArea, QFrame, QCheckBox, QTabWidget,
     QHeaderView, QAbstractItemView,
 )
-from PyQt5.QtCore import Qt, pyqtSignal
+from PyQt5.QtCore import Qt, QSize, pyqtSignal
 from PyQt5.QtGui import QColor
 
 from matplotlib.backends.backend_qt5agg import (
@@ -100,6 +100,7 @@ class RefsitePFCWidget(QWidget):
         self.figure = Figure(figsize=(5, 4), tight_layout=True)
         self.canvas = FigureCanvas(self.figure)
         self.mpl_toolbar = NavigationToolbar(self.canvas, self)
+        self.mpl_toolbar.setIconSize(QSize(24, 24))
         self.canvas.mpl_connect('button_press_event', self._on_scatter_click)
         scatter_layout.addWidget(self.mpl_toolbar)
         scatter_layout.addWidget(self.canvas, stretch=1)

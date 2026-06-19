@@ -16,7 +16,7 @@ from PyQt5.QtWidgets import (
     QLabel, QGroupBox, QScrollArea, QCheckBox,
     QPushButton, QFileDialog,
 )
-from PyQt5.QtCore import Qt
+from PyQt5.QtCore import Qt, QSize
 
 from matplotlib.backends.backend_qt5agg import (
     FigureCanvasQTAgg as FigureCanvas,
@@ -83,6 +83,7 @@ class LTDecompositionWidget(QWidget):
         self.figure = Figure(figsize=(10, 8), tight_layout={'pad': 2.5})
         self.canvas = FigureCanvas(self.figure)
         self.mpl_toolbar = NavigationToolbar(self.canvas, self)
+        self.mpl_toolbar.setIconSize(QSize(24, 24))
         outer.addWidget(self.mpl_toolbar)
         outer.addWidget(self.canvas, stretch=1)
 

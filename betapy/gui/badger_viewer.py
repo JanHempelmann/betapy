@@ -17,7 +17,7 @@ from PyQt5.QtWidgets import (
     QPushButton, QLabel, QGroupBox, QProgressBar,
     QCheckBox, QScrollArea, QMessageBox, QFrame, QSpinBox,
 )
-from PyQt5.QtCore import Qt, QThread, pyqtSignal
+from PyQt5.QtCore import Qt, QThread, QSize, pyqtSignal
 
 from matplotlib.backends.backend_qt5agg import (
     FigureCanvasQTAgg as FigureCanvas,
@@ -240,6 +240,7 @@ class BadgerWidget(QWidget):
         self._ax_conv, self._ax_iso = self._fig.subplots(1, 2)
         self._canvas = FigureCanvas(self._fig)
         self._toolbar = NavigationToolbar(self._canvas, right)
+        self._toolbar.setIconSize(QSize(24, 24))
 
         rv.addWidget(self._toolbar)
         rv.addWidget(self._canvas, stretch=1)

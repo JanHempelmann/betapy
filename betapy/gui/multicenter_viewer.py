@@ -27,7 +27,7 @@ from PyQt5.QtWidgets import (
     QMessageBox, QCheckBox, QScrollArea, QFrame, QDialog,
     QTabWidget, QTreeWidget, QTreeWidgetItem, QStackedWidget,
 )
-from PyQt5.QtCore import Qt, QThread, pyqtSignal
+from PyQt5.QtCore import Qt, QThread, QSize, pyqtSignal
 from PyQt5.QtGui import QFont, QFontDatabase
 
 from matplotlib.backends.backend_qt5agg import (
@@ -544,6 +544,7 @@ class MulticenterWidget(QWidget):
         self._canvas = FigureCanvas(self._figure)
         self._canvas.mpl_connect('button_press_event', self._on_scatter_click)
         self._mpl_toolbar = NavigationToolbar(self._canvas, self)
+        self._mpl_toolbar.setIconSize(QSize(24, 24))
         mv.addWidget(self._mpl_toolbar)
         mv.addWidget(self._canvas, stretch=1)
 
