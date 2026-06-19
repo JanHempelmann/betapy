@@ -729,7 +729,7 @@ def suggest_cobi_directives(
         bulk_results, supercell, poscar_lobster_path=None,
         n_sigma=1.5, min_pairs=4,
         min_angle_deg=150.0, max_order=5, bond_cutoff=4.0,
-        detect_cutoff_frac=0.75,
+        detect_cutoff_frac=1.0,
         max_nn_ratio=1.5,
         fit_quantile=None,
         reliability_cutoff=None,
@@ -752,9 +752,8 @@ def suggest_cobi_directives(
     detect_cutoff_frac   : float, fraction of the reliability limit (L/2) used as
                            the maximum pair distance considered for flagging.
                            Pairs beyond this threshold still anchor the Badger
-                           baseline but cannot be flagged.  Default 0.75.
-                           Increase toward 1.0 only when multicenter bonds are
-                           expected at unusually long range (> 8 Å).
+                           baseline but cannot be flagged.  Default 1.0 (full
+                           reliability window).
     max_nn_ratio         : float or None, maximum allowed ratio of a single chain
                            step distance to the species-pair NN distance.  Steps
                            longer than this multiple of the NN are not traversed,
