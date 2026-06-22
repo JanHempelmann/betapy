@@ -55,6 +55,7 @@ from pathlib import Path
 from scipy.stats import theilslopes, median_abs_deviation
 
 from betapy.core.lobster import _parse_poscar_lobster
+from betapy.data.elements import covalent_radius
 
 
 # ---------------------------------------------------------------------------
@@ -722,6 +723,63 @@ def format_cobi_directive(chain_sc_indices, supercell, lob_poscar):
 
 
 # ---------------------------------------------------------------------------
+# Species-pair NN reference, screened against covalent radii
+# ---------------------------------------------------------------------------
+
+def _bonded_nn_distances(reliable_pairs, bond_ratio_tol=1.4):
+    """
+    Per-species-pair shortest observed distance, used by find_chains/_grow_chain
+    as the "real bond" reference for the max_nn_ratio chain-hop filter.
+
+    A species pair's shortest observed distance is only a meaningful NN
+    reference if it is plausibly a direct bond. If even the shortest shell is
+    far beyond a generous multiple of the covalent-radii sum (Cordero/Alvarez,
+    via betapy.data.elements.covalent_radius), this species pair never bonds
+    directly at any observed distance — e.g. S-S or Zn-Zn in zincblende ZnS,
+    where the only S-S shell is the 2nd-coordination-shell distance mediated
+    through Zn. Left unscreened, that distance gets adopted as "the S-S NN",
+    so every periodic-image S-S hop sits at ratio ~= 1.0 and trivially passes
+    max_nn_ratio, producing nonsensical single-sublattice chains.
+
+    Disqualified species pairs are mapped to 0.0 rather than omitted: the
+    _grow_chain lookup treats a *missing* entry as "no filter applies", so
+    omitting would unfilter the pair instead of blocking it. A reference of
+    0.0 makes every hop of that species pair fail the max_nn_ratio check.
+
+    Parameters
+    ----------
+    reliable_pairs : list of dicts with 'atom1_idx', 'atom2_idx', 'species1',
+                     'species2', 'distance', 'phi_iso'.
+    bond_ratio_tol : float or None — disable the covalent-radius screen
+                     (revert to the raw empirical minimum) by passing None
+                     or a non-positive value.
+
+    Returns
+    -------
+    dict : {(species1, species2) sorted tuple -> float}
+    """
+    from collections import defaultdict
+    seen, by_sp = set(), defaultdict(list)
+    for r in reliable_pairs:
+        key = (min(r['atom1_idx'], r['atom2_idx']), max(r['atom1_idx'], r['atom2_idx']))
+        if key in seen:
+            continue
+        seen.add(key)
+        phi = r.get('phi_iso', float('nan'))
+        if np.isfinite(phi) and phi > 0:
+            by_sp[tuple(sorted([r['species1'], r['species2']]))].append(r['distance'])
+
+    nn_distances = {}
+    for sp, ds in by_sp.items():
+        d_min = min(ds)
+        if bond_ratio_tol is not None and bond_ratio_tol > 0:
+            cov_sum = covalent_radius(sp[0]) + covalent_radius(sp[1])
+            d_min = d_min if d_min <= bond_ratio_tol * cov_sum else 0.0
+        nn_distances[sp] = d_min
+    return nn_distances
+
+
+# ---------------------------------------------------------------------------
 # Top-level pipeline
 # ---------------------------------------------------------------------------
 
@@ -731,6 +789,7 @@ def suggest_cobi_directives(
         min_angle_deg=150.0, max_order=5, bond_cutoff=4.0,
         detect_cutoff_frac=1.0,
         max_nn_ratio=1.5,
+        bond_ratio_tol=1.4,
         fit_quantile=None,
         reliability_cutoff=None,
         _skip_symmetry_expand=False):
@@ -760,6 +819,11 @@ def suggest_cobi_directives(
                            preventing chains from forming through non-bonded
                            contacts (e.g. diamond 2nd-NN at 1.63× vs genuine
                            multicenter segments at ≤1.0×).  Default 1.5.
+    bond_ratio_tol       : float or None, maximum allowed ratio of a species pair's
+                           shortest observed distance to the sum of its covalent
+                           radii for that distance to be eligible as the NN
+                           reference used by max_nn_ratio.  See
+                           _bonded_nn_distances() for the rationale.  Default 1.4.
     fit_quantile         : ignored, kept for backward compatibility.
 
     Returns
@@ -807,18 +871,7 @@ def suggest_cobi_directives(
 
     # NN distance per species pair — used to reject chain steps that jump
     # through non-bonded contacts (segment-level max_nn_ratio check).
-    import math as _math
-    from collections import defaultdict as _dd
-    _seen: set = set()
-    _by_sp: dict = _dd(list)
-    for r in reliable_pairs:
-        _k = (min(r['atom1_idx'], r['atom2_idx']), max(r['atom1_idx'], r['atom2_idx']))
-        if _k not in _seen:
-            _seen.add(_k)
-            phi = r.get('phi_iso', float('nan'))
-            if _math.isfinite(phi) and phi > 0:
-                _by_sp[tuple(sorted([r['species1'], r['species2']]))].append(r['distance'])
-    nn_distances = {sp: min(ds) for sp, ds in _by_sp.items()}
+    nn_distances = _bonded_nn_distances(reliable_pairs, bond_ratio_tol=bond_ratio_tol)
 
     chains = find_chains(
         flagged, supercell, bulk_results,

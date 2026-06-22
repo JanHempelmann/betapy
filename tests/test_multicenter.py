@@ -19,6 +19,8 @@ from betapy.core.multicenter import (
     find_chains,
     format_cobi_directive,
     append_cobi_directives,
+    _bonded_nn_distances,
+    suggest_cobi_directives,
 )
 from betapy.core.structure import Supercell
 from betapy.core.lobster import _parse_poscar_lobster
@@ -531,3 +533,119 @@ class TestAppendCobiDirectives:
         n = append_cobi_directives(f, ['cobiBetween Ge1 Te5', 'cobiBetween Te5 Ge2'])
         assert n == 1
         assert 'cobiBetween Te5 Ge2' in f.read_text()
+
+
+# ---------------------------------------------------------------------------
+# _bonded_nn_distances — covalent-radius screen for the species-pair NN
+# reference used by max_nn_ratio
+# ---------------------------------------------------------------------------
+
+class TestBondedNnDistances:
+
+    def _records(self, sp1, sp2, dists):
+        return [
+            {'atom1_idx': i + 1, 'atom2_idx': i + 2, 'species1': sp1,
+             'species2': sp2, 'distance': d, 'phi_iso': 1.0}
+            for i, d in enumerate(dists)
+        ]
+
+    def test_real_bond_kept_at_face_value(self):
+        # S-Zn in ZnS: 2.32 A vs covalent sum 2.27 A (ratio 1.02) — a real bond.
+        recs = self._records('S', 'Zn', [2.32, 4.6])
+        nn = _bonded_nn_distances(recs, bond_ratio_tol=1.4)
+        assert nn[('S', 'Zn')] == pytest.approx(2.32)
+
+    def test_non_bonded_same_species_pair_disqualified(self):
+        # S-S in zincblende ZnS: the only shell (3.79 A) is the 2nd-coordination
+        # -shell distance mediated through Zn, not a direct bond (covalent sum
+        # 2.10 A, ratio 1.81). Must be disqualified (0.0), not merely recorded.
+        recs = self._records('S', 'S', [3.79, 7.58])
+        nn = _bonded_nn_distances(recs, bond_ratio_tol=1.4)
+        assert nn[('S', 'S')] == 0.0
+
+    def test_weak_secondary_bond_within_tolerance_is_kept(self):
+        # Te-Te across the Sb2Te3 van der Waals gap: 3.60 A vs covalent sum
+        # 2.76 A (ratio 1.30) — weaker than a primary bond but genuinely used
+        # as a chain-hop in the real detection pipeline; must survive the screen.
+        recs = self._records('Te', 'Te', [3.60, 7.20])
+        nn = _bonded_nn_distances(recs, bond_ratio_tol=1.4)
+        assert nn[('Te', 'Te')] == pytest.approx(3.60)
+
+    def test_bond_ratio_tol_none_disables_the_screen(self):
+        recs = self._records('S', 'S', [3.79])
+        nn = _bonded_nn_distances(recs, bond_ratio_tol=None)
+        assert nn[('S', 'S')] == pytest.approx(3.79)
+
+    def test_bond_ratio_tol_zero_disables_the_screen(self):
+        recs = self._records('S', 'S', [3.79])
+        nn = _bonded_nn_distances(recs, bond_ratio_tol=0)
+        assert nn[('S', 'S')] == pytest.approx(3.79)
+
+
+# ---------------------------------------------------------------------------
+# suggest_cobi_directives — end-to-end regression test for the ZnS-style
+# single-sublattice false positive
+# ---------------------------------------------------------------------------
+
+class TestSuggestCobiDirectivesBondRatioTol:
+    """
+    Reproduces the ZnS false positive in miniature: a same-species pair (here
+    'S') with no real direct bond at any observed distance must not seed a
+    "chain" that just walks the lattice's own periodic translation vector.
+
+    In real ZnS the only S-S shell (3.79 A) is the 2nd-coordination-shell
+    distance mediated through Zn; here 7 'S' atoms spaced 4 A apart on a line
+    play the same role, with the first-shell pFC boosted so it gets flagged —
+    mirroring the real data, where the shortest S-S shell is flagged at 3.7
+    sigma yet is not a bond.
+    """
+
+    @pytest.fixture
+    def marching_sc(self):
+        n, spacing = 7, 4.0
+        return _supercell_from_dict({
+            'skal':         1.0,
+            'lattice':      [[100., 0., 0.], [0., 100., 0.], [0., 0., 100.]],
+            'chem_symbols': ['S'],
+            'chem_atoms':   [n],
+            'positions':    [[i * spacing / 100.0, 0., 0.] for i in range(n)],
+        })
+
+    def _marching_bulk(self, n=7, spacing=4.0, anomaly_factor=4.0):
+        pairs = []
+        for i in range(n):
+            for j in range(i + 1, n):
+                d   = (j - i) * spacing
+                pfc = (0.3 * d + 0.2) ** (-3)
+                if j - i == 1:
+                    pfc *= anomaly_factor
+                pairs.append({
+                    'atom1_idx': i + 1, 'atom2_idx': j + 1,
+                    'distance': d, 'direction': [1., 0., 0.],
+                    'species1': 'S', 'species2': 'S',
+                    'mean_pfc': pfc, 'phi_l': pfc, 'phi_t': pfc,
+                })
+        return pairs
+
+    def test_bond_ratio_tol_blocks_single_sublattice_chain(self, marching_sc):
+        bulk = self._marching_bulk()
+        result = suggest_cobi_directives(
+            bulk, marching_sc, poscar_lobster_path=None,
+            n_sigma=1.5, max_order=4, min_angle_deg=150.0, bond_cutoff=4.5,
+            _skip_symmetry_expand=True)
+        assert result['flagged_pairs'], 'fixture must actually trigger a flag'
+        assert result['chains'] == [], (
+            "S-S has no real bond at any observed distance (covalent radius "
+            "sum ~2.1 A vs the 4.0 A shell) — must not chain by walking the "
+            "periodic translation vector")
+
+    def test_disabling_bond_ratio_tol_reproduces_the_bug(self, marching_sc):
+        # Confirms the fixture is meaningful: without the covalent-radius
+        # screen, the same data does produce the spurious marching chain.
+        bulk = self._marching_bulk()
+        result = suggest_cobi_directives(
+            bulk, marching_sc, poscar_lobster_path=None,
+            n_sigma=1.5, max_order=4, min_angle_deg=150.0, bond_cutoff=4.5,
+            bond_ratio_tol=0, _skip_symmetry_expand=True)
+        assert len(result['chains']) > 0
+        assert set(result['chains'][0]['species_chain']) == {'S'}

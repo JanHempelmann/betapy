@@ -417,6 +417,16 @@ def _build_parser() -> argparse.ArgumentParser:
              'at ≤1.0×).  Pass 0 to disable.',
     )
     parser.add_argument(
+        '--mc-bond-tol', type=float, default=1.4, metavar='R',
+        help='Maximum allowed ratio of a species pair\'s shortest observed '
+             'distance to the sum of its covalent radii for that distance to '
+             'be treated as a real bond (default: 1.4).  Species pairs that '
+             'never bond directly at any observed distance (e.g. S-S or '
+             'Zn-Zn in zincblende ZnS) are excluded from chain-hop '
+             'traversal entirely, preventing nonsensical single-sublattice '
+             'chains. Pass 0 to disable.',
+    )
+    parser.add_argument(
         '--mc-max-order', type=int, default=5, metavar='N',
         help='Maximum number of atoms in a multicenter chain (default: 5).',
     )

@@ -85,6 +85,14 @@ Maximum number of atoms in a chain. A value of 5 captures up to 5-center interac
 Maximum ratio of a chain step length to the species-pair nearest-neighbour distance. Chain growth is blocked when a candidate step exceeds this multiple of the NN distance. This prevents chains from forming through long-range contacts that are geometrically collinear but not genuinely bonded.
 1.5 should be appropriate is generous for most compounds and should be able to capture even multicenter behavior at the primary/secondary bonding end of the spectrum.
 
+### `--mc-bond-tol` (default 1.4)
+
+Maximum ratio of a species pair's shortest *observed* distance to the sum of its covalent radii (Cordero/Alvarez values, the same table used for structure-view bond rendering) for that distance to be accepted as a real — possibly weak — bond.
+
+This guards against a failure mode `--mc-ratio` cannot catch on its own: some species pairs never form a direct bond at *any* observed distance. In zincblende ZnS, for example, the only S-S contact in the structure is the 2nd-coordination-shell distance mediated through Zn (~3.8 Å) — there is no shorter, genuinely bonded S-S shell to compare against. Without this check, that distance gets adopted as "the S-S nearest-neighbour", so every periodic-image S-S hop sits at ratio ≈ 1.0 and trivially passes `--mc-ratio`, producing nonsensical single-sublattice chains (`S-S-S-S`, `Zn-Zn-Zn-Zn`) that just walk the lattice's own translation vector and contribute meaningless `cobiBetween atom1 atom1 cell ...` directives.
+
+Species pairs whose shortest shell exceeds `--mc-bond-tol × (covalent radii sum)` are excluded from chain-hop traversal entirely (not merely ratio-limited). 1.4 was chosen empirically against the bundled example systems: it keeps the genuine weak/secondary same-species hop used in Sb₂Te₃ (Te-Te across the van der Waals gap, ratio 1.30) while excluding every purely geometric, non-bonded same-species contact observed (ZnS S-S/Zn-Zn, GeTe Ge-Ge/Te-Te, Sb₂Te₃ Sb-Sb, all ≥1.5). Pass 0 to disable and fall back to the previous behaviour (NN reference taken purely from the empirical shortest observed distance).
+
 ---
 
 ## Understanding the output
@@ -167,6 +175,8 @@ print(spglib.__version__)"` to verify. Also check the reliability cutoff printed
 
 **Too many false positives.**  
 Raise `--mc-sigma` to 2.0 or higher. Check whether the species-pair dataset has outliers that are distorting the Badger baseline, for example very short or very long bonds at the edges of the distance range can pull the fit. The Theil-Sen regression is resistant to outliers but not immune.
+
+**Chains that just walk one sublattice (e.g. `S-S-S-S` in ZnS), with `cobiBetween` directives between the same atom label at consecutive cell images.** This is not a sigma problem — it means a same-species pair has no genuine direct bond at any observed distance (its only shell is a 2nd-coordination-shell contact mediated through another species), so that distance gets misread as "the nearest-neighbour" and every periodic-image hop along it trivially passes `--mc-ratio`. `--mc-bond-tol` (default 1.4) screens species-pair NN references against covalent radii before they are used for chain-hop traversal; raising `--mc-sigma` will not fix this since the underlying statistical flag (e.g. ZnS S-S at 3.7σ) is not itself wrong, only its use as a chain-growth anchor is.
 
 **Chains cut short at unexpected points.**  
 The `--mc-ratio` filter may be blocking a step. Print the raw flagged pairs first

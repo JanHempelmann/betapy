@@ -81,6 +81,7 @@ def run_multicenter(supercell, bulk_results, lobster_dir, args):
         max_order=args.mc_max_order,
         min_angle_deg=args.mc_angle,
         max_nn_ratio=args.mc_ratio if args.mc_ratio > 0 else None,
+        bond_ratio_tol=args.mc_bond_tol if args.mc_bond_tol > 0 else None,
         reliability_cutoff=rc,
     )
 
