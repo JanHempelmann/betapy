@@ -26,6 +26,7 @@ from matplotlib.backends.backend_qt5agg import (
 from matplotlib.figure import Figure
 
 from betapy.core.constants import EV_ANG2_TO_N_M, UNIT_LABEL, UNIT_EV, UNIT_NM
+from betapy.core.badger import signed_cbrt_inv
 from betapy.gui.structure_view import StructureView
 
 _COLORS = [
@@ -193,6 +194,22 @@ class BadgerWidget(QWidget):
         )
         self._chk_iso.toggled.connect(self._refresh_plot)
         lv.addWidget(self._chk_iso)
+
+        self._chk_iso_signed = QCheckBox('Signed (preserve sign, trace-based)')
+        self._chk_iso_signed.setChecked(False)
+        self._chk_iso_signed.setToolTip(
+            'Unchecked: Φ_iso = (|φ_l|+2|φ_t|)/3 — magnitude, always ≥ 0\n'
+            'Checked: Φ_iso,signed = (φ_l+2φ_t)/3 = Tr(Φ)/3 — the same\n'
+            'rotational invariant without discarding sign. Equals the\n'
+            'magnitude version when φ_l and φ_t share a sign; can be much\n'
+            'smaller or cross zero when they don\'t — that cancellation is\n'
+            'exactly what the magnitude version is designed to hide.\n'
+            'Applies to both the top-right plot and the bottom-left Badger\n'
+            'scatter; in Badger space uses sign(x)·|x|^(-1/3) so positive-\n'
+            'and negative-sign points separate above/below zero.'
+        )
+        self._chk_iso_signed.toggled.connect(self._refresh_plot)
+        lv.addWidget(self._chk_iso_signed)
 
         self._progress = QProgressBar()
         self._progress.setRange(0, 0)
@@ -447,36 +464,56 @@ class BadgerWidget(QWidget):
             recs_by_sp[tuple(sorted([r['species1'], r['species2']]))].append(r)
 
         # ── Top row: conventional and isotropic/reference Badger ──────────
-        use_iso     = self._chk_iso.isChecked()
-        iso_val_key = 'phi_iso'    if use_iso else 'mean_pfc'
+        use_iso        = self._chk_iso.isChecked()
+        use_iso_signed = use_iso and self._chk_iso_signed.isChecked()
+        if use_iso_signed:
+            iso_val_key = 'phi_iso_signed'
+        elif use_iso:
+            iso_val_key = 'phi_iso'
+        else:
+            iso_val_key = 'mean_pfc'
         iso_fits    = self._result.iso_fits if use_iso else self._result.conv_fits
-        iso_title   = ('Isotropic   $(|\\phi_l|+2|\\phi_t|)/3$'
-                       if use_iso else 'Conventional   $\\Phi_p$  (reference)')
+        if use_iso_signed:
+            iso_title = 'Isotropic (signed)   $(\\phi_l+2\\phi_t)/3$'
+        elif use_iso:
+            iso_title = 'Isotropic   $(|\\phi_l|+2|\\phi_t|)/3$'
+        else:
+            iso_title = 'Conventional   $\\Phi_p$  (reference)'
 
-        for ax, fits, val_key, title, show_global_fit, draw_scatter in [
+        for ax, fits, val_key, title, show_global_fit, draw_scatter, allow_signed in [
             (self._ax_conv, self._result.conv_fits, 'mean_pfc',
-             'Conventional   $\\Phi_p$', False, False),
-            (self._ax_iso,  iso_fits, iso_val_key, iso_title, True, True),
+             'Conventional   $\\Phi_p$', False, False, False),
+            (self._ax_iso,  iso_fits, iso_val_key, iso_title, True, True, use_iso_signed),
         ]:
             ax.cla()
             ax.set_title(title, fontsize=11)
             ax.set_xlabel('r  (Å)')
             ax.set_ylabel(y_label)
             ax.tick_params(labelsize=9)
+            if allow_signed:
+                ax.axhline(0, color='#999999', linewidth=0.8, linestyle=':', zorder=0)
 
             for sp_key in all_keys:
                 color = self._color_map.get(sp_key, '#888888')
                 label = f'{sp_key[0]}–{sp_key[1]}'
                 vis   = sp_key in active
 
-                recs = [r for r in recs_by_sp[sp_key]
-                        if math.isfinite(r.get(val_key, float('nan')))
-                        and r[val_key] > 0]
+                if allow_signed:
+                    recs = [r for r in recs_by_sp[sp_key]
+                            if math.isfinite(r.get(val_key, float('nan')))
+                            and r[val_key] != 0]
+                else:
+                    recs = [r for r in recs_by_sp[sp_key]
+                            if math.isfinite(r.get(val_key, float('nan')))
+                            and r[val_key] > 0]
                 if not recs:
                     continue
 
-                xs = np.array([r['distance']                          for r in recs])
-                ys = np.array([r[val_key] ** (-1.0/3.0) * cbrt_scale for r in recs])
+                xs = np.array([r['distance'] for r in recs])
+                if allow_signed:
+                    ys = np.array([signed_cbrt_inv(r[val_key]) * cbrt_scale for r in recs])
+                else:
+                    ys = np.array([r[val_key] ** (-1.0/3.0) * cbrt_scale for r in recs])
 
                 if draw_scatter:
                     sc = ax.scatter(xs, ys, color=color, alpha=_SCATTER_ALPHA,
@@ -484,7 +521,10 @@ class BadgerWidget(QWidget):
                     sc.set_visible(vis)
                     self._artists_by_sp.setdefault(sp_key, []).append(sc)
 
-                if show_global_fit and sp_key in fits:
+                # Existing fits were computed against the unsigned phi_iso;
+                # they don't apply to the signed quantity's scatter, so skip
+                # drawing a fit line that would silently mismatch the points.
+                if show_global_fit and not allow_signed and sp_key in fits:
                     shell_fits = fits[sp_key]
                     if shell_fits:
                         sf = shell_fits[0]

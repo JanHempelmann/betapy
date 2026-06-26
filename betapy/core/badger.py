@@ -36,6 +36,35 @@ from scipy.stats import theilslopes, median_abs_deviation
 
 
 # ---------------------------------------------------------------------------
+# Sign-preserving Badger-space transform
+# ---------------------------------------------------------------------------
+
+def signed_cbrt_inv(x):
+    """
+    Sign-preserving inverse-cube-root transform: sign(x) * |x|^(-1/3).
+
+    The ordinary Badger transform x^{-1/3} is undefined for negative x
+    without choosing a complex branch. This is the real-valued extension:
+    for x > 0 it reduces to the usual x^{-1/3}; for x < 0 it returns a
+    negative value of the same magnitude as |x|^{-1/3}.  As x -> 0 from
+    either side the result diverges to +-infinity, so positive- and
+    negative-sign populations plotted this way separate visually above and
+    below zero rather than needing a separate color/marker channel.
+
+    x == 0 is a true singularity (division by zero) and is returned as NaN
+    rather than +-inf, so callers can mask it the same way they already mask
+    other non-finite values.
+
+    Works on scalars and numpy arrays alike.
+    """
+    x = np.asarray(x, dtype=float)
+    with np.errstate(divide='ignore', invalid='ignore'):
+        result = np.sign(x) * np.abs(x) ** (-1.0 / 3.0)
+    result = np.where(x == 0, np.nan, result)
+    return result.item() if np.ndim(result) == 0 else result
+
+
+# ---------------------------------------------------------------------------
 # Shell splitting (same algorithm as in multicenter.py; kept independent so
 # the two modules can be tuned separately without cross-module coupling)
 # ---------------------------------------------------------------------------
@@ -154,13 +183,20 @@ def _find_nn_anchor(records, value_key='mean_pfc'):
 
 def compute_badger_quantities(bulk_results):
     """
-    Add 'phi_iso', 'xi', and 'eta_pair' to each bulk result record.
+    Add 'phi_iso', 'phi_iso_signed', 'xi', and 'eta_pair' to each bulk result record.
 
     Uses phi_l and phi_t already computed by compute_bulk_pfcs().
 
         F_iso    = (|phi_l| + 2·|phi_t|) / 3  — mean absolute eigenvalue;
                    rotationally invariant and free of sign-cancellation
                    outliers (cf. |Tr(Φ)|/3 which → 0 when phi_l ≈ −2·phi_t)
+        F_iso,signed = (phi_l + 2·phi_t) / 3 = Tr(Φ)/3 — the same rotational
+                   invariant without discarding sign. Equal to F_iso whenever
+                   phi_l and phi_t share a sign; can be much smaller in
+                   magnitude (or cross zero) when they don't, since that is
+                   exactly the cancellation F_iso is designed to avoid.
+                   Provided as an opt-in alternative for inspecting that
+                   cancellation directly rather than masking it.
         ξ        = mean_pfc / F_iso
         eta_pair = |phi_l / phi_t|  — longitudinal-to-transverse anisotropy
                    of the actual FC matrix for this pair; independent of
@@ -183,15 +219,17 @@ def compute_badger_quantities(bulk_results):
         mean_pfc = r.get('mean_pfc', float('nan'))
 
         if not (np.isfinite(phi_l) and np.isfinite(phi_t) and np.isfinite(mean_pfc)):
-            augmented.append({**r, 'phi_iso': float('nan'), 'xi': float('nan'),
-                               'eta_pair': float('nan')})
+            augmented.append({**r, 'phi_iso': float('nan'), 'phi_iso_signed': float('nan'),
+                               'xi': float('nan'), 'eta_pair': float('nan')})
             continue
 
-        phi_iso  = (abs(phi_l) + 2.0 * abs(phi_t)) / 3.0
+        phi_iso        = (abs(phi_l) + 2.0 * abs(phi_t)) / 3.0
+        phi_iso_signed = (phi_l + 2.0 * phi_t) / 3.0
         xi       = mean_pfc / phi_iso if phi_iso > 1e-12 else float('nan')
         eta_pair = (abs(phi_l / phi_t)
                     if abs(phi_t) > 1e-12 else float('nan'))
-        augmented.append({**r, 'phi_iso': phi_iso, 'xi': xi, 'eta_pair': eta_pair})
+        augmented.append({**r, 'phi_iso': phi_iso, 'phi_iso_signed': phi_iso_signed,
+                           'xi': xi, 'eta_pair': eta_pair})
     return augmented
 
 

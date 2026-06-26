@@ -222,6 +222,8 @@ def group_by_shells(results, dist_precision=0.01, max_distance=None):
         species1, species2,
         distance_mean, distance_std,
         pfc_mean, pfc_std, pfc_min, pfc_max,
+        phi_l_mean, phi_l_std, phi_l_min, phi_l_max,
+        phi_t_mean, phi_t_std,
         count, records
     Sorted by (species1, species2, distance_mean).
     """
@@ -260,6 +262,8 @@ def group_by_shells(results, dist_precision=0.01, max_distance=None):
             'pfc_max':       float(np.max(pfcs)),
             'phi_l_mean':    float(np.nanmean(phi_ls)) if has_lt else float('nan'),
             'phi_l_std':     float(np.nanstd(phi_ls))  if has_lt else float('nan'),
+            'phi_l_min':     float(np.nanmin(phi_ls))  if has_lt else float('nan'),
+            'phi_l_max':     float(np.nanmax(phi_ls))  if has_lt else float('nan'),
             'phi_t_mean':    float(np.nanmean(phi_ts)) if has_lt else float('nan'),
             'phi_t_std':     float(np.nanstd(phi_ts))  if has_lt else float('nan'),
             'count':         len(records),

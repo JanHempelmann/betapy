@@ -33,6 +33,7 @@ from matplotlib.figure import Figure
 
 from betapy.gui.structure_view import StructureView
 from betapy.core.constants import PFC_ROUNDING_DECIMALS, EV_ANG2_TO_N_M, UNIT_LABEL, UNIT_EV
+from betapy.core.badger import signed_cbrt_inv
 
 
 # How close (in data units) a click must be to count as a point selection
@@ -127,8 +128,26 @@ class PFCViewerWidget(QWidget):
         self.chk_cohp.setChecked(True)
         self.chk_cohp.setEnabled(False)
         self.chk_cohp.setToolTip('No LOBSTER directory found')
+        self.chk_signed = QCheckBox('Signed (φ_L)')
+        self.chk_signed.setToolTip(
+            'Unchecked: |pFC| = ‖Φ·ê‖ (vector norm, always ≥ 0)\n'
+            'Checked: φ_L = êᵀΦê (longitudinal component, retains sign)\n'
+            'These usually coincide in magnitude but are not the same\n'
+            'computation — they can differ when Φ·ê has significant\n'
+            'off-axis (non-longitudinal) leakage.'
+        )
+        self.chk_signed.stateChanged.connect(self._refresh_plot)
+        self.chk_badger = QCheckBox('Badger space (Φ⁻¹ᐟ³)')
+        self.chk_badger.setToolTip(
+            'Plot Φ⁻¹ᐟ³ instead of Φ. When "Signed" is also checked, uses\n'
+            'sign(Φ)·|Φ|⁻¹ᐟ³ (the real-valued extension to negative Φ) so\n'
+            'positive- and negative-sign points separate above/below zero.'
+        )
+        self.chk_badger.stateChanged.connect(self._refresh_plot)
         bottom_row.addWidget(self._btn_shell)
         bottom_row.addWidget(self.chk_unique)
+        bottom_row.addWidget(self.chk_signed)
+        bottom_row.addWidget(self.chk_badger)
         bottom_row.addWidget(self.chk_cohp)
         bottom_row.addStretch()
         left_layout.addLayout(bottom_row)
@@ -151,6 +170,7 @@ class PFCViewerWidget(QWidget):
         self._selection_bar.setFixedHeight(28)
         outer.addWidget(self._selection_bar)
 
+        self._update_signed_availability()
         self._draw_empty_plot()
 
     # ------------------------------------------------------------------
@@ -220,12 +240,23 @@ class PFCViewerWidget(QWidget):
         self._results  = all_results
         if supercell is not None:
             self.set_supercell(supercell)
+        self._update_signed_availability()
         self._rebuild_checkboxes()
         self._compute_shells()
         self._refresh_plot()
         self._status_label.setText(
             f'{len(all_results)} off-site pairs loaded from analysis.'
         )
+
+    def _update_signed_availability(self):
+        """Enable 'Signed (φ_L)' only when records actually carry phi_l/phi_t
+        (CSV-loaded data in the legacy unique_pFCs.csv format does not)."""
+        has_lt = bool(self._results) and 'phi_l' in self._results[0]
+        self.chk_signed.setEnabled(has_lt)
+        if not has_lt:
+            self.chk_signed.setChecked(False)
+            self.chk_signed.setToolTip('Not available: this data has no phi_l/phi_t '
+                                        '(loaded from a CSV without those columns)')
 
     def load_from_csv(self, path=None):
         """
@@ -264,6 +295,7 @@ class PFCViewerWidget(QWidget):
                 )
 
             self._results = df.to_dict('records')
+            self._update_signed_availability()
             self._rebuild_checkboxes()
             self._compute_shells()
             self._refresh_plot()
@@ -398,6 +430,35 @@ class PFCViewerWidget(QWidget):
         self._refresh_plot()
 
     # ------------------------------------------------------------------
+    # Value resolution: signed/unsigned x real-space/Badger-space
+    # ------------------------------------------------------------------
+
+    def _transform(self, raw):
+        """Apply the unit factor and (if checked) the Badger-space transform
+        to a single already-selected raw value (e.g. a record's mean_pfc,
+        or a shell's pfc_min/pfc_max)."""
+        factor = EV_ANG2_TO_N_M if self._unit == 'N/m' else 1.0
+        raw = raw * factor
+        return signed_cbrt_inv(raw) if self.chk_badger.isChecked() else raw
+
+    def _value_for(self, record, mean_key='mean_pfc', signed_key='phi_l'):
+        """
+        Resolve the y-value to plot for one record (or shell dict), honouring
+        the 'Signed (φ_L)' and 'Badger space' checkboxes.
+
+        mean_key/signed_key let shell dicts pass their aggregate field names
+        ('pfc_mean'/'phi_l_mean') while individual records use the defaults
+        ('mean_pfc'/'phi_l').
+        """
+        return self._transform(record[signed_key if self.chk_signed.isChecked() else mean_key])
+
+    def _y_axis_label(self):
+        quantity = 'φ_L' if self.chk_signed.isChecked() else '|pFC|'
+        if self.chk_badger.isChecked():
+            return f'{quantity}⁻¹ᐟ³  (Badger space, {UNIT_LABEL[self._unit]})'
+        return f'{quantity}  ({UNIT_LABEL[self._unit]})'
+
+    # ------------------------------------------------------------------
     # Plot
     # ------------------------------------------------------------------
 
@@ -440,9 +501,8 @@ class PFCViewerWidget(QWidget):
                    if (r['species1'], r['species2']) == pt]
             if not sub:
                 continue
-            factor = EV_ANG2_TO_N_M if self._unit == 'N/m' else 1.0
-            xs = [r['distance']          for r in sub]
-            ys = [r['mean_pfc'] * factor for r in sub]
+            xs = [r['distance']        for r in sub]
+            ys = [self._value_for(r)   for r in sub]
 
             if self._supercell is not None:
                 c1, c2 = self.structure_view.pair_colours_hex(pt[0], pt[1])
@@ -475,20 +535,21 @@ class PFCViewerWidget(QWidget):
 
             self._scatter_collections[pt] = (sc, sub)
 
-        factor = EV_ANG2_TO_N_M if self._unit == 'N/m' else 1.0
         if self._selected_record is not None:
             sr = self._selected_record
             if (sr['species1'], sr['species2']) in active_pairs:
                 ax.plot(
-                    sr['distance'], sr['mean_pfc'] * factor,
+                    sr['distance'], self._value_for(sr),
                     'o', markersize=16,
                     markerfacecolor='none', markeredgecolor='#c8a000',
                     markeredgewidth=2.5, zorder=5,
                 )
 
         ax.set_xlabel('Interatomic distance (Å)', fontsize=12)
-        ax.set_ylabel(f'Projected force constant ({UNIT_LABEL[self._unit]})', fontsize=12)
+        ax.set_ylabel(self._y_axis_label(), fontsize=12)
         ax.set_title('Projected force constants vs bond length', fontsize=13)
+        if self.chk_badger.isChecked():
+            ax.axhline(0, color='#999999', linewidth=0.8, linestyle=':', zorder=0)
         if self._scatter_collections:
             legend = ax.legend(loc='upper right', framealpha=0.9)
             for legend_text, pt in zip(legend.get_texts(),
@@ -510,7 +571,8 @@ class PFCViewerWidget(QWidget):
         self._scatter_collections = {}
         self._ax = ax
 
-        factor = EV_ANG2_TO_N_M if self._unit == 'N/m' else 1.0
+        signed = self.chk_signed.isChecked()
+        min_key, max_key = ('phi_l_min', 'phi_l_max') if signed else ('pfc_min', 'pfc_max')
 
         for pt in self._pair_types:
             if pt not in active_pairs:
@@ -525,9 +587,9 @@ class PFCViewerWidget(QWidget):
             else:
                 c1 = '#888888'
 
-            xs     = [s['distance_mean']       for s in shells_for_pt]
-            ys     = [s['pfc_mean']   * factor for s in shells_for_pt]
-            counts = [s['count']                for s in shells_for_pt]
+            xs     = [s['distance_mean']                                          for s in shells_for_pt]
+            ys     = [self._value_for(s, mean_key='pfc_mean', signed_key='phi_l_mean') for s in shells_for_pt]
+            counts = [s['count']                                                   for s in shells_for_pt]
             sizes  = [max(30, min(200, 30 + 40 * np.log1p(c))) for c in counts]
 
             sc = ax.scatter(
@@ -538,8 +600,10 @@ class PFCViewerWidget(QWidget):
             )
 
             for s_dict, x in zip(shells_for_pt, xs):
-                ymin = s_dict['pfc_min'] * factor
-                ymax = s_dict['pfc_max'] * factor
+                if signed and not np.isfinite(s_dict.get(min_key, float('nan'))):
+                    continue  # CSV-loaded or phi_l-less data has no min/max to draw
+                ymin = self._transform(s_dict[min_key])
+                ymax = self._transform(s_dict[max_key])
                 ax.vlines(x, ymin, ymax, color=c1, alpha=0.45,
                           linewidth=1.5, zorder=2)
 
@@ -550,14 +614,17 @@ class PFCViewerWidget(QWidget):
             pt = (ss['species1'], ss['species2'])
             if pt in active_pairs:
                 ax.scatter(
-                    [ss['distance_mean']], [ss['pfc_mean'] * factor],
+                    [ss['distance_mean']],
+                    [self._value_for(ss, mean_key='pfc_mean', signed_key='phi_l_mean')],
                     s=250, facecolors='none', edgecolors='#c8a000',
                     linewidths=2.5, zorder=5,
                 )
 
         ax.set_xlabel('Interatomic distance (Å)', fontsize=12)
-        ax.set_ylabel(f'Projected force constant ({UNIT_LABEL[self._unit]})', fontsize=12)
+        ax.set_ylabel(self._y_axis_label(), fontsize=12)
         ax.set_title('Projected force constants — shell view', fontsize=13)
+        if self.chk_badger.isChecked():
+            ax.axhline(0, color='#999999', linewidth=0.8, linestyle=':', zorder=0)
         if self._scatter_collections:
             legend = ax.legend(loc='upper right', framealpha=0.9)
             for legend_text, pt in zip(legend.get_texts(),
@@ -591,14 +658,16 @@ class PFCViewerWidget(QWidget):
         y_scale = y_range[1] - y_range[0] or 1
         factor   = EV_ANG2_TO_N_M if self._unit == 'N/m' else 1.0
         unit_lbl = UNIT_LABEL[self._unit]
+        signed   = self.chk_signed.isChecked()
 
         if self._view_mode == 'shell':
             best_dist  = float('inf')
             best_shell = None
             for pt, (sc_obj, shells) in self._scatter_collections.items():
                 for s in shells:
-                    dx = (s['distance_mean']     - click_x) / x_scale
-                    dy = (s['pfc_mean'] * factor - click_y) / y_scale
+                    y_here = self._value_for(s, mean_key='pfc_mean', signed_key='phi_l_mean')
+                    dx = (s['distance_mean'] - click_x) / x_scale
+                    dy = (y_here            - click_y) / y_scale
                     d  = (dx**2 + dy**2) ** 0.5
                     if d < best_dist:
                         best_dist  = d
@@ -629,10 +698,15 @@ class PFCViewerWidget(QWidget):
             sp2      = best_shell['species2']
             n        = best_shell['count']
             d        = best_shell['distance_mean']
-            pfc      = best_shell['pfc_mean'] * factor
-            pfc_std  = best_shell['pfc_std']  * factor
-            pfc_min  = best_shell['pfc_min']  * factor
-            pfc_max  = best_shell['pfc_max']  * factor
+            mean_k, std_k, min_k, max_k = (
+                ('phi_l_mean', 'phi_l_std', 'phi_l_min', 'phi_l_max') if signed
+                else ('pfc_mean', 'pfc_std', 'pfc_min', 'pfc_max')
+            )
+            pfc_label = 'phi_L' if signed else 'pFC'
+            pfc      = best_shell[mean_k] * factor
+            pfc_std  = best_shell[std_k]  * factor
+            pfc_min  = best_shell[min_k]  * factor
+            pfc_max  = best_shell[max_k]  * factor
             lobster_str = ''
             if self._lobster_pairs is not None:
                 from betapy.core.lobster import lookup as _lob_lookup
@@ -644,10 +718,12 @@ class PFCViewerWidget(QWidget):
                 if lob_parts:
                     lobster_str = '   |   ' + '   '.join(lob_parts)
 
+            range_str = ('  [n/a]' if not np.isfinite(pfc_min)
+                         else f'  [{pfc_min:.5f} ... {pfc_max:.5f}]')
             self._selection_bar.setText(
                 f'Shell: {sp1}-{sp2}  d = {d:.4f} A  n = {n}  bonds drawn = {len(pairs)}  '
-                f'pFC = {pfc:.5f} +/- {pfc_std:.5f} {unit_lbl}  '
-                f'[{pfc_min:.5f} ... {pfc_max:.5f}]'
+                f'{pfc_label} = {pfc:.5f} +/- {pfc_std:.5f} {unit_lbl}'
+                + range_str
                 + lobster_str
             )
 
@@ -661,8 +737,9 @@ class PFCViewerWidget(QWidget):
             best_record = None
             for pt, (sc_obj, records) in self._scatter_collections.items():
                 for r in records:
-                    dx = (r['distance']          - click_x) / x_scale
-                    dy = (r['mean_pfc'] * factor - click_y) / y_scale
+                    y_here = self._value_for(r)
+                    dx = (r['distance'] - click_x) / x_scale
+                    dy = (y_here        - click_y) / y_scale
                     d  = (dx**2 + dy**2) ** 0.5
                     if d < best_dist:
                         best_dist   = d
@@ -677,7 +754,8 @@ class PFCViewerWidget(QWidget):
             sp1     = best_record['species1']
             sp2     = best_record['species2']
             d       = best_record['distance']
-            pfc_disp = best_record['mean_pfc'] * factor
+            pfc_label = 'phi_L' if signed else 'pFC'
+            pfc_disp = best_record['phi_l' if signed else 'mean_pfc'] * factor
 
             if self._supercell is not None:
                 self.structure_view.highlight_bond(a1, a2)
@@ -695,7 +773,7 @@ class PFCViewerWidget(QWidget):
 
             self._selection_bar.setText(
                 f'Selected:  atom {a1} ({sp1}) - atom {a2} ({sp2})   '
-                f'distance = {d:.4f} A   pFC = {pfc_disp:.6f} {unit_lbl}'
+                f'distance = {d:.4f} A   {pfc_label} = {pfc_disp:.6f} {unit_lbl}'
                 + lobster_str
             )
             self.pair_selected.emit(a1, a2)
