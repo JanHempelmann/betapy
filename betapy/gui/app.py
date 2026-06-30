@@ -670,6 +670,23 @@ class MainWindow(QMainWindow):
         except Exception:
             self._lobster_pairs = None
 
+    def _try_check_stability(self, sposcar_dir: Path):
+        """
+        Look for Phonopy mesh/band/qpoints output next to SPOSCAR and warn
+        about imaginary modes, if any. Silent if no such file is present.
+        """
+        from betapy.core.stability import check_stability, format_warning
+        report = check_stability(sposcar_dir)
+        if report is None:
+            return
+        if report.is_stable:
+            self.status.showMessage(
+                f'Phonon stability check ({report.source.name}): OK '
+                f'({report.n_modes_total} modes, no imaginary modes)'
+            )
+        else:
+            QMessageBox.warning(self, 'Imaginary phonon modes detected', format_warning(report))
+
     def _do_load_sposcar(self, path):
         """Load SPOSCAR and push supercell to all tools. Raises on error."""
         path = Path(path)
@@ -678,6 +695,7 @@ class MainWindow(QMainWindow):
         self.lbl_sposcar.setText(f'SPOSCAR: {path.name}  ✓')
 
         self._try_load_lobster(path.parent)
+        self._try_check_stability(path.parent)
 
         from betapy.gui.pfc_viewer import PFCViewerWidget
         for i in range(self.tabs.count()):

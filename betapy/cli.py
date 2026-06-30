@@ -32,6 +32,24 @@ def _load_structure(sposcar_path, fc_path):
     return supercell, fc_data
 
 
+def _check_stability(directory, label=''):
+    """
+    Look for Phonopy mesh/band/qpoints output next to the loaded structure and
+    warn about imaginary modes, if any. Silent if no such file is present.
+    """
+    from betapy.core.stability import check_stability, format_warning
+    report = check_stability(directory)
+    if report is None:
+        return
+    prefix = f'{label}: ' if label else ''
+    if report.is_stable:
+        print(f'  {prefix}Phonon stability check ({report.source.name}): OK '
+              f'({report.n_modes_total} modes, {report.n_qpoints} q-point(s), '
+              f'no imaginary modes)')
+    else:
+        print(f'  {prefix}Warning: {format_warning(report)}')
+
+
 def _annotate_lobster(df_unique, lobster_pairs):
     """Add ICOBI / ICOHP / ICOOP columns to df_unique from LOBSTER pair data."""
     from betapy.core.lobster import lookup
@@ -277,12 +295,14 @@ def run_stiffness_shift(settings):
         ss.structure_a.sposcar, ss.structure_a.force_constants
     )
     print(f'    {sc_a}  |  {len(fc_a["atomic_pairs"])} pairs')
+    _check_stability(Path(ss.structure_a.sposcar).parent, label='Structure A')
 
     print('  Loading structure B ...')
     sc_b, fc_b = _load_structure(
         ss.structure_b.sposcar, ss.structure_b.force_constants
     )
     print(f'    {sc_b}  |  {len(fc_b["atomic_pairs"])} pairs')
+    _check_stability(Path(ss.structure_b.sposcar).parent, label='Structure B')
 
     refpos_path_a = _resolve_refpos(ss.structure_a, ss.refpos)
     refpos_path_b = _resolve_refpos(ss.structure_b, ss.refpos)
@@ -425,6 +445,8 @@ def main():
     fc_data = read_FORCE_CONSTANTS(settings.force_constants)
     print(f'done  ({len(fc_data["atomic_pairs"])} pairs, '
           f'FC shape {fc_data["nats"]})')
+
+    _check_stability(Path(settings.sposcar).parent)
 
     # --- LOBSTER integration ---
     lobster_pairs = None
