@@ -446,6 +446,26 @@ def main():
     print(f'done  ({len(fc_data["atomic_pairs"])} pairs, '
           f'FC shape {fc_data["nats"]})')
 
+    # --- NAC correction (optional) ---
+    if settings.born_dir:
+        from betapy.core.nac import (
+            compute_short_range_fc, apply_to_betapy_fc_data, find_phonopy_yaml
+        )
+        ph_yaml = settings.phonopy_yaml
+        if ph_yaml is None:
+            ph_yaml = find_phonopy_yaml(Path(settings.force_constants).parent)
+        if ph_yaml is None:
+            raise FileNotFoundError(
+                'NAC correction requires phonopy_disp.yaml next to '
+                'FORCE_CONSTANTS, or specify phonopy_yaml in settings.'
+            )
+        print(f'Applying NAC correction (born_dir: {settings.born_dir}) ...',
+              end=' ', flush=True)
+        phi_short = compute_short_range_fc(ph_yaml, settings.force_constants,
+                                           settings.born_dir)
+        apply_to_betapy_fc_data(fc_data, phi_short)
+        print('done')
+
     _check_stability(Path(settings.sposcar).parent)
 
     # --- LOBSTER integration ---

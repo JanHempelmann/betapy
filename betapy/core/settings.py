@@ -116,6 +116,14 @@ class Settings:
     # sibling *_lobster directory (e.g. ScF3_ph → ScF3_lobster).
     lobster_dir:     Optional[str]                   = None
 
+    # --- NAC correction ---
+    # Directory containing BORN and POSCAR (primitive cell) from a DFPT run.
+    # When set, betapy applies Phi_short = Phi_DFT - Phi_dd before projecting.
+    born_dir:        Optional[str]                   = None
+    # Path to phonopy_disp.yaml (or phonopy.yaml).  Auto-discovered next to
+    # FORCE_CONSTANTS when None.
+    phonopy_yaml:    Optional[str]                   = None
+
     # ----------------------------------------------------------------
     # Constructors
     # ----------------------------------------------------------------
@@ -165,7 +173,9 @@ class Settings:
                     struct.force_constants = _r(struct.force_constants)
                     struct.refpos          = _r(struct.refpos)
 
-        self.lobster_dir = _r(self.lobster_dir)
+        self.lobster_dir  = _r(self.lobster_dir)
+        self.born_dir     = _r(self.born_dir)
+        self.phonopy_yaml = _r(self.phonopy_yaml)
 
     @classmethod
     def from_cli(cls, argv=None) -> 'tuple[Settings, argparse.Namespace]':
@@ -193,7 +203,8 @@ class Settings:
         s = cls()
 
         # Scalar top-level keys
-        for key in ('sposcar', 'force_constants', 'store', 'unit', 'lobster_dir'):
+        for key in ('sposcar', 'force_constants', 'store', 'unit',
+                    'lobster_dir', 'born_dir', 'phonopy_yaml'):
             if key in data:
                 setattr(s, key, data[key])
 
@@ -396,6 +407,17 @@ def _build_parser() -> argparse.ArgumentParser:
              'a sibling *_lobster directory next to the phonopy directory.',
     )
     parser.add_argument(
+        '--born-dir', metavar='DIR',
+        help='Directory containing BORN and POSCAR (primitive cell) from a '
+             'DFPT run.  When provided, betapy applies the NAC correction '
+             'Phi_short = Phi_DFT - Phi_dd before projecting force constants.',
+    )
+    parser.add_argument(
+        '--phonopy-yaml', metavar='FILE',
+        help='Path to phonopy_disp.yaml (or phonopy.yaml).  Required for NAC '
+             'correction; auto-discovered next to FORCE_CONSTANTS if omitted.',
+    )
+    parser.add_argument(
         '--multicenter', action='store_true',
         help='Detect anomalously large pFCs that may indicate multicenter bonding '
              'and generate cobiBetween directives for LOBSTER COBI(N) analysis. '
@@ -551,3 +573,7 @@ def _apply_cli_overrides(settings: Settings, args: argparse.Namespace):
 
     if getattr(args, 'lobster_dir', None):
         settings.lobster_dir = args.lobster_dir
+    if getattr(args, 'born_dir', None):
+        settings.born_dir = args.born_dir
+    if getattr(args, 'phonopy_yaml', None):
+        settings.phonopy_yaml = args.phonopy_yaml
