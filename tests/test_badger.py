@@ -44,9 +44,9 @@ def make_pair(sp1, sp2, dist, mean_pfc, phi_l, phi_t,
 
 class TestComputeBadgerQuantities:
 
-    def test_f_iso_formula(self):
+    def test_phi_iso_formula(self):
         # phi_l = -k_L, phi_t = -k_T  (Phonopy restoring convention)
-        # F_iso = (|phi_l| + 2*|phi_t|) / 3 = (k_L + 2*k_T) / 3
+        # phi_iso = (|phi_l| + 2*|phi_t|) / 3 = (k_L + 2*k_T) / 3
         k_L, k_T = 10.0, 2.0
         r = make_pair('Na', 'Cl', 2.8, k_L, phi_l=-k_L, phi_t=-k_T)
         aug = compute_badger_quantities([r])
@@ -60,7 +60,7 @@ class TestComputeBadgerQuantities:
         assert abs(aug[0]['xi'] - 3.0) < 1e-10
 
     def test_isotropic_xi_is_one(self):
-        # All three eigenvalues equal → F_iso = phi_l, xi = 1
+        # All three eigenvalues equal → phi_iso = phi_l, xi = 1
         k = 6.0
         # phi_l = -k, phi_t = (Tr - phi_l)/2; for isotropic: Tr = 3*(-k)
         # phi_t = (3*(-k) - (-k))/2 = -k
@@ -75,8 +75,8 @@ class TestComputeBadgerQuantities:
         assert math.isnan(aug[0]['phi_iso'])
         assert math.isnan(aug[0]['xi'])
 
-    def test_zero_f_iso_gives_nan_xi(self):
-        # F_iso = (|phi_l| + 2*|phi_t|) / 3 = 0 only when both are zero → xi = nan
+    def test_zero_phi_iso_gives_nan_xi(self):
+        # phi_iso = (|phi_l| + 2*|phi_t|) / 3 = 0 only when both are zero → xi = nan
         r = make_pair('X', 'Y', 2.0, 1.0, phi_l=0.0, phi_t=0.0)
         aug = compute_badger_quantities([r])
         assert aug[0]['phi_iso'] < 1e-12

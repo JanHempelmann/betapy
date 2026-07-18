@@ -477,12 +477,12 @@ class MainWindow(QMainWindow):
         label_shift  = ('• ' if has_shift   else '  ') + 'Stiffness Shift'
         label_lt     = ('• ' if has_lt      else '  ') + 'LT Decomposition  (β)'
         label_mc     = ('• ' if has_mc      else '  ') + 'Multicenter Bonding'
-        label_badger = ('• ' if has_badger  else '  ') + 'Badger Analysis  (β)'
+        label_badger = ('• ' if has_badger  else '  ') + 'Badger Analysis'
 
         menu.addAction(label_mc,     lambda: self._add_optional_tab(
             self._ensure_multicenter(), 'Multicenter Bonding'))
         menu.addAction(label_badger, lambda: self._add_optional_tab(
-            self._ensure_badger(), 'Badger Analysis  (β)'))
+            self._ensure_badger(), 'Badger Analysis'))
         menu.addAction(label_ref,    lambda: self._add_optional_tab(
             self.site_picker, 'Ref. Site Projection'))
         menu.addAction(label_shift,  lambda: self._add_optional_tab(

@@ -4,20 +4,20 @@ Badger analysis for betapy — experimental feature.
 Fits the Badger-type law Φ^{-1/3} = a·r + b to projected force constants
 using two complementary quantities:
 
-  conventional  Φ_p   — projected along bond direction (existing approach)
-  isotropic     F_iso — (|phi_l| + 2·|phi_t|) / 3  =  mean absolute eigenvalue
+  conventional  Φ_p    — projected along bond direction (existing approach)
+  isotropic     Φ_iso  — (|phi_l| + 2·|phi_t|) / 3  =  mean absolute eigenvalue
 
-F_iso is rotationally invariant: it does not depend on which direction the
+Φ_iso is rotationally invariant: it does not depend on which direction the
 force-constant matrix is projected along, and therefore collapses the multiple
 parallel Badger lines that appear in covalent systems (the "gleichergestalt"
 splitting).  The dimensionless anisotropy factor
 
-    ξ = Φ_p / F_iso
+    ξ = Φ_p / Φ_iso
 
 encodes which conventional Badger line a pair belongs to.  The vertical
 scatter in the conventional Badger plot decomposes exactly as
 
-    Φ_p^{-1/3}  =  F_iso^{-1/3} · ξ^{-1/3}
+    Φ_p^{-1/3}  =  Φ_iso^{-1/3} · ξ^{-1/3}
 
 so the isotropic fit removes ξ-driven scatter while preserving the physically
 motivated −1/3 exponent and its dimensional consistency.
@@ -187,17 +187,17 @@ def compute_badger_quantities(bulk_results):
 
     Uses phi_l and phi_t already computed by compute_bulk_pfcs().
 
-        F_iso    = (|phi_l| + 2·|phi_t|) / 3  — mean absolute eigenvalue;
+        Φ_iso        = (|phi_l| + 2·|phi_t|) / 3  — mean absolute eigenvalue;
                    rotationally invariant and free of sign-cancellation
                    outliers (cf. |Tr(Φ)|/3 which → 0 when phi_l ≈ −2·phi_t)
-        F_iso,signed = (phi_l + 2·phi_t) / 3 = Tr(Φ)/3 — the same rotational
-                   invariant without discarding sign. Equal to F_iso whenever
+        Φ_iso,signed = (phi_l + 2·phi_t) / 3 = Tr(Φ)/3 — the same rotational
+                   invariant without discarding sign. Equal to Φ_iso whenever
                    phi_l and phi_t share a sign; can be much smaller in
                    magnitude (or cross zero) when they don't, since that is
-                   exactly the cancellation F_iso is designed to avoid.
+                   exactly the cancellation Φ_iso is designed to avoid.
                    Provided as an opt-in alternative for inspecting that
                    cancellation directly rather than masking it.
-        ξ        = mean_pfc / F_iso
+        ξ        = mean_pfc / Φ_iso
         eta_pair = |phi_l / phi_t|  — longitudinal-to-transverse anisotropy
                    of the actual FC matrix for this pair; independent of
                    projection direction.  Large (>>1) for covalent bonds,
@@ -694,8 +694,8 @@ def analyze_badger(bulk_results, n_families=5):
     """
     Run Badger analysis on bulk pFC results.
 
-    Computes F_iso and ξ per pair, fits both the conventional (Φ_p) and
-    isotropic (F_iso) Badger lines per species pair, detects Badger families
+    Computes Φ_iso and ξ per pair, fits both the conventional (Φ_p) and
+    isotropic (Φ_iso) Badger lines per species pair, detects Badger families
     via fan-slope k-means clustering, and attaches per-record residuals.
 
     Parameters

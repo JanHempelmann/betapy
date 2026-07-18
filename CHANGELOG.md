@@ -5,6 +5,23 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ---
 
+## [Unreleased]
+
+### Changed
+- **Experimental feature docs moved out of the README** — full descriptions of
+  reference-site projection, stiffness-shift, and Badger analysis now live in
+  `docs/experimental-features.md`; the README's Experimental Features section
+  is a short pointer to that doc and to `docs/multicenter.md`
+- **Badger analysis graduated from beta (β) to experimental** — the `(β)`
+  label has been removed from the GUI tab and preferences dialog; the feature
+  is now documented in the README under Experimental Features
+- **`Development Status` classifier corrected to `4 - Beta`** — the package
+  has not had a PyPI release yet and still carries an Experimental Features
+  section with methods tied to forthcoming manuscripts, so `5 -
+  Production/Stable` overstated its maturity
+
+---
+
 ## [1.2.0] — 2026-06-17
 
 ### Added

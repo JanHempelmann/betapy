@@ -30,11 +30,12 @@ The interactive GUI provides a scatter plot of pFC vs bond length alongside a 3D
 
 ### Experimental Features
 
-These features implement methods described in forthcoming manuscripts. They are fully functional and actively used in ongoing research, but their algorithmic details have not yet been formally published.
+These features implement methods described in forthcoming manuscripts. They are fully functional and actively used in ongoing research, but their algorithmic details have not yet been formally published. Full descriptions: [docs/experimental-features.md](docs/experimental-features.md) · [docs/multicenter.md](docs/multicenter.md)
 
-- **Reference-site projection** — project force constants around any fractional coordinate in the cell (vacancy, interstitial, or arbitrary point); does not need to coincide with an atom
-- **Stiffness-shift parameter** — compare pFC sums between two structures (e.g. intercalated vs deintercalated) using position-based atom matching across structures; falls back to distance-ordered equal-count comparison if matching fails
-- **Multicenter bond detection** — automatically detect anomalously large pFCs that indicate multicenter (3-center, 4-center, …) bonding; traces chains of anomalous pairs through the structure using a Badger-law baseline and Theil-Sen linear fit; generates cobiBetween directives for LOBSTER; available as `--multicenter` on the CLI and as the **Multicenter Bonding** tab in the GUI.  Works with compact FORCE_CONSTANTS files via symmetry-based pair expansion (requires `spglib`).  See [docs/multicenter.md](docs/multicenter.md) for a full parameter guide and worked example.
+- **Reference-site projection** — project force constants around any fractional coordinate in the cell (vacancy, interstitial, or arbitrary point)
+- **Stiffness-shift parameter** — compare pFC sums between two structures (e.g. intercalated vs deintercalated)
+- **Multicenter bond detection** — detect anomalously large pFCs that indicate multicenter (3-center, 4-center, …) bonding; available as `--multicenter` on the CLI and as the **Multicenter Bonding** tab in the GUI
+- **Badger analysis** — decompose pFCs into a rotationally-invariant isotropic force constant and an anisotropy factor; available as the **Badger Analysis** tab in the GUI
 ---
 
 ## Requirements
@@ -197,6 +198,8 @@ The **unit toggle** in the toolbar switches all displayed pFC values between eV/
 **Stiffness Shift** - load two structures (intercalated and deintercalated), configure the reference site and cutoff, and compute the stiffness-shift parameter. Atom pairs are matched across structures by fractional coordinate proximity.
 
 **Multicenter Bonding** (experimental) — available via the **"+"** tab menu. Detects anomalously large pFCs using a Badger-law baseline and Theil-Sen linear fit, then traces multicenter chains through the structure. Detected chains are listed in a tree grouped by species type; clicking a chain item highlights all pairwise atom combinations (not just nearest-neighbour segments) with amber halos and teal rings in the scatter plot, so every partial sub-chain is visible. 3-center and 4-center fragments of longer chains appear both as children under their parent entry and as independent top-level entries for direct access. When a POSCAR.lobster is present, cobiBetween directives are generated automatically and can be copied from the output panel. Compact FORCE_CONSTANTS files (one representative atom per Wyckoff orbit) are handled transparently via spglib symmetry expansion.
+
+**Badger Analysis** (experimental) — available via the **"+"** tab menu. Decomposes pFCs into a rotationally-invariant isotropic force constant and an anisotropy factor to remove orientation-dependent scatter from the Badger relation; see [docs/experimental-features.md](docs/experimental-features.md) for the full breakdown of the plotted quantities.
 
 The 3D structure views use full Jmol colours by default (80+ elements). Switch to the VESTA colour scheme at any time via the `Preset` dropdown in the colour panel, or override individual species colours with the colour picker.
 
