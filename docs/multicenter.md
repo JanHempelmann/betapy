@@ -136,6 +136,10 @@ between two specific atoms that are not necessarily nearest neighbours, which is
 
 The directives specify atoms by their lobster POSCAR index. Check the atom mapping by opening POSCAR in VESTA or by comparing the species list to your SPOSCAR.
 
+To browse the resulting COBI data — including the orbitalwise breakdown if
+you added `orbitalwise` to a directive — independently of this detector,
+see [docs/lobster-cobi.md](lobster-cobi.md) and the **LOBSTER COBI** GUI tab.
+
 ---
 
 ## Worked example: GeTe

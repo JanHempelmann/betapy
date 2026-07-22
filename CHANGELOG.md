@@ -7,6 +7,40 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Added
+- **LOBSTER multicenter COBI browsing (orbitalwise)** — new standalone **LOBSTER
+  COBI** GUI tab (`betapy/gui/lobster_cobi_viewer.py`, via the **"+"** menu),
+  independent of the phonon-based multicenter bonding detector: point it at any
+  LOBSTER directory containing `COBICAR.lobster` and browse every multicenter
+  (Nc) chain's orbital-combination breakdown, grouped by coarse orbital type
+  (s/p/d/f) or full m-resolved, with a threshold filter to unlist contributions
+  with nothing going on. Curves overlay on a shared plot exportable as
+  SVG/PDF/PNG; the currently shown rows can also be exported as CSV
+  (`orbitals, n_rows, ICOBI(N)_at_EF`). See
+  [docs/lobster-cobi.md](docs/lobster-cobi.md).
+- **`betapy/core/lobster.py`** — parses orbitalwise N-center COBICAR entries
+  (`atom[cell][orbital]` chain headers), adds `load_nc_entry_orbital_curves`,
+  `entry_to_directive`, `orbital_type`, `group_orbital_curves_by_type`, and
+  `filter_orbital_curves`
+- **Plot conventions applied across all COHP/COOP/COBI curve viewers**
+  (pairwise LOBSTER viewer, Nc-COBI popup, new orbitalwise browser): the
+  value axis is symmetric about zero, and the energy axis is pinned exactly
+  to the data's own range (matching `lobsterin`'s
+  `COHPstartEnergy`/`COHPendEnergy`) instead of matplotlib's default
+  autoscale margin. New shared helper: `betapy/gui/plot_utils.py`.
+
+### Fixed
+- **`cobiBetween` directive syntax** — betapy's multicenter detector now
+  writes the official LOBSTER syntax (`atom 1`, `atom` and its POSCAR index
+  as separate tokens) instead of the concatenated `atom1` form it
+  previously generated; the parser accepts both for backward compatibility.
+- **N-center COBICAR column-index bug** — `parse_car_header`'s column
+  offset was derived from the printed `No.k` index, which is only correct
+  for a chain's first occurrence. Orbitalwise chains reuse the same index
+  for every orbital-combination row (up to `n_orbitals ** n_atoms` times),
+  so any Nc chain after the first read from the wrong column. Column
+  position is now tracked as the header line's true sequential position.
+
 ### Changed
 - **Experimental feature docs moved out of the README** — full descriptions of
   reference-site projection, stiffness-shift, and Badger analysis now live in

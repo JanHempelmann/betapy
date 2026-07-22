@@ -485,9 +485,10 @@ class TestFormatCobiDirective:
         # atom2 is a periodic image — cell tag must appear for it.
         directive = format_cobi_directive([1, 3, 2], sc, lob_poscar)
         assert directive.startswith('cobiBetween')
-        assert 'atom1' in directive
-        assert 'atom2' in directive
-        assert tokens[1] == 'atom1' if (tokens := directive.split()) else True
+        tokens = directive.split()
+        assert 'atom 1' in directive
+        assert 'atom 2' in directive
+        assert tokens[1] == 'atom' and tokens[2] == '1'
         assert 'cell' in directive
         # 2×1×1 supercell: minimum-image of [1,0,0] is [-1,0,0]
         assert '-1 0 0' in directive or '1 0 0' in directive
@@ -496,8 +497,8 @@ class TestFormatCobiDirective:
         # atom1(A) and atom3(B) are both in cell [0,0,0] — reference atom gets no cell tag
         directive = format_cobi_directive([1, 3], sc, lob_poscar)
         tokens = directive.split()
-        assert tokens[1] == 'atom1'
-        assert tokens[2] != 'cell'
+        assert tokens[1] == 'atom' and tokens[2] == '1'
+        assert tokens[3] != 'cell'
 
     def test_same_cell_atoms_no_cell_tag(self, sc, lob_poscar):
         # atom1(A) and atom3(B) are both in POSCAR cell [0,0,0] → no cell tag at all

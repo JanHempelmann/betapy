@@ -220,6 +220,7 @@ class MainWindow(QMainWindow):
         # so their VTK contexts (expensive) are not allocated on every startup.
         self.multicenter     = None
         self.badger          = None
+        self.lobster_cobi    = None
 
         # pFC Viewer is always present; track permanent tabs (no close button).
         self.tabs.addTab(self.pfc_viewer, 'pFC Viewer')
@@ -402,6 +403,21 @@ class MainWindow(QMainWindow):
                 )
         return self.badger
 
+    def _ensure_lobster_cobi(self):
+        """
+        Create LobsterCobiWidget on first use and push any already-discovered
+        LOBSTER directory. Independent of phonon data (self._bulk_results /
+        self.supercell) — only needs self._lobster_dir, which may already be
+        set from a prior SPOSCAR load or may still be None (the widget's own
+        'Open LOBSTER directory…' button covers that case).
+        """
+        if self.lobster_cobi is None:
+            from betapy.gui.lobster_cobi_viewer import LobsterCobiWidget
+            self.lobster_cobi = LobsterCobiWidget()
+            if self._lobster_dir is not None:
+                self.lobster_cobi.set_lobster_dir(self._lobster_dir, silent=True)
+        return self.lobster_cobi
+
     # ------------------------------------------------------------------
     # Tab bar — "+" overlay button and close handling
     # ------------------------------------------------------------------
@@ -455,7 +471,8 @@ class MainWindow(QMainWindow):
         # Optional singleton tabs are kept alive for re-adding; extra pFC
         # viewers are independent instances and can be destroyed.
         if widget not in (self.site_picker, self.stiffness_shift,
-                          self.lt_viewer, self.multicenter, self.badger):
+                          self.lt_viewer, self.multicenter, self.badger,
+                          self.lobster_cobi):
             widget.deleteLater()
         QTimer.singleShot(0, self._reposition_plus_btn)
 
@@ -472,17 +489,22 @@ class MainWindow(QMainWindow):
                        self.tabs.indexOf(self.multicenter) != -1)
         has_badger  = (self.badger is not None and
                        self.tabs.indexOf(self.badger) != -1)
+        has_cobi    = (self.lobster_cobi is not None and
+                       self.tabs.indexOf(self.lobster_cobi) != -1)
 
         label_ref    = ('• ' if has_refsite else '  ') + 'Ref. Site Projection'
         label_shift  = ('• ' if has_shift   else '  ') + 'Stiffness Shift'
         label_lt     = ('• ' if has_lt      else '  ') + 'LT Decomposition  (β)'
         label_mc     = ('• ' if has_mc      else '  ') + 'Multicenter Bonding'
         label_badger = ('• ' if has_badger  else '  ') + 'Badger Analysis'
+        label_cobi   = ('• ' if has_cobi    else '  ') + 'LOBSTER COBI'
 
         menu.addAction(label_mc,     lambda: self._add_optional_tab(
             self._ensure_multicenter(), 'Multicenter Bonding'))
         menu.addAction(label_badger, lambda: self._add_optional_tab(
             self._ensure_badger(), 'Badger Analysis'))
+        menu.addAction(label_cobi,   lambda: self._add_optional_tab(
+            self._ensure_lobster_cobi(), 'LOBSTER COBI'))
         menu.addAction(label_ref,    lambda: self._add_optional_tab(
             self.site_picker, 'Ref. Site Projection'))
         menu.addAction(label_shift,  lambda: self._add_optional_tab(
@@ -710,6 +732,8 @@ class MainWindow(QMainWindow):
             self.supercell,
             self.fc_data,
         )
+        if self._lobster_dir is not None and self.lobster_cobi is not None:
+            self.lobster_cobi.set_lobster_dir(self._lobster_dir, silent=True)
 
         # Co-located REFPOS auto-loads and may reveal the refsite tab
         refpos_path = path.parent / 'REFPOS'

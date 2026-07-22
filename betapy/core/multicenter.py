@@ -691,7 +691,8 @@ def format_cobi_directive(chain_sc_indices, supercell, lob_poscar):
 
     Returns
     -------
-    str, e.g. ``'cobiBetween atom5 atom1 cell -1 0 0 atom8'``
+    str, e.g. ``'cobiBetween atom 5 atom 1 cell -1 0 0 atom 8'`` — 'atom' and
+    its POSCAR index as separate tokens, matching official LOBSTER syntax.
 
     Raises
     ------
@@ -715,7 +716,7 @@ def format_cobi_directive(chain_sc_indices, supercell, lob_poscar):
         rel_frac = T_inv @ rel
         rel_mi   = np.round(T @ (rel_frac - np.floor(rel_frac + 0.5))).astype(int)
 
-        parts.append(label)
+        parts.extend(['atom', label[len('atom'):]])
         if np.any(rel_mi != 0):
             parts.extend(['cell', str(int(rel_mi[0])), str(int(rel_mi[1])), str(int(rel_mi[2]))])
 

@@ -28,6 +28,7 @@ from matplotlib.figure import Figure
 from betapy.core.lobster import (
     parse_car_header, enrich_cobicar_distances, load_car_curves,
 )
+from betapy.gui.plot_utils import symmetric_xlim, exact_energy_ylim
 
 _CAR_FILES = {
     'cohp': 'COHPCAR.lobster',
@@ -244,6 +245,7 @@ class COHPViewerWidget(QDialog):
         axes = [_raw] if n == 1 else list(_raw)
 
         icohp_summary = []
+        energy_ref = None
 
         for ax, car_type in zip(axes, available):
             groups = self._loaded_groups[car_type]
@@ -263,6 +265,7 @@ class COHPViewerWidget(QDialog):
             energy  = result['energy']
             curve   = result['curve']
             icurve  = result['icurve']
+            energy_ref = energy
             bonding_negative = car_type in _BONDING_NEGATIVE
 
             if bonding_negative:
@@ -282,12 +285,19 @@ class COHPViewerWidget(QDialog):
 
             ax.plot(curve, energy, color='#111', linewidth=1.0, zorder=2)
 
+            xlim = symmetric_xlim([curve])
+            if xlim is not None:
+                ax.set_xlim(*xlim)
+
             ef_idx = int(np.argmin(np.abs(energy)))
             ival = icurve[ef_idx]
             icohp_summary.append(f'I{car_type.upper()}(eF) = {ival:.4f}')
 
         if axes:
             axes[0].set_ylabel('Energy (eV)', fontsize=10)
+            ylim = exact_energy_ylim(energy_ref)
+            if ylim is not None:
+                axes[0].set_ylim(*ylim)
 
         self._info_label.setText('   '.join(icohp_summary) if icohp_summary else '')
         self.canvas.draw_idle()

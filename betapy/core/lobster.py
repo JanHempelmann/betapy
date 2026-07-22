@@ -291,11 +291,23 @@ def parse_car_header(path) -> dict:
         n_pairs       : int
         first_data_line: int (0-based index into file lines)
         pairs         : list of dicts, each with:
-            index      : int (1-based, matches No.k label)
+            index        : int (1-based, matches No.k label)
+            col_position : int (0-based sequential header-line position;
+                           this — not 'index' — is what determines the data
+                           column, since orbitalwise N-centre entries reuse
+                           the same 'index' for many consecutive lines)
             sp1, sp2   : str
             distance   : float or None (None for COBICAR until enriched)
             atm1, atm2 : str (full LOBSTER atom labels, e.g. 'Sc1')
             cell1, cell2: list[int] or None (COBICAR translation vectors)
+        nc_pairs      : list of dicts, each with:
+            index        : int (No.k label, shared by the total row and all
+                           of its orbitalwise rows)
+            atoms        : list of (label, cell) — the chain, atom-only
+            col_position : int or None (None if only orbitalwise rows were
+                           found for this chain, no total/summed row)
+            orbital_rows : list of dicts {orbitals: list[str] (one tag per
+                           chain atom, e.g. '5s', '5p_z'), col_position: int}
     """
     path = Path(path)
     with open(path) as f:
@@ -326,16 +338,31 @@ def parse_car_header(path) -> dict:
     )
     _re_nc_atom = re.compile(r'([A-Za-z]+\d+)\[([^\]]+)\]')
 
-    pairs    = []
-    nc_pairs = []
+    # Regex for orbitalwise N-centre COBICAR: each atom carries a second
+    # bracket with its orbital tag, e.g.
+    #   No.17:A1[0 0 0][5s]->B1[0 0 0][5s]->C1[0 0 0][5p_z]
+    # The same No.k index is reused for every orbital combination of a given
+    # chain (n_orbitals ** n_atoms rows), immediately following that chain's
+    # plain total row.
+    _re_nc_orb = re.compile(
+        r'No\.(\d+):((?:[A-Za-z]+\d+\[[^\]]+\]\[[^\]]+\]->)+'
+        r'[A-Za-z]+\d+\[[^\]]+\]\[[^\]]+\])'
+    )
+    _re_nc_orb_atom = re.compile(r'([A-Za-z]+\d+)\[([^\]]+)\]\[([^\]]+)\]')
+
+    pairs       = []
+    nc_pairs    = []
+    nc_by_index = {}   # index -> entry already appended to nc_pairs
     for i in range(hdr_start, hdr_start + n_pairs):
+        pos  = i - hdr_start
         line = lines[i].strip()
         m = _re_dist.match(line)
         if m:
             sp1 = re.match(r'([A-Za-z]+)', m.group(2)).group(1)
             sp2 = re.match(r'([A-Za-z]+)', m.group(3)).group(1)
             pairs.append({
-                'index': int(m.group(1)), 'sp1': sp1, 'sp2': sp2,
+                'index': int(m.group(1)), 'col_position': pos,
+                'sp1': sp1, 'sp2': sp2,
                 'distance': float(m.group(4)),
                 'atm1': m.group(2), 'atm2': m.group(3),
                 'cell1': None, 'cell2': None,
@@ -346,19 +373,39 @@ def parse_car_header(path) -> dict:
             if '->' in line[m.end():]:   # N-centre COBICAR entry
                 m2 = _re_nc.match(line)
                 if m2:
+                    idx   = int(m2.group(1))
                     atoms = [(a.group(1), list(map(int, a.group(2).split())))
                              for a in _re_nc_atom.finditer(m2.group(2))]
-                    nc_pairs.append({'index': int(m2.group(1)), 'atoms': atoms})
+                    entry = {'index': idx, 'atoms': atoms,
+                             'col_position': pos, 'orbital_rows': []}
+                    nc_pairs.append(entry)
+                    nc_by_index[idx] = entry
                 continue
             sp1 = re.match(r'([A-Za-z]+)', m.group(2)).group(1)
             sp2 = re.match(r'([A-Za-z]+)', m.group(4)).group(1)
             pairs.append({
-                'index': int(m.group(1)), 'sp1': sp1, 'sp2': sp2,
+                'index': int(m.group(1)), 'col_position': pos,
+                'sp1': sp1, 'sp2': sp2,
                 'distance': None,
                 'atm1': m.group(2), 'atm2': m.group(4),
                 'cell1': list(map(int, m.group(3).split())),
                 'cell2': list(map(int, m.group(5).split())),
             })
+            continue
+        m = _re_nc_orb.match(line)
+        if m:
+            idx    = int(m.group(1))
+            triples = [(a.group(1), list(map(int, a.group(2).split())), a.group(3))
+                       for a in _re_nc_orb_atom.finditer(m.group(2))]
+            atoms    = [(lbl, cell) for lbl, cell, orb in triples]
+            orbitals = [orb for lbl, cell, orb in triples]
+            entry = nc_by_index.get(idx)
+            if entry is None:
+                entry = {'index': idx, 'atoms': atoms,
+                          'col_position': None, 'orbital_rows': []}
+                nc_pairs.append(entry)
+                nc_by_index[idx] = entry
+            entry['orbital_rows'].append({'orbitals': orbitals, 'col_position': pos})
 
     # Skip blank lines between header and data
     first_data = hdr_start + n_pairs
@@ -441,17 +488,17 @@ def load_car_curves(path, header: dict,
     n_spins = header['n_spins']
     has_avg = header['has_average']
 
-    def _entry_cols(pair_idx):
-        entry = pair_idx if has_avg else pair_idx - 1
+    def _entry_cols(col_position):
+        entry = col_position + 1 if has_avg else col_position
         base  = 1 + entry * 2 * n_spins
         return base, base + 1
 
     # Load all needed columns in one pass
-    usecols  = [0]
-    slot_map = {}   # pair_index → (curve_slot, icurve_slot) in usecols
+    usecols = [0]
+    slots   = []   # (curve_slot, icurve_slot) in usecols, one per `matching` entry
     for p in matching:
-        c, ic = _entry_cols(p['index'])
-        slot_map[p['index']] = (len(usecols), len(usecols) + 1)
+        c, ic = _entry_cols(p['col_position'])
+        slots.append((len(usecols), len(usecols) + 1))
         usecols.extend([c, ic])
 
     try:
@@ -465,8 +512,7 @@ def load_car_curves(path, header: dict,
 
     # Collect per-pair (ival_ef, curve, icurve) and sort by ival_ef
     pair_data = []
-    for p in matching:
-        s_c, s_ic = slot_map[p['index']]
+    for (s_c, s_ic) in slots:
         curve   = data[:, s_c]
         icurve  = data[:, s_ic]
         pair_data.append((float(icurve[ef_idx]), curve, icurve))
@@ -543,6 +589,12 @@ def _directive_to_chain(directive_str, lob_poscar):
     """
     Convert a cobiBetween directive to a list of (lobster_label, cell) pairs.
 
+    Accepts both the official LOBSTER syntax, 'atom' and its POSCAR index as
+    separate tokens, and the concatenated form (not officially documented,
+    but tolerated here in case it is still accepted by LOBSTER or appears in
+    older files):
+
+    'cobiBetween atom 1 atom 2 cell 1 0 0 atom 1'
     'cobiBetween atom1 atom2 cell 1 0 0 atom1'
       → [('Sc1',[0,0,0]), ('F2',[0,0,0]), ('Sc1',[1,0,0])]
 
@@ -557,15 +609,19 @@ def _directive_to_chain(directive_str, lob_poscar):
     i = 0
     while i < len(tokens):
         tok = tokens[i]
-        if not tok.startswith('atom'):
+        if tok == 'atom' and i + 1 < len(tokens) and tokens[i + 1].isdigit():
+            idx0 = int(tokens[i + 1]) - 1      # 0-based POSCAR index
+            i += 2
+        elif tok.startswith('atom') and tok[4:].isdigit():
+            idx0 = int(tok[4:]) - 1            # 0-based POSCAR index
+            i += 1
+        else:
             i += 1
             continue
         try:
-            idx0  = int(tok[4:]) - 1      # 0-based POSCAR index
             label = species[idx0] + str(idx0 + 1)
-        except (ValueError, IndexError):
+        except IndexError:
             return None
-        i += 1
         cell = [0, 0, 0]
         if i < len(tokens) and tokens[i] == 'cell':
             try:
@@ -624,96 +680,62 @@ def lookup_ncicobi(records, directive_str, lob_poscar):
     return None
 
 
-def parse_nccobicar_header(path):
+def _match_nc_entry(header, directive_str, lob_poscar):
     """
-    Parse NcCOBICAR.lobster header.
+    Find the header['nc_pairs'] entry matching a cobiBetween directive.
 
-    Returns None if the file is absent or malformed, otherwise a dict:
-        n_spins, n_e, e_fermi, n_total, n_pairs, first_data_line,
-        nc_pairs : list of {index, atoms: [(label, [h,k,l])]}
+    Tries every cyclic rotation and reversal of the directive's chain (a
+    cobiBetween directive is unordered up to those symmetries) against each
+    entry's atom-only chain.
+
+    Returns
+    -------
+    dict or None : the matching entry (with 'col_position' and
+                   'orbital_rows' as parsed by parse_car_header), or None if
+                   the chain length is invalid or no entry matches.
     """
-    path = Path(path)
-    if not path.exists():
+    chain = _directive_to_chain(directive_str, lob_poscar)
+    if chain is None:
         return None
-    _re_nc_hdr = re.compile(
-        r'No\.(\d+):((?:[A-Za-z]+\d+\[[^\]]+\]->)+[A-Za-z]+\d+\[[^\]]+\])'
-    )
-    try:
-        with open(path) as f:
-            lines = f.readlines()
-        meta        = lines[1].split()
-        n_total     = int(meta[0])
-        n_spins     = int(meta[1])
-        n_e         = int(meta[2])
-        e_fermi     = float(meta[5])
-        has_average = lines[2].strip() == 'Average'
-        hdr_start   = 3 if has_average else 2
-        n_pairs     = n_total - (1 if has_average else 0)
-
-        nc_pairs = []
-        for i in range(hdr_start, min(hdr_start + n_pairs, len(lines))):
-            m = _re_nc_hdr.match(lines[i].strip())
-            if not m:
-                continue
-            atoms = [(am.group(1), list(map(int, am.group(2).split())))
-                     for am in _re_nc_atom_cell.finditer(m.group(2))]
-            nc_pairs.append({'index': int(m.group(1)), 'atoms': atoms})
-
-        first_data = hdr_start + n_pairs
-        while first_data < len(lines) and not lines[first_data].strip():
-            first_data += 1
-
-        return {'n_spins': n_spins, 'n_e': n_e, 'e_fermi': e_fermi,
-                'n_total': n_total, 'n_pairs': n_pairs,
-                'first_data_line': first_data, 'nc_pairs': nc_pairs}
-    except Exception:
-        return None
+    n = len(chain)
+    for entry in header['nc_pairs']:
+        if len(entry['atoms']) != n:
+            continue
+        for variant in _chain_variants(chain):
+            if variant == entry['atoms']:
+                return entry
+    return None
 
 
 def load_nccobicar_curves(path, header, directive_str, lob_poscar) -> list:
     """
-    Load energy-resolved NcCOBI curves for a cobiBetween directive.
+    Load the energy-resolved TOTAL (summed-over-orbitals) NcCOBI curve for a
+    cobiBetween directive, from a COBICAR.lobster file already parsed with
+    parse_car_header().
 
     Parameters
     ----------
-    path         : path to NcCOBICAR.lobster
-    header       : output of parse_nccobicar_header()
+    path         : path to COBICAR.lobster
+    header       : output of parse_car_header()
     directive_str: full cobiBetween line string
     lob_poscar   : output of parse_poscar_lobster()
 
     Returns
     -------
-    list of dicts {energy, curve, icurve, ival_ef}, or empty list.
+    list of 0 or 1 dicts {energy, curve, icurve, ival_ef}. Empty if the
+    chain isn't found, or if it was requested orbitalwise only (no total
+    row was written for it).
     """
-    chain = _directive_to_chain(directive_str, lob_poscar)
-    if chain is None:
-        return []
-
-    matching = []
-    for p in header['nc_pairs']:
-        for variant in _chain_variants(chain):
-            if variant == p['atoms']:
-                matching.append(p)
-                break
-    if not matching:
+    entry = _match_nc_entry(header, directive_str, lob_poscar)
+    if entry is None or entry['col_position'] is None:
         return []
 
     n_spins = header['n_spins']
-
-    def _cols(idx):
-        base = 1 + (idx - 1) * 2 * n_spins
-        return base, base + 1
-
-    usecols  = [0]
-    slot_map = {}
-    for p in matching:
-        c, ic = _cols(p['index'])
-        slot_map[p['index']] = (len(usecols), len(usecols) + 1)
-        usecols.extend([c, ic])
+    base    = 1 + entry['col_position'] * 2 * n_spins
 
     try:
         data = np.loadtxt(path, skiprows=header['first_data_line'],
-                          usecols=usecols)
+                          usecols=[0, base, base + 1])
     except Exception:
         return []
 
@@ -721,15 +743,219 @@ def load_nccobicar_curves(path, header, directive_str, lob_poscar) -> list:
         data = data.reshape(1, -1)
     energy = data[:, 0]
     ef_idx = int(np.argmin(np.abs(energy)))
+    return [{'energy': energy, 'curve': data[:, 1], 'icurve': data[:, 2],
+             'ival_ef': float(data[ef_idx, 2])}]
 
-    result = []
-    for p in matching:
-        s_c, s_ic = slot_map[p['index']]
-        curve  = data[:, s_c]
-        icurve = data[:, s_ic]
-        result.append({'energy': energy, 'curve': curve, 'icurve': icurve,
-                       'ival_ef': float(icurve[ef_idx])})
+
+def load_nc_entry_orbital_curves(path, header, entry) -> dict:
+    """
+    Load the total and all orbitalwise-resolved NcCOBI curves for one
+    header['nc_pairs'] entry (as parsed by parse_car_header()), directly —
+    no directive-string matching needed. This is the entry point for
+    callers (e.g. a GUI listing every chain found in the file) that already
+    have the entry in hand and don't want to round-trip through a
+    cobiBetween directive string just to re-match it.
+
+    Requesting a chain orbitalwise in lobsterin (``cobiBetween ... orbitalwise``)
+    produces one row per orbital combination across the chain's atoms
+    (n_orbitals ** n_atoms rows) in addition to the plain total row — see
+    parse_car_header's 'orbital_rows'. This can be a large number of curves
+    (729 for a 3-centre chain with 9 orbitals per atom); callers doing
+    orbitalwise plotting/browsing should expect to filter/group them rather
+    than display all of them at once — see group_orbital_curves_by_type()
+    and filter_orbital_curves().
+
+    Note: the total ICOBI can integrate to ~0 even when individual orbital
+    contributions are large and non-zero — opposite-sign orbital
+    contributions can cancel in the sum. A near-zero total is not evidence
+    that the orbitalwise rows are wrong or absent.
+
+    Parameters
+    ----------
+    path   : path to COBICAR.lobster
+    header : output of parse_car_header()
+    entry  : one item of header['nc_pairs']
+
+    Returns
+    -------
+    dict:
+        'total'    : {energy, curve, icurve, ival_ef} or None if no total
+                     row was written for this chain.
+        'orbitals' : list of dicts, one per orbital-combination row, each
+                     {orbitals: list[str] (one tag per chain atom, in chain
+                     order), energy, curve, icurve, ival_ef}, sorted by
+                     |ival_ef| descending. Empty list if the chain was not
+                     requested orbitalwise.
+    """
+    n_spins = header['n_spins']
+
+    def _cols(col_position):
+        base = 1 + col_position * 2 * n_spins
+        return base, base + 1
+
+    usecols = [0]
+    slots   = []   # (kind, orbitals_or_None, curve_slot, icurve_slot)
+    if entry['col_position'] is not None:
+        c, ic = _cols(entry['col_position'])
+        slots.append(('total', None, len(usecols), len(usecols) + 1))
+        usecols.extend([c, ic])
+    for row in entry['orbital_rows']:
+        c, ic = _cols(row['col_position'])
+        slots.append(('orbital', row['orbitals'], len(usecols), len(usecols) + 1))
+        usecols.extend([c, ic])
+
+    if len(usecols) == 1:
+        return {'total': None, 'orbitals': []}
+
+    data = np.loadtxt(path, skiprows=header['first_data_line'], usecols=usecols)
+    if data.ndim == 1:
+        data = data.reshape(1, -1)
+    energy = data[:, 0]
+    ef_idx = int(np.argmin(np.abs(energy)))
+
+    result = {'total': None, 'orbitals': []}
+    for kind, orbitals, s_c, s_ic in slots:
+        curve, icurve = data[:, s_c], data[:, s_ic]
+        item = {'energy': energy, 'curve': curve, 'icurve': icurve,
+                'ival_ef': float(icurve[ef_idx])}
+        if kind == 'total':
+            result['total'] = item
+        else:
+            item['orbitals'] = orbitals
+            result['orbitals'].append(item)
+
+    result['orbitals'].sort(key=lambda x: abs(x['ival_ef']), reverse=True)
     return result
+
+
+def load_nccobicar_orbital_curves(path, header, directive_str, lob_poscar) -> dict:
+    """
+    Load the total and all orbitalwise-resolved NcCOBI curves for a
+    cobiBetween directive, from a COBICAR.lobster file already parsed with
+    parse_car_header(). Thin directive-string-matching wrapper around
+    load_nc_entry_orbital_curves() — see that function for the return shape
+    and orbitalwise-scale caveats.
+
+    Parameters
+    ----------
+    path         : path to COBICAR.lobster
+    header       : output of parse_car_header()
+    directive_str: full cobiBetween line string
+    lob_poscar   : output of parse_poscar_lobster()
+
+    Returns
+    -------
+    None if the chain is not found in header['nc_pairs']; otherwise see
+    load_nc_entry_orbital_curves().
+    """
+    entry = _match_nc_entry(header, directive_str, lob_poscar)
+    if entry is None:
+        return None
+    return load_nc_entry_orbital_curves(path, header, entry)
+
+
+def entry_to_directive(entry) -> str:
+    """
+    Build the canonical (official-syntax) cobiBetween directive string for a
+    header['nc_pairs'] entry, e.g. for display or for re-parsing with
+    _match_nc_entry()/load_nccobicar_orbital_curves(). Inverse of the atom
+    part of _directive_to_chain(): cell tags are only emitted for atoms with
+    a non-zero cell relative to the chain's first atom.
+
+    Parameters
+    ----------
+    entry : one item of header['nc_pairs']
+
+    Returns
+    -------
+    str, e.g. 'cobiBetween atom 1 atom 6 atom 8'
+    """
+    base_cell = entry['atoms'][0][1]
+    parts = ['cobiBetween']
+    for label, cell in entry['atoms']:
+        _, idx0 = _parse_label(label)
+        parts.extend(['atom', str(idx0 + 1)])
+        rel = [c - b for c, b in zip(cell, base_cell)]
+        if any(rel):
+            parts.extend(['cell', str(rel[0]), str(rel[1]), str(rel[2])])
+    return ' '.join(parts)
+
+
+# ---------------------------------------------------------------------------
+# Orbital grouping / filtering — orbitalwise chains produce n_orbitals**N
+# rows (hundreds to tens of thousands); callers must group and/or filter
+# before displaying them.
+# ---------------------------------------------------------------------------
+
+def orbital_type(orbital_tag: str) -> str:
+    """
+    Coarse orbital type ('s', 'p', 'd', 'f', ...) for an orbital tag.
+
+    '5s' -> 's', '5p_z' -> 'p', '4d_xy' -> 'd', '4d_x^2-y^2' -> 'd'
+    """
+    stripped = orbital_tag.lstrip('0123456789')
+    return stripped[0] if stripped else orbital_tag
+
+
+def group_orbital_curves_by_type(orbital_curves) -> list:
+    """
+    Collapse individual m-resolved orbital rows (e.g. '5p_x','5p_y','5p_z')
+    into coarse orbital-type groups (e.g. 'p') by summing their curves.
+
+    This is the default view for browsing an orbitalwise chain: a 3-centre
+    chain with an s/p/d basis (9 orbitals/atom) has 729 individual rows but
+    only 3**3 = 27 orbital-type groups.
+
+    Parameters
+    ----------
+    orbital_curves : list of dicts as in load_nc_entry_orbital_curves()['orbitals']
+                     — each {orbitals, energy, curve, icurve, ival_ef}
+
+    Returns
+    -------
+    list of dicts {orbital_types: tuple[str], energy, curve, icurve, ival_ef,
+    n_rows: int (how many individual rows were summed)}, sorted by
+    |ival_ef| descending.
+    """
+    groups: dict = {}
+    for row in orbital_curves:
+        key = tuple(orbital_type(o) for o in row['orbitals'])
+        g = groups.get(key)
+        if g is None:
+            groups[key] = {
+                'orbital_types': key, 'energy': row['energy'],
+                'curve': row['curve'].copy(), 'icurve': row['icurve'].copy(),
+                'ival_ef': row['ival_ef'], 'n_rows': 1,
+            }
+        else:
+            g['curve']   = g['curve']   + row['curve']
+            g['icurve']  = g['icurve']  + row['icurve']
+            g['ival_ef'] = g['ival_ef'] + row['ival_ef']
+            g['n_rows'] += 1
+    result = list(groups.values())
+    result.sort(key=lambda x: abs(x['ival_ef']), reverse=True)
+    return result
+
+
+def filter_orbital_curves(curves, threshold: float) -> list:
+    """
+    Drop rows/groups whose |ival_ef| is below *threshold* — the "hide
+    contributions with nothing going on" filter.
+
+    Works on either individual orbital rows (from load_nc_entry_orbital_curves)
+    or orbital-type groups (from group_orbital_curves_by_type); both carry
+    'ival_ef'.
+
+    Parameters
+    ----------
+    curves    : list of dicts, each with an 'ival_ef' key
+    threshold : float, minimum |ival_ef| to keep (absolute ICOBI units)
+
+    Returns
+    -------
+    list, same dicts, filtered; order preserved.
+    """
+    return [c for c in curves if abs(c['ival_ef']) >= threshold]
 
 
 def find_lobster_dir(ph_dir) -> 'Path | None':

@@ -37,6 +37,7 @@ from matplotlib.backends.backend_qt5agg import (
 from matplotlib.figure import Figure
 
 from betapy.gui.structure_view import StructureView
+from betapy.gui.plot_utils import symmetric_xlim, exact_energy_ylim
 
 
 _GREY_COLOR  = '#aaaaaa'
@@ -156,6 +157,12 @@ class _NcCobiViewerWidget(QDialog):
             self._icobi_label.setText(
                 f'NcICOBI(N) = {icobi:.5f}   ·   NcICOBI(EF) = {ef_val:.5f}'
             )
+            xlim = symmetric_xlim([curve])
+            if xlim is not None:
+                ax.set_xlim(*xlim)
+            ylim = exact_energy_ylim(energy)
+            if ylim is not None:
+                ax.set_ylim(*ylim)
 
         ax.axhline(0, color='#777', linestyle='--', linewidth=0.9, zorder=1)
         ax.axvline(0, color='#999', linestyle='-',  linewidth=0.5, zorder=1)
@@ -339,7 +346,7 @@ class MulticenterWidget(QWidget):
         # NcICOBI / NcCOBICAR
         self._lob_poscar         = None   # dict from parse_poscar_lobster()
         self._nc_icobi_records   = []     # list from parse_ncicobi_list()
-        self._nc_cobicar_header  = None   # dict from parse_nccobicar_header(), or None
+        self._nc_cobicar_header  = None   # dict from parse_car_header(COBICAR.lobster), or None
         self._nc_viewer          = None   # _NcCobiViewerWidget, created lazily
         self._build_ui()
 
