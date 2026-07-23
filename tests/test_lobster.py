@@ -18,6 +18,8 @@ from betapy.core.lobster import (
     parse_poscar_lobster, load_nccobicar_curves, load_nccobicar_orbital_curves,
     load_nc_entry_orbital_curves, entry_to_directive,
     orbital_type, group_orbital_curves_by_type, filter_orbital_curves,
+    parse_ncicobi_list, lookup_ncicobi, lookup_ncicobi_record,
+    is_translation_free, check_ncicobi_consistency,
 )
 
 
@@ -565,6 +567,93 @@ def test_filter_orbital_curves_drops_below_threshold():
     assert all(abs(c['ival_ef']) >= 0.01 for c in kept)
 
 
+# ---------------------------------------------------------------------------
+# parse_ncicobi_list / lookup_ncicobi / lookup_ncicobi_record — orbitalwise
+#
+# NcICOBILIST.lobster shares COBICAR's repeated-index-per-orbital-combination
+# quirk (see make_nc_orbitalwise_cobicar above), but with a twist: orbital
+# rows omit cell vectors entirely, using a bare orbital tag per atom instead
+# of a [cell] bracket, e.g. 'A1[5s]->A3[5s]->A1[5s]' rather than
+# 'A1[0 0 0][5s]->A3[0 -1 1][5s]->A1[0 -1 1][5s]'. This means a row can only
+# be classified as "total" (numeric cell bracket) vs "orbital" (non-numeric
+# tag bracket) by inspecting the bracket contents, not by counting brackets.
+# ---------------------------------------------------------------------------
+
+NCICOBILIST_ORBITALWISE = """\
+  COBI#   No. of atoms  Nc-ICOBI (at) eF  Atoms for Nc-ICOBI
+                              for spin 1
+      1              2           0.40000  A1[0 0 0]->A2[0 0 0]
+      2              3          -0.01317  A1[0 0 0]->A3[0 -1 1]->A1[0 -1 1]
+      2              3          -0.00004  A1[5s]->A3[5s]->A1[5s]
+      2              3           0.00003  A1[5s]->A3[5s]->A1[5p_z]
+      2              3          -0.01316  A1[5p_z]->A3[5s]->A1[5s]
+"""
+
+
+def test_parse_ncicobi_list_plain_and_orbitalwise_records():
+    path = write_tmp(NCICOBILIST_ORBITALWISE)
+    records = parse_ncicobi_list(path)
+    assert len(records) == 2
+
+    plain = next(r for r in records if r['n_atoms'] == 2)
+    assert plain['icobi'] == pytest.approx(0.40000)
+    assert plain['orbital_rows'] == []
+
+    chain = next(r for r in records if r['n_atoms'] == 3)
+    assert chain['icobi'] == pytest.approx(-0.01317)
+    assert chain['atoms'] == [('A1', [0, 0, 0]), ('A3', [0, -1, 1]), ('A1', [0, -1, 1])]
+    assert len(chain['orbital_rows']) == 3
+    assert chain['orbital_rows'][0]['orbitals'] == ['5s', '5s', '5s']
+    assert chain['orbital_rows'][0]['ival_ef'] == pytest.approx(-0.00004)
+
+
+def test_lookup_ncicobi_still_returns_float():
+    path = write_tmp(NCICOBILIST_ORBITALWISE)
+    records = parse_ncicobi_list(path)
+    lob_poscar = parse_poscar_lobster(write_tmp(POSCAR_LOB_3ATOM))
+    val = lookup_ncicobi(records, 'cobiBetween atom1 atom3 cell 0 -1 1 atom1 cell 0 -1 1',
+                         lob_poscar)
+    assert val == pytest.approx(-0.01317)
+
+
+def test_lookup_ncicobi_record_returns_orbital_rows():
+    path = write_tmp(NCICOBILIST_ORBITALWISE)
+    records = parse_ncicobi_list(path)
+    lob_poscar = parse_poscar_lobster(write_tmp(POSCAR_LOB_3ATOM))
+    rec = lookup_ncicobi_record(
+        records, 'cobiBetween atom1 atom3 cell 0 -1 1 atom1 cell 0 -1 1', lob_poscar)
+    assert rec is not None
+    assert rec['icobi'] == pytest.approx(-0.01317)
+    assert len(rec['orbital_rows']) == 3
+    total_of_orbitals = sum(o['ival_ef'] for o in rec['orbital_rows'])
+    # toy fixture isn't self-consistent by design (only 3 of the real 27
+    # rows are included) — just check the shape/keys are usable downstream
+    assert isinstance(total_of_orbitals, float)
+
+
+def test_group_orbital_curves_by_type_without_curve_data():
+    """
+    NcICOBILIST-sourced orbital rows carry no energy/curve/icurve — only
+    'orbitals' and 'ival_ef'. group_orbital_curves_by_type must still work
+    (summing just ival_ef) rather than KeyError on the missing fields.
+    """
+    rows = [
+        {'orbitals': ['5s', '5s', '5s'], 'ival_ef': -0.00004},
+        {'orbitals': ['5s', '5s', '5p_z'], 'ival_ef': 0.00003},
+        {'orbitals': ['5p_z', '5s', '5s'], 'ival_ef': -0.01316},
+    ]
+    groups = group_orbital_curves_by_type(rows)
+    # positional grouping key: ('s','s','s'), ('s','s','p'), ('p','s','s') are
+    # three distinct groups since orbital position along the chain matters
+    assert len(groups) == 3
+    by_type = {g['orbital_types']: g for g in groups}
+    assert by_type[('s', 's', 's')]['ival_ef'] == pytest.approx(-0.00004)
+    assert by_type[('s', 's', 's')]['n_rows'] == 1
+    assert 'curve' not in by_type[('s', 's', 's')]
+    assert by_type[('s', 's', 'p')]['n_rows'] == 1
+    assert by_type[('p', 's', 's')]['ival_ef'] == pytest.approx(-0.01316)
+
+
 def test_load_nccobicar_orbital_curves_official_spaced_syntax():
     """
     LOBSTER's official cobiBetween syntax writes 'atom' and its index as
@@ -582,3 +671,98 @@ def test_load_nccobicar_orbital_curves_official_spaced_syntax():
     assert spaced is not None
     assert spaced['total']['ival_ef'] == pytest.approx(concatenated['total']['ival_ef'])
     assert len(spaced['orbitals']) == len(concatenated['orbitals']) == 8
+
+
+# ---------------------------------------------------------------------------
+# is_translation_free
+# ---------------------------------------------------------------------------
+
+def test_is_translation_free_true_when_all_atoms_same_cell():
+    entry = {'atoms': [('A1', [0, 0, 0]), ('A2', [0, 0, 0]), ('A3', [0, 0, 0])]}
+    assert is_translation_free(entry) is True
+
+
+def test_is_translation_free_false_when_any_atom_differs():
+    entry = {'atoms': [('A1', [0, 0, 0]), ('A3', [0, -1, 1]), ('A1', [0, -1, 1])]}
+    assert is_translation_free(entry) is False
+
+
+def test_is_translation_free_compares_to_first_atom_not_literal_zero():
+    """A chain uniformly offset by the same non-zero cell is still
+    translation-free — what matters is agreement with the first atom's
+    cell, not literal [0,0,0]."""
+    entry = {'atoms': [('A1', [1, 1, 1]), ('A2', [1, 1, 1])]}
+    assert is_translation_free(entry) is True
+
+
+# ---------------------------------------------------------------------------
+# check_ncicobi_consistency
+#
+# Two atoms, species A, in a cubic a=5.0 Å cell: A1 at frac (0,0,0), A2 at
+# frac (0.5,0,0). A2 reached via cell [0,0,0] sits at x=2.5; reached via
+# cell [-1,0,0] it sits at x=-2.5 — same 2.5 Å distance, same physical bond,
+# different periodic image. Reached via cell [1,0,0] it sits at x=7.5 — a
+# genuinely different (longer) bond, not part of the same shell.
+# ---------------------------------------------------------------------------
+
+POSCAR_LOB_2ATOM = """\
+A2 test
+   1.0
+     5.0000000   0.0000000   0.0000000
+     0.0000000   5.0000000   0.0000000
+     0.0000000   0.0000000   5.0000000
+A
+2
+Direct
+  0.0000000   0.0000000   0.0000000
+  0.5000000   0.0000000   0.0000000
+"""
+
+NCICOBI_INCONSISTENT = """\
+  COBI#   No. of atoms  Nc-ICOBI (at) eF  Atoms for Nc-ICOBI
+                              for spin 1
+      1              2           0.50000  A1[0 0 0]->A2[0 0 0]
+      2              2           0.10000  A1[0 0 0]->A2[-1 0 0]
+      3              2           0.30000  A1[0 0 0]->A2[1 0 0]
+"""
+
+
+def test_check_ncicobi_consistency_flags_divergent_translations():
+    records = parse_ncicobi_list(write_tmp(NCICOBI_INCONSISTENT))
+    lob_poscar = parse_poscar_lobster(write_tmp(POSCAR_LOB_2ATOM))
+    result = check_ncicobi_consistency(records, lob_poscar)
+
+    # only one shell has >= 2 instances (the 2.5 Å bond via cell [0,0,0] and
+    # [-1,0,0]); the 7.5 Å bond via cell [1,0,0] is a lone instance, excluded
+    assert len(result) == 1
+    shell = result[0]
+    assert shell['distance'] == pytest.approx(2.5)
+    assert sorted(shell['values']) == [0.1, 0.5]
+    assert shell['spread'] == pytest.approx(0.4)
+    assert shell['relative_spread'] == pytest.approx(0.4 / 0.3)
+
+
+NCICOBI_CONSISTENT = """\
+  COBI#   No. of atoms  Nc-ICOBI (at) eF  Atoms for Nc-ICOBI
+                              for spin 1
+      1              2           0.50000  A1[0 0 0]->A2[0 0 0]
+      2              2           0.50010  A1[0 0 0]->A2[-1 0 0]
+"""
+
+
+def test_check_ncicobi_consistency_small_spread_for_agreeing_translations():
+    records = parse_ncicobi_list(write_tmp(NCICOBI_CONSISTENT))
+    lob_poscar = parse_poscar_lobster(write_tmp(POSCAR_LOB_2ATOM))
+    result = check_ncicobi_consistency(records, lob_poscar)
+    assert len(result) == 1
+    assert result[0]['relative_spread'] < 0.001
+
+
+def test_check_ncicobi_consistency_empty_when_no_shell_has_duplicates():
+    NCICOBI_SINGLETONS = """\
+      1              2           0.50000  A1[0 0 0]->A2[0 0 0]
+      2              2           0.30000  A1[0 0 0]->A2[1 0 0]
+"""
+    records = parse_ncicobi_list(write_tmp(NCICOBI_SINGLETONS))
+    lob_poscar = parse_poscar_lobster(write_tmp(POSCAR_LOB_2ATOM))
+    assert check_ncicobi_consistency(records, lob_poscar) == []

@@ -547,7 +547,7 @@ def load_car_curves(path, header: dict,
 # N-center COBI — NcICOBILIST and NcCOBICAR
 # ---------------------------------------------------------------------------
 
-_re_nc_icobi_row  = re.compile(r'^\s*\d+\s+(\d+)\s+([+-]?\d[\d.eE+-]*)\s+(.*)')
+_re_nc_icobi_row  = re.compile(r'^\s*(\d+)\s+(\d+)\s+([+-]?\d[\d.eE+-]*)\s+(.*)')
 _re_nc_atom_cell  = re.compile(r'([A-Za-z]+\d+)\[([^\]]+)\]')
 
 
@@ -555,28 +555,59 @@ def parse_ncicobi_list(path) -> list:
     """
     Parse NcICOBILIST.lobster.
 
-    Returns list of dicts:
-        n_atoms : int
-        icobi   : float (Nc-ICOBI at EF spin 1)
-        atoms   : list of (label_str, [h,k,l])  e.g. [('Sc1',[0,0,0]),('F2',[0,0,0])]
+    When a chain was requested with `orbitalwise`, LOBSTER writes one extra
+    row per orbital combination (n_orbitals ** n_atoms), sharing the same
+    COBI# index as the plain total row and immediately following it — the
+    same convention used by COBICAR.lobster's own orbitalwise entries (see
+    parse_car_header). Unlike COBICAR, these rows omit cell vectors
+    entirely (implied by the shared index) and give an orbital tag per atom
+    instead, e.g. 'Sn1[5s]->Sn3[5s]->Sn1[5s]' rather than
+    'Sn1[0 0 0]->Sn3[0 -1 1]->Sn1[0 -1 1]'.
+
+    Returns list of dicts, one per requested chain:
+        n_atoms      : int
+        icobi        : float (Nc-ICOBI at EF, spin 1)
+        atoms        : list of (label_str, [h,k,l]) e.g. [('Sc1',[0,0,0]),('F2',[0,0,0])]
+        orbital_rows : list of {orbitals: list[str], ival_ef: float} — empty
+                       unless the chain was requested orbitalwise
     """
-    records = []
+    records  = []
+    by_index = {}
     with open(Path(path)) as f:
         for line in f:
             m = _re_nc_icobi_row.match(line)
             if not m:
                 continue
             try:
-                n_atoms = int(m.group(1))
-                icobi   = float(m.group(2))
-                atoms   = [(am.group(1),
-                            list(map(int, am.group(2).split())))
-                           for am in _re_nc_atom_cell.finditer(m.group(3))]
-                if len(atoms) == n_atoms:
-                    records.append({'n_atoms': n_atoms, 'icobi': icobi,
-                                    'atoms': atoms})
+                idx     = int(m.group(1))
+                n_atoms = int(m.group(2))
+                icobi   = float(m.group(3))
+                tokens  = [(am.group(1), am.group(2))
+                           for am in _re_nc_atom_cell.finditer(m.group(4))]
             except (ValueError, AttributeError):
                 continue
+            if len(tokens) != n_atoms:
+                continue
+
+            # A total row's bracket holds a numeric cell vector; an orbital
+            # row's bracket holds an orbital tag (non-numeric) instead.
+            is_total = all(
+                all(t.lstrip('-').isdigit() for t in bracket.split())
+                for _, bracket in tokens
+            )
+            if is_total:
+                atoms = [(lbl, list(map(int, bracket.split())))
+                         for lbl, bracket in tokens]
+                rec = {'n_atoms': n_atoms, 'icobi': icobi, 'atoms': atoms,
+                       'orbital_rows': []}
+                records.append(rec)
+                by_index[idx] = rec
+            else:
+                rec = by_index.get(idx)
+                if rec is not None:
+                    rec['orbital_rows'].append(
+                        {'orbitals': [bracket for _, bracket in tokens],
+                         'ival_ef': icobi})
     return records
 
 
@@ -653,9 +684,39 @@ def _chain_variants(chain):
                for lbl, cell in rot]
 
 
+def lookup_ncicobi_record(records, directive_str, lob_poscar):
+    """
+    Find the full NcICOBILIST record for a cobiBetween directive.
+
+    Parameters
+    ----------
+    records      : output of parse_ncicobi_list()
+    directive_str: full cobiBetween line string
+    lob_poscar   : output of parse_poscar_lobster() / _parse_poscar_lobster()
+
+    Returns
+    -------
+    dict (one item of `records`, including 'orbital_rows') or None if not found.
+    """
+    chain = _directive_to_chain(directive_str, lob_poscar)
+    if chain is None:
+        return None
+    n = len(chain)
+    for rec in records:
+        if rec['n_atoms'] != n:
+            continue
+        for variant in _chain_variants(chain):
+            if variant == rec['atoms']:
+                return rec
+    return None
+
+
 def lookup_ncicobi(records, directive_str, lob_poscar):
     """
-    Find the NcICOBI value for a cobiBetween directive.
+    Find the total NcICOBI value for a cobiBetween directive.
+
+    Thin wrapper around lookup_ncicobi_record() for callers that only need
+    the integrated total, not the orbital breakdown.
 
     Parameters
     ----------
@@ -667,17 +728,109 @@ def lookup_ncicobi(records, directive_str, lob_poscar):
     -------
     float or None if not found.
     """
-    chain = _directive_to_chain(directive_str, lob_poscar)
-    if chain is None:
-        return None
-    n = len(chain)
+    rec = lookup_ncicobi_record(records, directive_str, lob_poscar)
+    return rec['icobi'] if rec is not None else None
+
+
+def is_translation_free(entry) -> bool:
+    """
+    True if every atom in *entry* (a header['nc_pairs'] entry from
+    parse_car_header, or a parse_ncicobi_list() record — both share the
+    same 'atoms' shape) sits in the same cell image as the chain's first
+    atom, i.e. the chain involves no periodic-cell translation.
+
+    In our own testing, COBICAR.lobster/COHPCAR.lobster/COOPCAR.lobster
+    energy-resolved values agreed with the corresponding integrated value
+    for translation-free interactions but not for translated ones (not
+    traced to a betapy parsing issue — checked against the raw file text
+    directly); see docs/lobster-cobi.md. This is the check used to warn
+    before trusting COBICAR-derived curves for a selected chain.
+    """
+    base = entry['atoms'][0][1]
+    return all(cell == base for _, cell in entry['atoms'])
+
+
+def _atom_cart_position(label, cell, lob_poscar):
+    """Cartesian position of a (label, cell) atom, e.g. ('Sn1', [0, -1, 1])."""
+    _, idx0 = _parse_label(label)
+    frac = lob_poscar['positions_frac'][idx0] + np.asarray(cell, dtype=float)
+    return frac @ lob_poscar['lattice']
+
+
+def check_ncicobi_consistency(records, lob_poscar, dist_round: int = 3) -> list:
+    """
+    Empirically check whether NcICOBILIST.lobster's own pairwise values are
+    internally self-consistent across periodic-cell translations, for THIS
+    LOBSTER installation and THIS run.
+
+    Background: in our own testing (not traced to a betapy parsing issue —
+    checked against the raw file text directly), COBICAR.lobster/
+    COHPCAR.lobster/COOPCAR.lobster energy-resolved values for an
+    interaction spanning a periodic-cell translation did not match the
+    corresponding integrated value. We can't say how general this is across
+    LOBSTER versions or settings, and NcICOBILIST isn't assumed exempt from
+    the same kind of divergence just because it's a different file — that
+    has to be checked per calculation, not assumed either way. This checks
+    it directly: the same physical bond, reached via different
+    translations, should give the same ICOBI value. LOBSTER writes an
+    automatic Nc-ICOBI entry for every ordinary nearest-neighbour pair
+    (regardless of any cobiBetween directive), and — because of periodicity
+    — most bonds appear more than once at different translations, so this
+    check is almost always possible without needing any special directive.
+
+    A large spread within a shell suggests this directory's NcICOBILIST may
+    show the same kind of translation-dependent divergence observed for
+    COBICAR, and its multicenter (3+ atom) values should then be treated
+    with the same caution, rather than trusted by default.
+
+    Parameters
+    ----------
+    records    : output of parse_ncicobi_list() — only n_atoms == 2 entries
+                 are used (multicenter entries have no shared distance to
+                 group multiple instances by)
+    lob_poscar : output of parse_poscar_lobster()
+    dist_round : int, decimal places used to group entries into the same
+                 distance shell
+
+    Returns
+    -------
+    list of dicts, one per (species-pair, distance) shell with >= 2
+    instances found:
+        sp1, sp2       : str (canonical alphabetical order)
+        distance       : float, Å
+        values         : list[float], the ICOBI value at each translation found
+        spread         : float, max(values) - min(values)
+        relative_spread: float, spread / mean(|values|) (inf if that mean is 0)
+    Sorted by relative_spread descending (worst first). Empty list if fewer
+    than two translations of any bond were found (nothing to compare).
+    """
+    from collections import defaultdict
+
+    buckets = defaultdict(list)
     for rec in records:
-        if rec['n_atoms'] != n:
+        if rec['n_atoms'] != 2:
             continue
-        for variant in _chain_variants(chain):
-            if variant == rec['atoms']:
-                return rec['icobi']
-    return None
+        (l1, c1), (l2, c2) = rec['atoms']
+        sp1, _ = _parse_label(l1)
+        sp2, _ = _parse_label(l2)
+        cs1, cs2 = _canonical(sp1, sp2)
+        distance = float(np.linalg.norm(
+            _atom_cart_position(l2, c2, lob_poscar)
+            - _atom_cart_position(l1, c1, lob_poscar)))
+        buckets[(cs1, cs2, round(distance, dist_round))].append(rec['icobi'])
+
+    result = []
+    for (sp1, sp2, dist), values in buckets.items():
+        if len(values) < 2:
+            continue
+        spread    = max(values) - min(values)
+        mean_abs  = sum(abs(v) for v in values) / len(values)
+        rel_sprd  = spread / mean_abs if mean_abs > 0 else float('inf')
+        result.append({'sp1': sp1, 'sp2': sp2, 'distance': dist,
+                       'values': values, 'spread': spread,
+                       'relative_spread': rel_sprd})
+    result.sort(key=lambda x: x['relative_spread'], reverse=True)
+    return result
 
 
 def _match_nc_entry(header, directive_str, lob_poscar):
@@ -900,7 +1053,7 @@ def orbital_type(orbital_tag: str) -> str:
 def group_orbital_curves_by_type(orbital_curves) -> list:
     """
     Collapse individual m-resolved orbital rows (e.g. '5p_x','5p_y','5p_z')
-    into coarse orbital-type groups (e.g. 'p') by summing their curves.
+    into coarse orbital-type groups (e.g. 'p') by summing their values.
 
     This is the default view for browsing an orbitalwise chain: a 3-centre
     chain with an s/p/d basis (9 orbitals/atom) has 729 individual rows but
@@ -908,30 +1061,37 @@ def group_orbital_curves_by_type(orbital_curves) -> list:
 
     Parameters
     ----------
-    orbital_curves : list of dicts as in load_nc_entry_orbital_curves()['orbitals']
-                     — each {orbitals, energy, curve, icurve, ival_ef}
+    orbital_curves : list of dicts, each at minimum {orbitals, ival_ef} —
+                     either energy-resolved rows as in
+                     load_nc_entry_orbital_curves()['orbitals'] (which also
+                     carry 'energy'/'curve'/'icurve', summed if present) or
+                     integrated-only rows as in
+                     parse_ncicobi_list()[i]['orbital_rows'] (no curve data)
 
     Returns
     -------
-    list of dicts {orbital_types: tuple[str], energy, curve, icurve, ival_ef,
-    n_rows: int (how many individual rows were summed)}, sorted by
-    |ival_ef| descending.
+    list of dicts {orbital_types: tuple[str], ival_ef, n_rows: int (how many
+    individual rows were summed), plus 'energy'/'curve'/'icurve' if the
+    input rows carried them}, sorted by |ival_ef| descending.
     """
     groups: dict = {}
     for row in orbital_curves:
         key = tuple(orbital_type(o) for o in row['orbitals'])
+        has_curve = 'curve' in row and row['curve'] is not None
         g = groups.get(key)
         if g is None:
-            groups[key] = {
-                'orbital_types': key, 'energy': row['energy'],
-                'curve': row['curve'].copy(), 'icurve': row['icurve'].copy(),
-                'ival_ef': row['ival_ef'], 'n_rows': 1,
-            }
+            g = {'orbital_types': key, 'ival_ef': row['ival_ef'], 'n_rows': 1}
+            if has_curve:
+                g['energy'] = row['energy']
+                g['curve']  = row['curve'].copy()
+                g['icurve'] = row['icurve'].copy()
+            groups[key] = g
         else:
-            g['curve']   = g['curve']   + row['curve']
-            g['icurve']  = g['icurve']  + row['icurve']
             g['ival_ef'] = g['ival_ef'] + row['ival_ef']
-            g['n_rows'] += 1
+            g['n_rows']  += 1
+            if has_curve:
+                g['curve']  = g['curve']  + row['curve']
+                g['icurve'] = g['icurve'] + row['icurve']
     result = list(groups.values())
     result.sort(key=lambda x: abs(x['ival_ef']), reverse=True)
     return result
