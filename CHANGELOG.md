@@ -5,7 +5,7 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ---
 
-## [Unreleased]
+## [1.3.0] — 2026-07-24
 
 ### Fixed
 - `--mc-angle` default lowered from 150° to 105° — the previous default
