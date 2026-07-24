@@ -50,7 +50,7 @@ Repository = "https://github.com/JanHempelmann/betapy"
 gui      = ["matplotlib", "pyqt5", "pyvista", "pyvistaqt", "spglib"]
 symmetry = ["spglib"]
 full     = ["matplotlib", "pyqt5", "pyvista", "pyvistaqt", "spglib"]
-test     = ["pytest"]
+test     = ["pytest", "matplotlib"]
 
 [project.scripts]
 # These become terminal commands after `pip install -e .`
