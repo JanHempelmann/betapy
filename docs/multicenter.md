@@ -70,11 +70,11 @@ Detection threshold in robust standard deviations below the Badger baseline. A p
 
 1.5 σ works well for phase-change materials where the anomalous signal is strong. For systems where multicenter bonding is weaker or where the dataset is small, try 1.0–1.2.
 
-### `--mc-angle` (default 150°)
+### `--mc-angle` (default 105°)
 
 Minimum bond angle (in degrees) for chain extension. When growing a chain from atom B, a candidate next atom C is only accepted if the angle A–B–C exceeds this threshold. This enforces approximate linearity and prevents chains from bending back on themselves or branching into cage-like structures.
 
-150° is appropriate for GeTe-type rock-salt geometries andr slightly distorted structures such as Sb₂Te₃ or Bi₂Te₃ where the chains are not perfectly linear.
+105° is low enough to admit tetrahedral (109.47°) zigzag chains — the sp3 network in diamond-cubic (e.g. α-Sn, Si, Ge) or zincblende (e.g. ZnS) structures — in addition to the near-linear metavalent chains (GeTe-type rock-salt geometries, slightly distorted structures such as Sb₂Te₃ or Bi₂Te₃) this detector was originally built around. A tetrahedral chain is a genuine bonding motif, not a false positive to guard against — see [docs/lobster-cobi.md](lobster-cobi.md) for a real example (α-Sn) where its orbitalwise COBI breakdown shows large, opposite-sign orbital contributions that nearly cancel in the total, exactly the kind of interaction this detector exists to surface. Raise `--mc-angle` towards 150–180° if you only want near-linear chains and would rather not see tetrahedral ones.
 
 ### `--mc-max-order` (default 5)
 
@@ -112,7 +112,21 @@ Each flagged pair has a detection method and a significance value:
 
 ### Chains
 
-A chain is a sequence of atoms connected by consecutive flagged pairs, subject to the angle and ratio filters. The detector reports:
+A flagged pair is anomalous because a real force constant was measured directly
+between two atoms that are not themselves bonded, but are connected through a
+chain of intermediate bonds — the pFC "leaks" across the bridge. For each
+flagged pair, betapy searches for a real bonded path from the first atom that
+actually reaches the second, subject to the angle and ratio filters, trying
+shorter hop counts first so the most direct explanation is preferred. A
+flagged pair with no such bonded path within `--mc-max-order` atoms is left
+unexplained rather than forced into an unrelated chain — the anomaly is still
+real, but this detector cannot describe it as a short bonded chain. How
+closely a candidate path must land on the flagged pair's own second atom to
+count as reaching it is controlled by `--mc-pos-tol` (default 0.1 Å); raise it
+only if a chain you can see in VESTA isn't being found because of small
+bond-length irregularities in a distorted structure.
+
+The detector reports, for each chain found:
 
 - The **species sequence** (e.g. Te–Ge–Te–Ge–Te) and the specific atom indices
 - The **total end-to-end distance** and per-step distances
@@ -127,6 +141,8 @@ and teal rings (end-to-end and intermediate pairs including non-consecutive ones
 
 Only pairs within half the shortest supercell dimension (L/2) enter the baseline fit and chain search. This is the region where periodic-image effects are negligible. Pairs beyond this limit are excluded from detection; the cutoff distance is printed in the output.
 
+**The same L/2 limit governs chain growth, measured as true displacement, not path length.** As a chain is extended bond-by-bond, betapy tracks how far the growing end has actually moved from the chain's start — the straight-line, unwrapped displacement — and stops extending once that would exceed the L/2 limit. This is deliberately *not* the sum of the individual step lengths: for a bent or zigzag chain (e.g. the tetrahedral sp3 motifs admitted by the default `--mc-angle`), the summed step lengths are always longer than the true end-to-end displacement, so using the sum would stop some legitimate zigzag chains short of a bridging atom that is in fact still well within the reliable region. Tracking the real displacement avoids that, while remaining just as immune as before to the original failure mode this check guards against — a long chain's minimum-image distance being wrapped back to something short by the periodic cell.
+
 ---
 
 ## cobiBetween directives
@@ -135,6 +151,8 @@ LOBSTER's `cobiBetween` keyword computes the crystal orbital bond index (COBI)
 between two specific atoms that are not necessarily nearest neighbours, which is exactly what is needed for multicenter bond analysis. When a lobster POSCAR is found, betapy writes a `multicenter_directives.txt` containing one `cobiBetween` line per detected chain segment, formatted for direct insertion into the lobsterin input file.
 
 The directives specify atoms by their lobster POSCAR index. Check the atom mapping by opening POSCAR in VESTA or by comparing the species list to your SPOSCAR.
+
+**Deduplication is geometry-aware, not just species-aware.** Many symmetry-equivalent instances of the same physical chain are typically found (one per equivalent atom in the supercell); only one representative directive per distinct motif is kept. "Distinct" is judged by species sequence *and* per-step bond length together — species alone isn't enough to tell two genuinely different interactions apart in a single-element structure (or any compound where two distinct motifs happen to share an ordered species sequence, e.g. a bent chain and a collinear chain that are both all-same-species). β-Sn is a real example: it has two chemically distinct multicenter motifs — a bent `Sn-Sn-Sn` chain and a separate, collinear `Sn-Sn-Sn` chain along the tetragonal axis — that a species-only key would have collapsed onto each other, silently keeping only whichever one was found first.
 
 To browse the resulting COBI data — including the orbitalwise breakdown if
 you added `orbitalwise` to a directive — independently of this detector,
@@ -187,4 +205,4 @@ The `--mc-ratio` filter may be blocking a step. Print the raw flagged pairs firs
 (look at the pFC vs distance scatter for the relevant species pair), and check whether the step in question is at a distance significantly larger than the NN. Pass `--mc-ratio 0` to temporarily disable the filter and see the full chain.
 
 **Chain angle filter too strict or too loose.**  
-If a known multicenter system produces no chains or too bent, nonsensical chains check the geometry of the relevant atom sequence in VESTA. For structures with a rhombohedral or orthorhombic distortion, the chains may be just a few degrees off linear. Adjust `--mc-angle` to 140° or 160°. the default 150° should be very generous in most cases, though.
+If a known multicenter system produces no chains or too bent, nonsensical chains check the geometry of the relevant atom sequence in VESTA. For structures with a rhombohedral or orthorhombic distortion, the chains may be just a few degrees off linear. The default (105°) already admits tetrahedral (109.47°) sp3 zigzag chains as well as near-linear ones; if you specifically want to exclude bent/tetrahedral motifs and only see near-linear metavalent-type chains, raise `--mc-angle` to 140-150°.

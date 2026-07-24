@@ -395,10 +395,16 @@ class MulticenterWidget(QWidget):
         self._spin_angle = QDoubleSpinBox()
         self._spin_angle.setRange(90.0, 180.0)
         self._spin_angle.setSingleStep(5.0)
-        self._spin_angle.setValue(150.0)
+        self._spin_angle.setValue(105.0)
         self._spin_angle.setDecimals(0)
         self._spin_angle.setSuffix(' °')
         self._spin_angle.setFixedWidth(68)
+        self._spin_angle.setToolTip(
+            'Minimum bond angle for chain extension.\n'
+            '105° (default) admits tetrahedral (109.47°) zigzag chains\n'
+            '(diamond-cubic/zincblende sp3 networks) as well as near-linear\n'
+            'metavalent ones. Raise towards 150-180° to require\n'
+            'closer-to-linear chains only.')
         _spin_row('Min angle:', self._spin_angle)
 
         self._chk_badger_space = QCheckBox('Linearise (Φ⁻¹/³)')

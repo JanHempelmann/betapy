@@ -453,9 +453,20 @@ def _build_parser() -> argparse.ArgumentParser:
         help='Maximum number of atoms in a multicenter chain (default: 5).',
     )
     parser.add_argument(
-        '--mc-angle', type=float, default=150.0, metavar='DEG',
-        help='Minimum bond angle for chain extension in degrees (default: 150). '
-             'Use ~130 for slightly off-linear chains such as Sb2Te3.',
+        '--mc-angle', type=float, default=105.0, metavar='DEG',
+        help='Minimum bond angle for chain extension in degrees (default: 105 — '
+             'admits tetrahedral 109.47 degree zigzag chains, e.g. diamond-cubic '
+             'or zincblende sp3 networks, in addition to near-linear metavalent '
+             'ones). Raise towards 150-180 to require closer-to-linear chains only.',
+    )
+    parser.add_argument(
+        '--mc-pos-tol', type=float, default=0.1, metavar='ANGSTROM',
+        help='How closely a candidate bonded path must reach a flagged pair\'s '
+             'own second atom to count as explaining it (default: 0.1 Angstrom). '
+             'Chain construction searches for a real bonded path connecting the '
+             'two atoms of each flagged pair; raise this only if a known chain '
+             'in a distorted structure is not being found due to small bond-length '
+             'irregularities.',
     )
 
     # Single-structure inputs

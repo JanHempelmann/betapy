@@ -7,99 +7,75 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
-### Added
-- **LOBSTER multicenter COBI browsing (orbitalwise)** — new standalone **LOBSTER
-  COBI** GUI tab (`betapy/gui/lobster_cobi_viewer.py`, via the **"+"** menu),
-  independent of the phonon-based multicenter bonding detector: point it at any
-  LOBSTER directory containing `NcICOBILIST.lobster` and browse every
-  multicenter (3+ atom) chain's orbital-combination breakdown as a bar chart,
-  grouped by coarse orbital type (s/p/d/f) or full m-resolved, with a
-  threshold filter to unlist contributions with nothing going on, exportable
-  as SVG/PDF/PNG or as CSV (`orbitals, n_rows, ICOBI(N)_at_EF`). See
-  [docs/lobster-cobi.md](docs/lobster-cobi.md).
-- **`betapy/core/lobster.py`** — parses orbitalwise N-center COBICAR entries
-  (`atom[cell][orbital]` chain headers) and orbitalwise `NcICOBILIST.lobster`
-  rows (previously silently dropped — see Fixed, below); adds
-  `load_nc_entry_orbital_curves`, `lookup_ncicobi_record`, `entry_to_directive`,
-  `orbital_type`, `group_orbital_curves_by_type`, and `filter_orbital_curves`
-- **Plot conventions applied across all COHP/COOP/COBI curve/bar plots**
-  (pairwise LOBSTER viewer, Nc-COBI popup, new orbitalwise browser): the
-  value axis is symmetric about zero; energy-resolved plots additionally
-  pin the energy axis exactly to the data's own range (matching
-  `lobsterin`'s `COHPstartEnergy`/`COHPendEnergy`) instead of matplotlib's
-  default autoscale margin. New shared helper: `betapy/gui/plot_utils.py`.
-- **Illustrator-editable vector export** — SVG/PDF plots exported from the
-  LOBSTER COBI tab keep text as live, selectable text objects
-  (`svg.fonttype='none'`, `pdf.fonttype=42`) instead of matplotlib's default
-  outlined-to-shapes glyphs. New `betapy/gui/plot_utils.export_figure`
-  helper.
-- **"Lock aspect ratio for export" checkbox** (LOBSTER COBI tab) — forces
-  exported plots to a fixed narrow portrait aspect ratio (golden ratio,
-  1:1.618) independent of the panel's on-screen shape; the live preview is
-  unaffected, only the saved file's dimensions change.
-- **"Show gridlines" checkbox** (LOBSTER COBI tab) — toggles the plot's
-  dotted background gridlines.
-- **"Use COBICAR energy-resolved curves" checkbox** (LOBSTER COBI tab, off
-  by default) — opt back into COBICAR-sourced energy-resolved curves
-  instead of the default NcICOBILIST-sourced bar chart, for chains you
-  already know (or intend to make, via a supercell) translation-free.
-  Shows a warning banner whenever the selected chain actually involves a
-  translation, without blocking the view — see the note below on why that
-  case deserves a second look. Chains are tagged `[cell-free]` in the list
-  when this applies. New `betapy/core/lobster.py` helper:
-  `is_translation_free`.
-- **Automatic NcICOBILIST reliability check** (LOBSTER COBI tab) — every
-  directory loaded is checked empirically rather than assumed reliable: the
-  same physical bond usually appears at more than one periodic-cell
-  translation in `NcICOBILIST.lobster` already (LOBSTER writes one
-  automatically for every nearest-neighbour pair), so those instances are
-  cross-checked against each other and the result shown as a banner ("✓ ...
-  looks internally consistent" or "⚠ ... shows a similar disagreement to
-  what we've seen affect COBICAR for translated interactions"). New
-  `betapy/core/lobster.py` function: `check_ncicobi_consistency`.
-
 ### Fixed
-- **`cobiBetween` directive syntax** — betapy's multicenter detector now
-  writes the official LOBSTER syntax (`atom 1`, `atom` and its POSCAR index
-  as separate tokens) instead of the concatenated `atom1` form it
-  previously generated; the parser accepts both for backward compatibility.
-- **N-center COBICAR column-index bug** — `parse_car_header`'s column
-  offset was derived from the printed `No.k` index, which is only correct
-  for a chain's first occurrence. Orbitalwise chains reuse the same index
-  for every orbital-combination row (up to `n_orbitals ** n_atoms` times),
-  so any Nc chain after the first read from the wrong column. Column
-  position is now tracked as the header line's true sequential position.
-- **`parse_ncicobi_list` silently dropped every orbitalwise row** —
-  `NcICOBILIST.lobster` can carry its own orbital-resolved rows (one per
-  orbital combination, same repeated-index convention as COBICAR's
-  orbitalwise entries), but the parser crashed on `int('5s')` trying to
-  read the orbital tag as a cell vector, and silently discarded the row.
-  Now parses both plain (cell-vector) and orbitalwise (orbital-tag) rows,
-  nested by shared index — see `parse_ncicobi_list`'s docstring.
+- `--mc-angle` default lowered from 150° to 105° — the previous default
+  excluded legitimate tetrahedral (109.47°) zigzag chains, admitting only
+  near-linear ones. Raise back towards 150-180° for near-linear-only
+  detection.
+- Directive deduplication used a species-only key, so distinct multicenter
+  motifs sharing a species sequence (e.g. a bent and a collinear chain of
+  the same species) collapsed onto each other and only one survived. The
+  key now also includes per-step bond length (`_fill_chain_directives`).
+- `_grow_chain` enforced the reliability cutoff via the scalar sum of step
+  lengths, which over-penalises bent/zigzag chains (always longer than
+  their straight-line extent) — a legitimate chain could get cut one atom
+  short. Now tracks the true cumulative displacement vector instead.
+- Chain construction grew chains greedily from a flagged pair's first atom
+  without checking whether the path actually reached its second atom.
+  Since a flagged pair is anomalous precisely because it's connected
+  through an intermediate chain, the greedy walk could drift onto an
+  unrelated atom sequence and report a chain unrelated to the actual
+  anomaly. Chain construction now searches directly for a bonded path
+  connecting the flagged pair's own two atoms (new `pos_tol` parameter /
+  `--mc-pos-tol` CLI flag), preferring the shortest path; an unexplained
+  flagged pair is now left out rather than assigned a wrong chain. Also
+  removed a one-boundary-crossing cap on chain growth, made unnecessary
+  (and actively wrong in some cases) once the search itself is bounded by
+  the target rather than open-ended.
+- `cobiBetween` directive syntax — now writes official LOBSTER syntax
+  (`atom 1`, not `atom1`); the parser accepts both.
+- N-center COBICAR column-index bug — column offset is now tracked by
+  header-line position rather than the printed `No.k` index, which repeats
+  for orbitalwise rows.
+- `parse_ncicobi_list` silently dropped orbitalwise rows (crashed parsing
+  the orbital tag as a cell vector). Now parsed correctly.
+- `StructureView` crashed highlighting a chain that reduces to a single
+  repeated atom (a degenerate zero-length bond mesh rejected by PyVista);
+  now skipped.
+
+### Added
+- LOBSTER multicenter COBI browsing (orbitalwise) — new **LOBSTER COBI** GUI
+  tab, independent of the phonon-based multicenter detector: browse any
+  multicenter chain's orbital-combination breakdown as a grouped/filterable
+  bar chart, exportable as SVG/PDF/PNG or CSV. See
+  [docs/lobster-cobi.md](docs/lobster-cobi.md).
+- 3D atom highlighting for the LOBSTER COBI tab — selecting a chain
+  highlights its atoms in a 3D panel, built from the base LOBSTER unit cell
+  (never a phonon supercell). Chains spanning a periodic-cell translation
+  are drawn at their true, unwrapped geometry rather than folded back into
+  the cell, with the cell boundary itself outlined for reference
+  (`StructureView.highlight_chain_with_cells`, "Show cell boundary" toggle).
+- Plot conventions applied across COHP/COOP/COBI plots — symmetric value
+  axis; energy-resolved plots pin the energy axis to `lobsterin`'s own
+  range. New `betapy/gui/plot_utils.py`.
+- Illustrator-editable vector export (live text, not outlined shapes) for
+  LOBSTER COBI plots.
+- "Lock aspect ratio for export" and "Show gridlines" checkboxes (LOBSTER
+  COBI tab).
+- "Use COBICAR energy-resolved curves" checkbox (off by default) — opt into
+  energy-resolved curves instead of the default integrated bar chart;
+  chains crossing a periodic-cell translation are flagged (see note below).
+- Automatic NcICOBILIST self-consistency check — every loaded directory is
+  checked empirically (cross-referencing the same bond at different
+  periodic translations) rather than assumed reliable, shown as a banner.
 
 ### Note on LOBSTER output reliability for translated interactions
-- **In our own testing, `COBICAR.lobster`/`COHPCAR.lobster`/`COOPCAR.lobster`
-  energy-resolved values for an interaction spanning a periodic-cell
-  translation did not match the corresponding `ICOBILIST`/`NcICOBILIST`
-  integrated value** — this was not traced to a betapy parsing issue (we
-  checked the raw file text directly). Interactions confined to the origin
-  cell agreed well between the two files. We can't say how general this is
-  across LOBSTER versions, basis sets, or settings, so we don't treat it as
-  a universal statement about LOBSTER — only as something worth checking
-  per calculation, which is exactly what the reliability check above does
-  automatically rather than assuming `NcICOBILIST` is safe by default.
-  Consequence: the LOBSTER COBI tab defaults to `NcICOBILIST.lobster`'s
-  integrated values rather than `COBICAR.lobster`'s energy-resolved curves
-  (see Added, above), with that choice backed by the automatic
-  self-consistency check rather than by which file happens to be involved.
-  Re-running LOBSTER on a supercell large enough that a chain's atoms are
-  distinct indices rather than periodic images (no translation needed in
-  the `cobiBetween` directive) is one way to sidestep the divergence we
-  observed entirely, independent of any of the above. See
-  [docs/lobster-cobi.md](docs/lobster-cobi.md) for the full writeup. The
-  same kind of divergence may also show up in the pairwise LOBSTER viewer
-  (`cohp_viewer.py`) whenever the displayed bond is a translated periodic
-  image rather than the origin-cell instance — not yet audited.
+- In our own testing, `COBICAR`/`COHPCAR`/`COOPCAR` energy-resolved values
+  for an interaction spanning a periodic-cell translation did not match the
+  corresponding integrated (`ICOBILIST`/`NcICOBILIST`) value — not traced to
+  a betapy parsing issue. Not a general claim about LOBSTER; worth checking
+  per calculation, which the automatic check above does. See
+  [docs/lobster-cobi.md](docs/lobster-cobi.md).
 
 ### Changed
 - **Experimental feature docs moved out of the README** — full descriptions of

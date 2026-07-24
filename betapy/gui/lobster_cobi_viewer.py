@@ -68,10 +68,34 @@ from matplotlib.figure import Figure
 from betapy.core.lobster import (
     parse_poscar_lobster, parse_ncicobi_list, parse_car_header,
     entry_to_directive, is_translation_free, check_ncicobi_consistency,
-    load_nccobicar_orbital_curves,
+    load_nccobicar_orbital_curves, label_to_atom_index,
     group_orbital_curves_by_type, filter_orbital_curves,
 )
+from betapy.core.structure import Supercell
+from betapy.gui.structure_view import StructureView
 from betapy.gui.plot_utils import symmetric_xlim, exact_energy_ylim, export_figure
+
+
+def _supercell_from_lob_poscar(lob_poscar) -> Supercell:
+    """
+    Build a Supercell from parse_poscar_lobster() output, for 3D highlighting
+    in this widget only. Deliberately the base LOBSTER unit cell — NOT the
+    (usually much larger) phonon SPOSCAR supercell used elsewhere in the app.
+    """
+    species, chem_symbols, chem_atoms = lob_poscar['species'], [], []
+    for sp in species:
+        if chem_symbols and chem_symbols[-1] == sp:
+            chem_atoms[-1] += 1
+        else:
+            chem_symbols.append(sp)
+            chem_atoms.append(1)
+    return Supercell({
+        'skal':         1.0,
+        'lattice':      lob_poscar['lattice'].tolist(),
+        'chem_symbols': chem_symbols,
+        'chem_atoms':   chem_atoms,
+        'positions':    lob_poscar['positions_frac'].tolist(),
+    })
 
 # Above this relative spread (fraction of the mean |ICOBI|), a bond that
 # should agree across periodic-cell translations is flagged as suspicious —
@@ -106,6 +130,7 @@ class LobsterCobiWidget(QWidget):
         super().__init__(parent)
         self._lobster_dir          = None
         self._lob_poscar           = None
+        self._lob_supercell        = None   # base LOBSTER unit cell, for 3D highlighting
         self._entries              = []    # NcICOBILIST records with n_atoms >= 3
         self._current_entry        = None
         self._displayed_orbitals   = []     # rows currently in the orbital list, in order
@@ -282,7 +307,27 @@ class LobsterCobiWidget(QWidget):
         rv.addLayout(btn_row)
 
         splitter.addWidget(right)
-        splitter.setSizes([300, 320, 480])
+
+        # ── Far-right panel — 3D structure view ────────────────────────
+        far_right = QWidget()
+        fv = QVBoxLayout(far_right)
+        fv.setContentsMargins(0, 0, 0, 0)
+
+        self.structure_view = StructureView(self)
+        fv.addWidget(self.structure_view, stretch=1)
+
+        self._lbl_3d_caveat = QLabel(
+            'Shown: base LOBSTER unit cell (not any phonon supercell), with '
+            'its boundary outlined. Atoms belonging to a cell-translated '
+            'interaction are shown at their true position — including '
+            'outside the outlined cell where the interaction actually '
+            'reaches beyond it.')
+        self._lbl_3d_caveat.setWordWrap(True)
+        self._lbl_3d_caveat.setStyleSheet('font-size: 9px; color: #666;')
+        fv.addWidget(self._lbl_3d_caveat)
+
+        splitter.addWidget(far_right)
+        splitter.setSizes([260, 300, 420, 420])
 
         self._draw_placeholder()
 
@@ -337,6 +382,15 @@ class LobsterCobiWidget(QWidget):
         self._cobicar_path        = None
         self._cobicar_header      = None
         self._cobicar_load_failed = False
+
+        try:
+            self._lob_supercell = _supercell_from_lob_poscar(lob_poscar)
+            self.structure_view.load_supercell(self._lob_supercell)
+        except Exception:
+            # 3D highlighting is a nice-to-have on top of the data browser —
+            # don't block loading the directory if it fails for some edge
+            # case (e.g. an unusual POSCAR the structure view can't render).
+            self._lob_supercell = None
 
         self._lbl_dir.setText(str(ldir))
         self._update_reliability_label(records, lob_poscar)
@@ -440,7 +494,24 @@ class LobsterCobiWidget(QWidget):
     def _on_chain_selected(self):
         items = self._chain_list.selectedItems()
         self._current_entry = items[0].data(Qt.UserRole) if items else None
+        self._update_3d_highlight()
         self._rebuild_orbital_list()
+
+    def _update_3d_highlight(self):
+        if self._lob_supercell is None:
+            return
+        if self._current_entry is None:
+            self.structure_view.clear_highlight()
+            return
+
+        # Each atom in a LOBSTER chain carries its own cell translation, and
+        # the same atom index can appear more than once at different
+        # translations — highlight_chain_with_cells() draws the real,
+        # unwrapped geometry (ghost atoms outside the unit cell where
+        # needed) instead of folding everything to its nearest image.
+        entries = [(label_to_atom_index(label), cell)
+                  for label, cell in self._current_entry['atoms']]
+        self.structure_view.highlight_chain_with_cells(entries)
 
     def _rebuild_orbital_list(self):
         self._orbital_list.clear()

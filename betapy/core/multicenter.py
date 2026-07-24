@@ -500,58 +500,102 @@ def _build_neighbor_lookup_from_structure(supercell, bond_cutoff, _chunk=128):
     return neighbors
 
 
-def _grow_chain(start_idx, init_direction, neighbors,
+def _grow_chain(start_idx, target_vec, neighbors,
                 min_cos, max_order, reliability_limit,
-                atom_species=None, nn_distances=None, max_nn_ratio=None):
+                atom_species=None, nn_distances=None, max_nn_ratio=None,
+                pos_tol=0.1):
     """
-    Greedily extend a chain from *start_idx* in *init_direction*.
+    Search for a bonded path from *start_idx* that actually reaches
+    *target_vec* — the flagged pair's own end-to-end displacement.
 
-    At each step the neighbour with the highest directional cosine (above
-    *min_cos*) is chosen.  Growth stops when no suitable neighbour exists or
-    the *cumulative* bond length along the chain would exceed
-    *reliability_limit*.
+    A flagged pair (atom1_idx, atom2_idx) is anomalous precisely because a
+    real force constant exists between two atoms that are not themselves
+    bonded, but are connected through a chain of intermediate bonds. An
+    earlier version of this function grew a chain *greedily*: starting at
+    atom1_idx, it repeatedly picked whichever real neighbour was best
+    aligned with the current direction, hoping this would trace the
+    physical path responsible for the anomaly. In practice that walk
+    frequently drifted onto a different, unrelated atom sequence that
+    happened to satisfy the angle and distance constraints without ever
+    reaching atom2_idx — so the reported chain, and every sub-chain
+    distance derived from it, described a bond sequence that was not the
+    one behind the flagged interaction at all.
 
-    Cumulative length is used rather than end-to-end distance so that the
-    check is not fooled by the minimum-image convention wrapping a long chain
-    back to a short periodic distance.  At most one supercell boundary crossing
-    is permitted: this allows gap-crossing chains (e.g. vdW-gap multicenter
-    bonds in layered materials) whose collinear entry path crosses a cell image,
-    while still preventing wrap-around chains that would require two or more
-    boundary crossings in the same direction.
+    This version instead searches directly for a path whose cumulative
+    displacement matches *target_vec* to within *pos_tol* — i.e. a path
+    that actually connects the two atoms the anomalous force constant was
+    measured between. Hop counts are tried in increasing order (iterative
+    deepening), so the first path found is also the most direct bonded
+    explanation available. At each step, candidate neighbours are tried in
+    order of how much they reduce the remaining distance to the target
+    (steepest-descent), backtracking on dead ends.
+
+    The angle constraint (*min_cos*) applies only between two *consecutive
+    real bonds* — there is no constraint on the very first hop, since it
+    has no preceding bond to form an angle with. The reliability check
+    (chain's cumulative unwrapped displacement vs. *reliability_limit*) works
+    exactly as before.
+
+    Unlike the earlier greedy version, there is no cap on how many times a
+    path may cross a supercell boundary. That cap existed to stop an
+    open-ended greedy walk from "cheating" the reliability check by wrapping
+    around the periodic cell — a concern that doesn't apply here, because
+    every accepted path must match *target_vec* itself, which is already
+    bounded by the reliability window (it's the flagged pair's own measured,
+    minimum-image separation). A real bonded path is not made any less real
+    by which periodic copy of an intermediate atom it happens to pass
+    through — e.g. beta-Sn's true zigzag chain genuinely crosses two
+    supercell boundaries, and rejecting it there just forces the search onto
+    a different, non-representative path that avoids them.
 
     Parameters
     ----------
-    start_idx         : int, 1-based SPOSCAR atom index
-    init_direction    : array-like (3,), unit vector for initial direction
+    start_idx         : int, 1-based SPOSCAR atom index (== the flagged
+                        pair's atom1_idx)
+    target_vec         : array-like (3,), Cartesian displacement from
+                        start_idx to the flagged pair's atom2_idx (e.g.
+                        ``supercell.cart_diff(pos(atom1_idx), pos(atom2_idx))``)
     neighbors         : dict from _build_neighbor_lookup_from_structure()
     min_cos           : float, cosine threshold (cos(180° - min_angle))
     max_order         : int, maximum number of atoms
-    reliability_limit : float, Angstrom, max allowed cumulative chain length
+    reliability_limit : float, Angstrom, max allowed cumulative displacement
+    pos_tol           : float, Angstrom, how closely a candidate path's
+                        cumulative displacement must match *target_vec* to
+                        count as reaching it. Default 0.1.
 
     Returns
     -------
-    list of 1-based SPOSCAR atom indices (length >= 1)
+    list of 1-based SPOSCAR atom indices. Length 1 (just *start_idx*) if no
+    bonded path to *target_vec* was found within *max_order* atoms — the
+    caller treats this the same as any other too-short chain.
     """
-    chain                = [start_idx]
-    current_dir          = np.asarray(init_direction, dtype=float)
-    chain_length         = 0.0   # cumulative sum of step distances
-    n_boundary_crossings = 0     # allow at most 1 to reach gap-crossing chains
+    target_vec = np.asarray(target_vec, dtype=float)
+    max_hops   = max_order - 1
 
-    while len(chain) < max_order:
-        last_idx = chain[-1]
-        best_nb  = None
-        best_cos = min_cos  # strict lower bound
+    def dfs(chain, cum_disp, prev_dir, depth, hops_allowed):
+        if float(np.linalg.norm(cum_disp - target_vec)) < pos_tol:
+            return list(chain)
+        if depth >= hops_allowed:
+            return None
 
-        for nb in neighbors.get(last_idx, []):
+        last_idx  = chain[-1]
+        remaining = target_vec - cum_disp
+        candidates = neighbors.get(last_idx, [])
+        # Steepest-descent ordering: try the neighbour that most reduces the
+        # remaining distance to the target first.
+        ordered = sorted(candidates,
+                         key=lambda nb: -float(np.dot(np.asarray(nb['dir']), remaining)))
+
+        for nb in ordered:
             nb_idx = nb['idx']
             if nb_idx in chain:
                 continue
-            if nb.get('boundary', False) and n_boundary_crossings >= 1:
-                continue
-            cos_angle = float(np.dot(current_dir, nb['dir']))
-            if cos_angle <= best_cos:
-                continue
-            if chain_length + nb['dist'] > reliability_limit:
+            if prev_dir is not None:
+                cos_angle = float(np.dot(prev_dir, nb['dir']))
+                if cos_angle <= min_cos:
+                    continue
+            candidate_disp = cum_disp + nb['dir'] * nb['dist']
+            if float(np.linalg.norm(candidate_disp)) > reliability_limit + pos_tol:
                 continue
             if (max_nn_ratio is not None and atom_species is not None
                     and nn_distances is not None):
@@ -561,33 +605,37 @@ def _grow_chain(start_idx, init_direction, neighbors,
                     nn_d = nn_distances.get(tuple(sorted([sp_curr, sp_nb])))
                     if nn_d is not None and nb['dist'] > max_nn_ratio * nn_d:
                         continue
-            best_cos = cos_angle
-            best_nb  = nb
 
-        if best_nb is None:
-            break
+            found = dfs(chain + [nb_idx], candidate_disp, nb['dir'],
+                       depth + 1, hops_allowed)
+            if found is not None:
+                return found
 
-        chain.append(best_nb['idx'])
-        chain_length += best_nb['dist']
-        current_dir   = best_nb['dir']   # unit vector already normalised
-        if best_nb.get('boundary', False):
-            n_boundary_crossings += 1
+        return None
 
-    return chain
+    for hops_allowed in range(1, max_hops + 1):
+        found = dfs([start_idx], np.zeros(3), None, 0, hops_allowed)
+        if found is not None:
+            return found
+
+    return [start_idx]
 
 
 def find_chains(flagged_records, supercell, bulk_results=None,
-                min_angle_deg=150.0, max_order=5, bond_cutoff=4.0,
+                min_angle_deg=105.0, max_order=5, bond_cutoff=4.0,
                 nn_distances=None, max_nn_ratio=1.5,
-                reliability_cutoff=None):
+                reliability_cutoff=None, pos_tol=0.1):
     """
     Trace multicenter bonding chains starting from anomalous pFC pair records.
 
-    For each flagged pair (atom1_idx, atom2_idx) the chain is grown from
-    atom1_idx in the atom1→atom2 direction, picking up bridging atoms at each
-    step.  Sub-chains of all orders from 3 up to the full chain length are
-    recorded; together they represent the hierarchy of multicenter interactions
-    within the same bonding chain.
+    A flagged pair (atom1_idx, atom2_idx) is anomalous because a real force
+    constant was measured between two atoms that are connected only through
+    a chain of intermediate bonds, not directly. For each flagged pair, this
+    searches for a real bonded path from atom1_idx that actually reaches
+    atom2_idx (see _grow_chain for why this must be a targeted search rather
+    than a greedy directional walk). Sub-chains of all orders from 3 up to
+    the full chain length are recorded; together they represent the
+    hierarchy of multicenter interactions within the same bonding chain.
 
     The reliability window (half the shortest supercell dimension) is enforced:
     no chain extends beyond the reliable range of the force constants.
@@ -598,9 +646,18 @@ def find_chains(flagged_records, supercell, bulk_results=None,
         Individual pair records as returned by detect_anomalous_pairs().
     supercell       : Supercell
     bulk_results    : list of dicts from compute_bulk_pfcs() [first return value]
-    min_angle_deg   : float, minimum bond angle in chain (degrees). Default 150.
+    min_angle_deg   : float, minimum bond angle in chain (degrees). Default 105
+                      — low enough to admit tetrahedral (109.47°) zigzag
+                      chains (e.g. the sp3 network in diamond-cubic Sn, Si,
+                      Ge, or zincblende structures) in addition to the
+                      near-linear metavalent chains (GeTe, Sb2Te3-type) this
+                      detector was originally built around. Raise towards
+                      150-180 to require closer-to-linear geometry only.
     max_order       : int, maximum number of atoms per chain. Default 5.
     bond_cutoff     : float, Angstrom, max step distance for extension. Default 4.0.
+    pos_tol         : float, Angstrom, how closely a candidate bonded path must
+                      reach the flagged pair's own atom2_idx to count as
+                      explaining it. Default 0.1. See _grow_chain.
 
     Returns
     -------
@@ -613,6 +670,12 @@ def find_chains(flagged_records, supercell, bulk_results=None,
             All consecutive sub-sequences of length 3..len(full_chain).
             Keys: 'order' (int), 'indices' (list of int), 'directive' (None
             until filled by format_cobi_directive / suggest_cobi_directives).
+
+    Flagged pairs for which no bonded path to atom2_idx is found within
+    max_order atoms contribute no chain to the returned list — the anomaly
+    is real, but this detector cannot explain it as a short bonded chain
+    (it may involve a longer path, a non-chain topology, or a genuine
+    coincidental FC beyond this detector's model).
     """
     if reliability_cutoff is not None:
         reliability_limit = float(reliability_cutoff)
@@ -635,14 +698,17 @@ def find_chains(flagged_records, supercell, bulk_results=None,
 
     results = []
     for rec in flagged_records:
-        start     = rec['atom1_idx']
-        direction = np.array(rec['direction'], dtype=float)
+        start = rec['atom1_idx']
+        end   = rec['atom2_idx']
+        target_vec = supercell.cart_diff(supercell.positions[start - 1],
+                                         supercell.positions[end - 1])
 
-        chain = _grow_chain(start, direction, neighbors,
+        chain = _grow_chain(start, target_vec, neighbors,
                             min_cos, max_order, reliability_limit,
                             atom_species=atom_species,
                             nn_distances=nn_distances,
-                            max_nn_ratio=max_nn_ratio)
+                            max_nn_ratio=max_nn_ratio,
+                            pos_tol=pos_tol)
 
         if len(chain) < 3:
             continue
@@ -723,6 +789,64 @@ def format_cobi_directive(chain_sc_indices, supercell, lob_poscar):
     return ' '.join(parts)
 
 
+def _fill_chain_directives(chains, supercell, lob_poscar) -> list:
+    """
+    Format a ``cobiBetween`` directive for every sub-chain in *chains*
+    in-place (writing ``sub['directive']``), and return the list of unique
+    directives — one per distinct physical motif, deduplicated across
+    however many symmetry-equivalent instances were found.
+
+    Two sub-chains are considered the same motif if they agree on both
+    species sequence AND per-step bond length (each rounded to 0.001 Å),
+    after normalising for the two directions a chain can be read in ('A->B->C'
+    and 'C->B->A' describe the same interaction). Geometry has to be part of
+    the key: species alone is not enough to identify a physical motif in a
+    single-element structure (or any compound where two distinct multicenter
+    motifs happen to share an ordered species sequence, e.g. a bent chain and
+    a collinear chain that are both all-'Sn') — a species-only key collapses
+    such cases onto one key and silently drops all but the first instance
+    found, even though every one of them is formatted correctly.
+
+    Parameters
+    ----------
+    chains     : output of find_chains() — mutated in place (each
+                 sub_chains[*]['directive'] is filled)
+    supercell  : Supercell
+    lob_poscar : dict from lobster._parse_poscar_lobster(), or None (in which
+                 case every sub['directive'] is set to None and an empty list
+                 is returned — cobiBetween directives require a LOBSTER POSCAR)
+
+    Returns
+    -------
+    list[str] : unique directives, one per distinct motif found.
+    """
+    seen_keys: set = set()
+    unique_directives: list = []
+    for chain in chains:
+        for sub in chain['sub_chains']:
+            if lob_poscar is None:
+                sub['directive'] = None
+                continue
+            sp_key   = tuple(supercell.species(idx) for idx in sub['indices'])
+            geom_key = tuple(
+                round(supercell.atom_distance(sub['indices'][i], sub['indices'][i + 1]), 3)
+                for i in range(len(sub['indices']) - 1)
+            )
+            fwd = (sp_key, geom_key)
+            rev = (sp_key[::-1], geom_key[::-1])
+            canon_key = min(fwd, rev)
+            try:
+                directive = format_cobi_directive(
+                    sub['indices'], supercell, lob_poscar)
+                sub['directive'] = directive
+                if canon_key not in seen_keys:
+                    seen_keys.add(canon_key)
+                    unique_directives.append(directive)
+            except ValueError as exc:
+                sub['directive'] = f'# ERROR: {exc}'
+    return unique_directives
+
+
 # ---------------------------------------------------------------------------
 # Species-pair NN reference, screened against covalent radii
 # ---------------------------------------------------------------------------
@@ -787,12 +911,13 @@ def _bonded_nn_distances(reliable_pairs, bond_ratio_tol=1.4):
 def suggest_cobi_directives(
         bulk_results, supercell, poscar_lobster_path=None,
         n_sigma=1.5, min_pairs=4,
-        min_angle_deg=150.0, max_order=5, bond_cutoff=4.0,
+        min_angle_deg=105.0, max_order=5, bond_cutoff=4.0,
         detect_cutoff_frac=1.0,
         max_nn_ratio=1.5,
         bond_ratio_tol=1.4,
         fit_quantile=None,
         reliability_cutoff=None,
+        pos_tol=0.1,
         _skip_symmetry_expand=False):
     """
     Full pipeline: detect anomalous pFCs → trace chains → format directives.
@@ -806,7 +931,9 @@ def suggest_cobi_directives(
                            but cobiBetween directives are not generated.
     n_sigma              : float, anomaly detection threshold (sigma). Default 2.5.
     min_pairs            : int, min pairs for regression detection. Default 4.
-    min_angle_deg        : float, minimum bond angle for chain extension. Default 150.
+    min_angle_deg        : float, minimum bond angle for chain extension. Default 105
+                           — admits tetrahedral (109.47°) zigzag chains as well
+                           as near-linear metavalent ones; see find_chains().
     max_order            : int, maximum atoms per chain. Default 5.
     bond_cutoff          : float, Å, max step distance for chain extension. Default 4.0.
     detect_cutoff_frac   : float, fraction of the reliability limit (L/2) used as
@@ -826,6 +953,10 @@ def suggest_cobi_directives(
                            reference used by max_nn_ratio.  See
                            _bonded_nn_distances() for the rationale.  Default 1.4.
     fit_quantile         : ignored, kept for backward compatibility.
+    pos_tol              : float, Å, how closely a candidate bonded path must
+                           reach a flagged pair's own atom2_idx to count as
+                           explaining it.  See find_chains()/_grow_chain().
+                           Default 0.1.
 
     Returns
     -------
@@ -878,29 +1009,10 @@ def suggest_cobi_directives(
         flagged, supercell, bulk_results,
         min_angle_deg=min_angle_deg, max_order=max_order, bond_cutoff=bond_cutoff,
         nn_distances=nn_distances, max_nn_ratio=max_nn_ratio,
-        reliability_cutoff=reliability_limit,
+        reliability_cutoff=reliability_limit, pos_tol=pos_tol,
     )
 
-    seen_keys: set = set()
-    unique_directives: list = []
-    for chain in chains:
-        for sub in chain['sub_chains']:
-            if lob_poscar is None:
-                sub['directive'] = None
-                continue
-            sp_key = tuple(supercell.species(idx) for idx in sub['indices'])
-            # Forward and reverse describe the same LOBSTER COBI interaction;
-            # normalise so the lexicographically smaller direction is canonical.
-            canon_key = min(sp_key, sp_key[::-1])
-            try:
-                directive = format_cobi_directive(
-                    sub['indices'], supercell, lob_poscar)
-                sub['directive'] = directive
-                if canon_key not in seen_keys:
-                    seen_keys.add(canon_key)
-                    unique_directives.append(directive)
-            except ValueError as exc:
-                sub['directive'] = f'# ERROR: {exc}'
+    unique_directives = _fill_chain_directives(chains, supercell, lob_poscar)
 
     return {
         'flagged_pairs': flagged,

@@ -21,6 +21,7 @@ from betapy.core.multicenter import (
     append_cobi_directives,
     _bonded_nn_distances,
     suggest_cobi_directives,
+    _fill_chain_directives,
 )
 from betapy.core.structure import Supercell
 from betapy.core.lobster import _parse_poscar_lobster
@@ -333,19 +334,23 @@ class TestGrowChain:
 
     def test_grow_chain_full_length(self, sc, bulk_results):
         nb = _build_neighbor_lookup(bulk_results, bond_cutoff=1.5)
-        # Start at atom 1, direction [1,0,0], reliability_limit 5 Å, max_order 5
-        chain = _grow_chain(1, [1., 0., 0.], nb,
+        # Target atom 3, 2 Å away along [1,0,0] (1 Å + 1 Å): reachable via
+        # the real bonded path 1->2->3.
+        chain = _grow_chain(1, [2., 0., 0.], nb,
                             min_cos=np.cos(np.radians(30.)),
                             max_order=5, reliability_limit=5.0)
         assert chain == [1, 2, 3]
 
     def test_grow_chain_stops_at_reliability_limit(self, sc, bulk_results):
         nb = _build_neighbor_lookup(bulk_results, bond_cutoff=1.5)
-        # Cumulative limit 1.5 Å: 1→2 costs 1 Å (ok), 2→3 would cost 2 Å total (>1.5)
-        chain = _grow_chain(1, [1., 0., 0.], nb,
+        # Same target as above (2 Å away), but the reliability limit (1.5 Å)
+        # is tighter than that target's own distance: 1->2 alone reaches 1 Å
+        # (still short of the target), and 1->2->3 would reach 2 Å (over the
+        # limit) — the target is unreachable, so no explanatory path is found.
+        chain = _grow_chain(1, [2., 0., 0.], nb,
                             min_cos=np.cos(np.radians(30.)),
                             max_order=5, reliability_limit=1.5)
-        assert chain == [1, 2]
+        assert chain == [1]
 
     def test_grow_chain_respects_angle(self, sc, bulk_results):
         # Perpendicular neighbour — should be rejected at min_angle=150
@@ -359,11 +364,107 @@ class TestGrowChain:
              'mean_pfc': 0.5},
         ]
         nb = _build_neighbor_lookup(bulk, bond_cutoff=1.5)
-        chain = _grow_chain(1, [1., 0., 0.], nb,
+        # Target atom 3 at (1,1,0) — only reachable via the perpendicular
+        # second hop, which the angle constraint must reject.
+        chain = _grow_chain(1, [1., 1., 0.], nb,
                             min_cos=np.cos(np.radians(30.)),  # cos(30°) ≈ 0.866
                             max_order=5, reliability_limit=5.0)
         # direction from atom2 to atom3 is [0,1,0]; dot with [1,0,0] = 0 < 0.866
-        assert chain == [1, 2]
+        # — the only path to the target is blocked, so it is never reached.
+        assert chain == [1]
+
+
+class TestGrowChainMultipleBoundaryCrossings:
+    """
+    An earlier version of this search capped a chain at one supercell
+    boundary crossing, to stop an open-ended greedy walk from "cheating" the
+    reliability check by wrapping around the periodic cell. That concern
+    doesn't apply to a search that must match a specific, already-bounded
+    target displacement: real data from beta-Sn has a genuine bonded zigzag
+    chain that crosses two supercell boundaries, and capping crossings at
+    one made the search miss it, falling back to a different, spurious path
+    that avoided crossing twice. This locks in that multiple boundary
+    crossings are now permitted.
+    """
+
+    def test_two_boundary_crossings_reach_the_target(self):
+        # Manually built neighbour lookup: both hops are flagged as
+        # boundary-crossing, matching the real geometry that exposed the bug.
+        neighbors = {
+            1: [{'idx': 2, 'dist': 1.0, 'dir': np.array([1., 0., 0.]),
+                 'boundary': True}],
+            2: [{'idx': 1, 'dist': 1.0, 'dir': np.array([-1., 0., 0.]),
+                 'boundary': True},
+                {'idx': 3, 'dist': 1.0, 'dir': np.array([1., 0., 0.]),
+                 'boundary': True}],
+            3: [{'idx': 2, 'dist': 1.0, 'dir': np.array([-1., 0., 0.]),
+                 'boundary': True}],
+        }
+        chain = _grow_chain(1, [2., 0., 0.], neighbors,
+                            min_cos=np.cos(np.radians(30.)),
+                            max_order=5, reliability_limit=5.0)
+        assert chain == [1, 2, 3]
+
+
+class TestGrowChainZigzagReliability:
+    """
+    Synthetic 4 Å-step zigzag (a "W" shape in the xy-plane): each hop turns
+    60° relative to the previous one, alternating above/below the x-axis.
+    Three such hops have a *cumulative path length* of 12 Å, but because the
+    chain folds back on itself the true end-to-end *displacement* is only
+    ~10.58 Å — this is the same geometric relationship (bent path length >
+    straight-line extent) that made beta-Sn's 5-atom zigzag chain stop short
+    at 4 atoms before this fix: the old scalar path-length check rejected
+    the final hop even though the atom is well within the reliable range in
+    real space.
+    """
+
+    _D1 = [np.cos(np.radians(30.)),  np.sin(np.radians(30.)), 0.]
+    _D2 = [np.cos(np.radians(30.)), -np.sin(np.radians(30.)), 0.]
+
+    @pytest.fixture
+    def bulk_results(self):
+        return [
+            {'atom1_idx': 1, 'atom2_idx': 2, 'distance': 4.0,
+             'direction': self._D1, 'species1': 'A', 'species2': 'A',
+             'mean_pfc': 1.0},
+            {'atom1_idx': 2, 'atom2_idx': 3, 'distance': 4.0,
+             'direction': self._D2, 'species1': 'A', 'species2': 'A',
+             'mean_pfc': 1.0},
+            {'atom1_idx': 3, 'atom2_idx': 4, 'distance': 4.0,
+             'direction': self._D1, 'species1': 'A', 'species2': 'A',
+             'mean_pfc': 1.0},
+        ]
+
+    def test_vector_norm_admits_zigzag_within_reliable_range(self, bulk_results):
+        nb = _build_neighbor_lookup(bulk_results, bond_cutoff=4.5)
+        # cumulative scalar length would be 12.0 Å (3 x 4 Å); true end-to-end
+        # displacement is ~10.58 Å — set the limit strictly between the two.
+        cum_scalar_length = 12.0
+        target_vec = (4.0 * np.asarray(self._D1) + 4.0 * np.asarray(self._D2)
+                      + 4.0 * np.asarray(self._D1))
+        true_displacement = float(np.linalg.norm(target_vec))
+        assert true_displacement < 11.0 < cum_scalar_length
+
+        # Target atom 4 (the zigzag's true end-to-end displacement): reachable
+        # via the real bonded path 1->2->3->4 only if the reliability check
+        # uses the true displacement rather than the longer scalar path sum.
+        chain = _grow_chain(1, target_vec, nb,
+                            min_cos=np.cos(np.radians(70.)),
+                            max_order=5, reliability_limit=11.0)
+        assert chain == [1, 2, 3, 4]
+
+    def test_reliability_limit_still_enforced_on_true_displacement(self, bulk_results):
+        # Lowering the limit below the true displacement (~10.58 Å) must
+        # still make the target unreachable — the vector-norm check is not a
+        # loophole, it just measures the right quantity.
+        nb = _build_neighbor_lookup(bulk_results, bond_cutoff=4.5)
+        target_vec = (4.0 * np.asarray(self._D1) + 4.0 * np.asarray(self._D2)
+                      + 4.0 * np.asarray(self._D1))
+        chain = _grow_chain(1, target_vec, nb,
+                            min_cos=np.cos(np.radians(70.)),
+                            max_order=5, reliability_limit=10.0)
+        assert chain == [1]
 
 
 # ---------------------------------------------------------------------------
@@ -460,6 +561,149 @@ class TestFindChains:
         chains = find_chains(flagged, linear_sc, linear_bulk,
                              min_angle_deg=150., max_order=5, bond_cutoff=1.5)
         assert chains == []
+
+
+class TestFindChainsTetrahedralAngle:
+    """
+    Synthetic 3-atom tetrahedral (109.47°) zigzag chain — same geometry as
+    the real diamond-cubic Sn-Sn-Sn chain found in alpha-Sn: bond direction
+    alternates between (1,1,1)/sqrt(3) and (1,1,-1)/sqrt(3), the classic sp3
+    zigzag angle. Locks in that find_chains' default min_angle_deg (105,
+    lowered from the original 150 which was tuned for near-linear metavalent
+    chains only and categorically excluded this geometry) actually catches
+    it, and that the old 150 default would not have.
+    """
+
+    @pytest.fixture
+    def sc(self):
+        d1 = np.array([1., 1., 1.]) / np.sqrt(3)
+        d2 = np.array([1., 1., -1.]) / np.sqrt(3)
+        a1 = np.array([0., 0., 0.])
+        a2 = a1 + d1
+        a3 = a2 + d2
+        lattice = np.eye(3) * 10.0   # large box, no PBC interference
+        return _supercell_from_dict({
+            'skal': 1.0, 'lattice': lattice.tolist(),
+            'chem_symbols': ['A'], 'chem_atoms': [3],
+            'positions': (np.array([a1, a2, a3]) @ np.linalg.inv(lattice)).tolist(),
+        })
+
+    @pytest.fixture
+    def bulk_results(self):
+        d1 = [1/np.sqrt(3)]*2 + [1/np.sqrt(3)]
+        d2 = [1/np.sqrt(3)]*2 + [-1/np.sqrt(3)]
+        return [
+            {'atom1_idx': 1, 'atom2_idx': 2, 'distance': 1.0,
+             'direction': d1, 'species1': 'A', 'species2': 'A', 'mean_pfc': 1.0},
+            {'atom1_idx': 2, 'atom2_idx': 3, 'distance': 1.0,
+             'direction': d2, 'species1': 'A', 'species2': 'A', 'mean_pfc': 1.0},
+        ]
+
+    @pytest.fixture
+    def flagged(self, sc):
+        # The flagged trigger must span the chain's true endpoints (atom 1
+        # to atom 3, the far end of the zigzag) — matching how a real
+        # anomalous pair is measured directly between the two atoms whose
+        # force constant looks too large for their (multi-bond) distance,
+        # not between atom 1 and its immediate neighbour.
+        cart_vec = sc.cart_diff(sc.positions[0], sc.positions[2])
+        dist = float(np.linalg.norm(cart_vec))
+        return [{'atom1_idx': 1, 'atom2_idx': 3, 'distance': dist,
+                 'direction': (cart_vec / dist).tolist(),
+                 'species1': 'A', 'species2': 'A', 'mean_pfc': 5.0}]
+
+    def test_default_angle_catches_tetrahedral_zigzag(self, sc, bulk_results, flagged):
+        chains = find_chains(flagged, sc, bulk_results, max_order=3, bond_cutoff=1.5)
+        assert len(chains) == 1
+        assert chains[0]['full_chain'] == [1, 2, 3]
+
+    def test_old_150_default_would_have_missed_it(self, sc, bulk_results, flagged):
+        chains = find_chains(flagged, sc, bulk_results,
+                             min_angle_deg=150.0, max_order=3, bond_cutoff=1.5)
+        assert chains == []
+
+
+# ---------------------------------------------------------------------------
+# _fill_chain_directives
+# ---------------------------------------------------------------------------
+
+class TestFillChainDirectivesGeometryDedup:
+    """
+    Two distinct 3-atom, all-same-species ('A') motifs — one tetrahedral
+    (bond 1.0 Å, 109.47°, same geometry as TestFindChainsTetrahedralAngle),
+    one collinear (bond 1.5 Å, 180°) — reproduces the beta-Sn bug in
+    miniature: a species-only dedup key can't tell these apart (both are
+    ('A','A','A')) and silently drops the second one found, even though its
+    directive is formatted correctly. The fix folds per-step bond length
+    into the key so both survive.
+    """
+
+    @pytest.fixture
+    def sc_and_poscar(self):
+        d1 = np.array([1., 1., 1.]) / np.sqrt(3)
+        d2 = np.array([1., 1., -1.]) / np.sqrt(3)
+        a1 = np.array([0., 0., 0.])
+        a2 = a1 + d1
+        a3 = a2 + d2
+        # collinear motif, offset well away from the tetrahedral one
+        b1 = np.array([10., 5., 5.])
+        b2 = b1 + np.array([1.5, 0., 0.])
+        b3 = b2 + np.array([1.5, 0., 0.])
+        lattice = np.eye(3) * 20.0
+        positions = np.array([a1, a2, a3, b1, b2, b3]) @ np.linalg.inv(lattice)
+        sc = _supercell_from_dict({
+            'skal': 1.0, 'lattice': lattice.tolist(),
+            'chem_symbols': ['A'], 'chem_atoms': [6],
+            'positions': positions.tolist(),
+        })
+
+        # LOBSTER POSCAR = the same 6 atoms verbatim, so each maps to itself
+        # at cell [0,0,0] trivially.
+        lines = ['dedup test', '1.0']
+        for row in lattice:
+            lines.append(f'{row[0]} {row[1]} {row[2]}')
+        lines.append('A'); lines.append('6'); lines.append('Direct')
+        for p in positions:
+            lines.append(f'{p[0]} {p[1]} {p[2]}')
+        poscar_path = write_poscar('\n'.join(lines) + '\n')
+        lob_poscar = _parse_poscar_lobster(poscar_path)
+        return sc, lob_poscar
+
+    def _chains(self):
+        return [
+            {'sub_chains': [{'order': 3, 'indices': [1, 2, 3], 'directive': None}]},
+            {'sub_chains': [{'order': 3, 'indices': [4, 5, 6], 'directive': None}]},
+        ]
+
+    def test_both_motifs_survive_dedup(self, sc_and_poscar):
+        sc, lob_poscar = sc_and_poscar
+        chains = self._chains()
+        directives = _fill_chain_directives(chains, sc, lob_poscar)
+        assert len(directives) == 2
+        # both sub_chains got a real (non-error) directive formatted
+        for chain in chains:
+            d = chain['sub_chains'][0]['directive']
+            assert d is not None and not d.startswith('# ERROR')
+
+    def test_species_only_key_would_have_dropped_the_second(self, sc_and_poscar):
+        """Sanity check on the fixture: confirms the bug this reproduces —
+        without the geometry component, both motifs really do collide on
+        the same species-only key."""
+        sc, _ = sc_and_poscar
+        chains = self._chains()
+        sp_keys = [
+            tuple(sc.species(idx) for idx in chain['sub_chains'][0]['indices'])
+            for chain in chains
+        ]
+        assert sp_keys[0] == sp_keys[1] == ('A', 'A', 'A')
+
+    def test_lob_poscar_none_disables_directives(self, sc_and_poscar):
+        sc, _ = sc_and_poscar
+        chains = self._chains()
+        directives = _fill_chain_directives(chains, sc, None)
+        assert directives == []
+        for chain in chains:
+            assert chain['sub_chains'][0]['directive'] is None
 
 
 # ---------------------------------------------------------------------------
@@ -596,9 +840,11 @@ class TestSuggestCobiDirectivesBondRatioTol:
 
     In real ZnS the only S-S shell (3.79 A) is the 2nd-coordination-shell
     distance mediated through Zn; here 7 'S' atoms spaced 4 A apart on a line
-    play the same role, with the first-shell pFC boosted so it gets flagged —
-    mirroring the real data, where the shortest S-S shell is flagged at 3.7
-    sigma yet is not a bond.
+    play the same role. The pFC directly between the 3-hop-apart pair (12 A)
+    is boosted so it gets flagged as anomalous for its distance — mirroring
+    how a real multicenter anomaly is measured directly between two far
+    atoms, not a short adjacent pair — and chain construction must then try
+    to explain it via the intervening 4 A "hops", which are not real bonds.
     """
 
     @pytest.fixture
@@ -612,13 +858,13 @@ class TestSuggestCobiDirectivesBondRatioTol:
             'positions':    [[i * spacing / 100.0, 0., 0.] for i in range(n)],
         })
 
-    def _marching_bulk(self, n=7, spacing=4.0, anomaly_factor=4.0):
+    def _marching_bulk(self, n=7, spacing=4.0, anomaly_factor=4.0, boost_hop=3):
         pairs = []
         for i in range(n):
             for j in range(i + 1, n):
                 d   = (j - i) * spacing
                 pfc = (0.3 * d + 0.2) ** (-3)
-                if j - i == 1:
+                if j - i == boost_hop:
                     pfc *= anomaly_factor
                 pairs.append({
                     'atom1_idx': i + 1, 'atom2_idx': j + 1,

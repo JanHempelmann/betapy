@@ -100,7 +100,15 @@ LOBSTER directory.
    but those pairwise values are already covered by the existing pairwise
    LOBSTER integration elsewhere in the app.
 2. Select a chain to load its breakdown into the middle panel and the
-   chart on the right.
+   chart on the right, and to highlight its atoms (gold spheres, connected
+   by gold bonds) in the 3D view on the far right. This view always shows
+   the base LOBSTER unit cell (from the same POSCAR used for atom mapping),
+   outlined by a light boundary box — never a phonon supercell, even if one
+   happens to be loaded elsewhere in the app. A chain spanning a
+   periodic-cell translation is drawn at its true, unwrapped geometry, so
+   atoms outside the outlined cell are genuine "ghost" images the
+   interaction actually reaches, not an artifact. **Show cell boundary**
+   (in the 3D panel's side controls) toggles the box.
 3. **Use COBICAR energy-resolved curves** (off by default) switches the
    data source and the chart from an integrated-value bar chart to an
    energy-resolved curve overlay, as described above. If the selected

@@ -94,6 +94,15 @@ def _parse_label(label: str):
     return m.group(1), int(m.group(2)) - 1
 
 
+def label_to_atom_index(label: str) -> int:
+    """
+    Public wrapper around _parse_label(): LOBSTER atom label (e.g. 'Sc1') ->
+    1-based POSCAR atom index. For callers (e.g. 3D highlighting) that only
+    need the index, not the species string.
+    """
+    return _parse_label(label)[1] + 1
+
+
 def _canonical(sp1: str, sp2: str):
     """Return (sp1, sp2) in alphabetical order so pairs are order-independent."""
     return (sp1, sp2) if sp1 <= sp2 else (sp2, sp1)

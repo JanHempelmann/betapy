@@ -52,6 +52,13 @@ DIM_OPACITY           = 0.22   # individual bond highlight: background atoms/bon
 SHELL_DIM_OPACITY     = 0.35   # shell highlight: gentler — context still readable
 FULL_OPACITY          = 1.0
 
+# Light frame colour for the unit-cell boundary box — needs to read clearly
+# against the widget's dark (#1e1e1e) background without competing with
+# species or highlight colours.
+CELL_BOUNDARY_COLOUR  = (0.85, 0.85, 0.85)
+CELL_BOUNDARY_OPACITY = 0.55
+CELL_BOUNDARY_WIDTH   = 1.5
+
 
 class StructureView(QWidget):
     """
@@ -68,6 +75,14 @@ class StructureView(QWidget):
         self._highlight_pair  = None   # single pair (i, j) for individual mode
         self._highlight_pairs = []     # list of (i, j) for shell mode
         self._highlight_pairs_gold = False  # if True, shell atoms also get gold spheres
+        # Cell-aware chain highlight (see highlight_chain_with_cells()):
+        # explicit Cartesian positions/species, not atom indices, so a chain
+        # spanning a periodic-cell translation can be drawn as it actually
+        # is instead of folded into the base cell by minimum-image.
+        self._chain_cart_positions = []
+        self._chain_species        = []
+        self._chain_zero_cell_idxs = set()  # base-cell atoms coinciding with a chain position
+        self._show_cell_boundary   = True
         # bond_pairs: list of (i_1based, j_1based, sp_i, sp_j)
         self._bond_pairs      = []
         self._colours        = {}
@@ -125,8 +140,21 @@ class StructureView(QWidget):
         self._proj_btn.clicked.connect(self._toggle_projection)
         right_panel.addWidget(self._proj_btn)
 
+        self._cell_boundary_chk = QCheckBox('Show cell boundary')
+        self._cell_boundary_chk.setChecked(self._show_cell_boundary)
+        self._cell_boundary_chk.setToolTip(
+            'Outline the unit cell (the lattice vectors from the origin), '
+            'useful context when atoms outside it are shown for a '
+            'periodic-cell-translated interaction.')
+        self._cell_boundary_chk.stateChanged.connect(self._toggle_cell_boundary)
+        right_panel.addWidget(self._cell_boundary_chk)
+
         right_panel.addStretch()
         outer.addWidget(right_widget)
+
+    def _toggle_cell_boundary(self, state):
+        self._show_cell_boundary = bool(state)
+        self._redraw()
 
     def _build_colour_panel(self):
         group = QGroupBox('Atom colours')
@@ -294,6 +322,9 @@ class StructureView(QWidget):
         self.supercell            = supercell
         self._highlight_pair      = None
         self._highlight_pairs     = []
+        self._chain_cart_positions = []
+        self._chain_species        = []
+        self._chain_zero_cell_idxs = set()
         self._display_frac        = supercell.positions.copy()
         self._refsite_frac        = None
         self._refsite_fracs       = []
@@ -330,6 +361,9 @@ class StructureView(QWidget):
         self._highlight_pair       = (atom1_idx_1based, atom2_idx_1based)
         self._highlight_pairs      = []
         self._highlight_pairs_gold = False
+        self._chain_cart_positions = []
+        self._chain_species        = []
+        self._chain_zero_cell_idxs = set()
         if self._refsite_bonds_cutoff is None:
             self._update_display_frac(atom1_idx_1based)
         self._redraw()
@@ -352,6 +386,9 @@ class StructureView(QWidget):
         self._highlight_pairs      = list(pairs)
         self._highlight_pair       = None
         self._highlight_pairs_gold = highlight_atoms
+        self._chain_cart_positions = []
+        self._chain_species        = []
+        self._chain_zero_cell_idxs = set()
         if self.supercell is not None:
             if center_on is not None:
                 self._update_display_frac(center_on)
@@ -359,11 +396,67 @@ class StructureView(QWidget):
                 self._display_frac = self.supercell.positions.copy()
         self._redraw()
 
+    def highlight_chain_with_cells(self, entries, highlight_atoms=True):
+        """
+        Highlight a chain given as (atom_idx_1based, cell_offset) pairs,
+        drawing the real, unwrapped geometry instead of folding every atom
+        to its nearest image (as highlight_bonds() does).
+
+        This matters whenever the same atom index appears more than once in
+        a chain at different periodic-cell translations (e.g. a LOBSTER
+        cobiBetween chain crossing a cell boundary) — highlight_bonds() has
+        no way to tell such a repeat apart from revisiting the atom at cell
+        [0,0,0], so it collapses onto the same position. Here, each entry's
+        true position (base fractional position + its own integer cell
+        offset, unwrapped) is used directly, so a translated atom renders
+        as a distinct "ghost" point outside the displayed unit cell — see
+        also the "Show cell boundary" toggle, useful context for judging
+        how far outside the box these points sit.
+
+        Parameters
+        ----------
+        entries         : list of (atom_idx_1based, cell_offset), where
+                          cell_offset is an (dx, dy, dz) integer tuple.
+        highlight_atoms : bool, kept for API symmetry with highlight_bonds();
+                          this method always highlights the chain atoms since
+                          drawing the ghost positions without them would
+                          defeat its purpose. Default True.
+        """
+        self._highlight_pair       = None
+        self._highlight_pairs      = []
+        self._highlight_pairs_gold = False
+        self._chain_cart_positions = []
+        self._chain_species        = []
+        self._chain_zero_cell_idxs = set()
+
+        if self.supercell is None or not entries:
+            self._redraw()
+            return
+
+        sc = self.supercell
+        true_fracs = [sc.positions[idx - 1] + np.asarray(cell, dtype=float)
+                     for idx, cell in entries]
+        ref = true_fracs[0]
+        self._display_frac = self._center_display_on_frac(ref)
+
+        self._chain_cart_positions = [
+            (0.5 + (f - ref)) @ sc.lattice for f in true_fracs
+        ]
+        self._chain_species = [sc.species(idx) for idx, _ in entries]
+        self._chain_zero_cell_idxs = {
+            idx for idx, cell in entries if tuple(int(c) for c in cell) == (0, 0, 0)
+        }
+        self._redraw()
+        self.plotter.reset_camera()
+
     def clear_highlight(self):
         """Remove highlight and restore original view."""
         self._highlight_pair       = None
         self._highlight_pairs      = []
         self._highlight_pairs_gold = False
+        self._chain_cart_positions = []
+        self._chain_species        = []
+        self._chain_zero_cell_idxs = set()
         if self.supercell is not None:
             self._display_frac = self.supercell.positions.copy()
         self._redraw()
@@ -517,20 +610,29 @@ class StructureView(QWidget):
     # Display coordinate management
     # ------------------------------------------------------------------
 
+    def _center_display_on_frac(self, ref_frac):
+        """
+        Shift all atoms' fractional coords so that ref_frac (any fractional
+        point — not necessarily an atom's own position) sits at
+        (0.5, 0.5, 0.5), using the minimum-image convention. Returns the new
+        (N, 3) display-fractional array; does not mutate self._display_frac.
+        """
+        sc      = self.supercell
+        display = np.empty_like(sc.positions)
+        for k in range(sc.n_atoms):
+            diff       = sc.positions[k] - ref_frac
+            diff      -= np.floor(diff + 0.5)
+            display[k] = 0.5 + diff
+        return display
+
     def _update_display_frac(self, center_idx_1based):
         """
         Shift all fractional coords so center_idx is at (0.5, 0.5, 0.5)
         using the minimum-image convention.
         Bond endpoints are recomputed from these coords in _redraw.
         """
-        sc         = self.supercell
-        pos_center = sc.positions[center_idx_1based - 1]
-        display    = np.empty_like(sc.positions)
-        for k in range(sc.n_atoms):
-            diff       = sc.positions[k] - pos_center
-            diff      -= np.floor(diff + 0.5)
-            display[k] = 0.5 + diff
-        self._display_frac = display
+        self._display_frac = self._center_display_on_frac(
+            self.supercell.positions[center_idx_1based - 1])
 
     def _center_display_on_refsite(self):
         """
@@ -538,13 +640,7 @@ class StructureView(QWidget):
         an atom. After this call, the refsite sits at (0.5, 0.5, 0.5) and all
         atoms are at their nearest periodic images around it.
         """
-        sc      = self.supercell
-        display = np.empty_like(sc.positions)
-        for k in range(sc.n_atoms):
-            diff       = sc.positions[k] - self._refsite_frac
-            diff      -= np.floor(diff + 0.5)
-            display[k] = 0.5 + diff
-        self._display_frac = display
+        self._display_frac = self._center_display_on_frac(self._refsite_frac)
 
     # ------------------------------------------------------------------
     # Scene drawing
@@ -578,8 +674,9 @@ class StructureView(QWidget):
         # Choose bond background opacity depending on highlight mode.
         # Chain-gold mode (highlight_atoms=True) uses the same deep dim as
         # single-pair mode so chain atoms pop out clearly against the background.
-        chain_gold_active = shell_atom_idxs and self._highlight_pairs_gold
-        if selected_idxs or active_refsite_idxs or chain_gold_active:
+        chain_gold_active  = shell_atom_idxs and self._highlight_pairs_gold
+        chain_cells_active = bool(self._chain_cart_positions)
+        if selected_idxs or active_refsite_idxs or chain_gold_active or chain_cells_active:
             bg_bond_opacity = DIM_OPACITY
         elif shell_atom_idxs:
             bg_bond_opacity = SHELL_DIM_OPACITY
@@ -645,6 +742,8 @@ class StructureView(QWidget):
             # When highlight_atoms is set, chain atoms are also drawn as gold
             if shell_atom_idxs and self._highlight_pairs_gold and idx in shell_atom_idxs:
                 continue   # drawn separately as gold below
+            if idx in self._chain_zero_cell_idxs:
+                continue   # drawn separately as a chain-cell ghost sphere below
             sp  = sc.species(idx)
             pos = cart[i]
             if active_refsite_idxs:
@@ -652,7 +751,7 @@ class StructureView(QWidget):
                     full_groups.setdefault(sp, []).append(pos)
                 else:
                     dim_groups.setdefault(sp, []).append(pos)
-            elif selected_idxs or chain_gold_active:
+            elif selected_idxs or chain_gold_active or chain_cells_active:
                 # Single-pair or chain-gold: background atoms strongly dimmed
                 dim_groups.setdefault(sp, []).append(pos)
             elif shell_atom_idxs:
@@ -760,6 +859,14 @@ class StructureView(QWidget):
         # Each bond needs its own tube actor — pv.PolyData with multiple
         # disconnected 2-point line cells only tubes the first segment.
         for k, (i_1, j_1) in enumerate(self._highlight_pairs):
+            if i_1 == j_1:
+                # Self-referential pair: not a real bond, just a request to
+                # include this atom in shell_atom_idxs (e.g. a chain that
+                # revisits the same atom index via a periodic-cell
+                # translation this widget has no other way to represent).
+                # pv.Line(p, p) is a zero-length, zero-point mesh, which
+                # add_mesh() rejects outright — nothing to draw here anyway.
+                continue
             p1     = cart[i_1 - 1]
             frac_i = self._display_frac[i_1 - 1]
             frac_j = self._display_frac[j_1 - 1]
@@ -818,5 +925,60 @@ class StructureView(QWidget):
                     color=REFSITE_BOND_COLOUR, opacity=REFSITE_BOND_OPACITY,
                     name='refsite_bonds', render=False,
                 )
+
+        # --- Cell-aware chain highlight (ghost atoms + real bond geometry) ---
+        # Positions here are already fully resolved (base position + integer
+        # cell offset, unwrapped) by highlight_chain_with_cells() — drawn
+        # directly, with no minimum-image folding, so a chain that spans a
+        # periodic-cell translation shows atoms genuinely outside the
+        # displayed unit cell rather than folded back into it.
+        if self._chain_cart_positions:
+            for k, (pos, sp) in enumerate(
+                    zip(self._chain_cart_positions, self._chain_species)):
+                r      = display_radius(sp) * HIGHLIGHT_ATOM_FACTOR
+                sphere = pv.Sphere(radius=r, center=pos,
+                                   theta_resolution=18, phi_resolution=18)
+                self.plotter.add_mesh(
+                    sphere, color=HIGHLIGHT_COLOUR,
+                    name=f'chain_cell_atom_{k}',
+                    opacity=FULL_OPACITY, render=False,
+                )
+            for k in range(len(self._chain_cart_positions) - 1):
+                p1, p2 = self._chain_cart_positions[k], self._chain_cart_positions[k + 1]
+                if np.linalg.norm(p2 - p1) < 1e-6:
+                    continue   # degenerate (identical) consecutive positions
+                tube = pv.Line(p1, p2).tube(radius=HIGHLIGHT_BOND_RADIUS, n_sides=12)
+                self.plotter.add_mesh(
+                    tube, color=HIGHLIGHT_COLOUR,
+                    name=f'chain_cell_bond_{k}',
+                    opacity=FULL_OPACITY, render=False,
+                )
+
+        # --- Unit cell boundary (light wireframe box, lattice vectors from origin) ---
+        if self._show_cell_boundary:
+            a, b, c = sc.lattice[0], sc.lattice[1], sc.lattice[2]
+            corners = np.array([
+                [0., 0., 0.], a, b, c, a + b, a + c, b + c, a + b + c,
+            ])
+            edges = [
+                (0, 1), (0, 2), (0, 3),
+                (1, 4), (1, 5),
+                (2, 4), (2, 6),
+                (3, 5), (3, 6),
+                (4, 7), (5, 7), (6, 7),
+            ]
+            box_points, box_lines, pt_idx = [], [], 0
+            for i, j in edges:
+                box_points.extend([corners[i], corners[j]])
+                box_lines.extend([2, pt_idx, pt_idx + 1])
+                pt_idx += 2
+            box_mesh        = pv.PolyData()
+            box_mesh.points = np.array(box_points)
+            box_mesh.lines  = np.array(box_lines)
+            self.plotter.add_mesh(
+                box_mesh, color=CELL_BOUNDARY_COLOUR,
+                opacity=CELL_BOUNDARY_OPACITY, line_width=CELL_BOUNDARY_WIDTH,
+                name='cell_boundary', render=False,
+            )
 
         self.plotter.render()
