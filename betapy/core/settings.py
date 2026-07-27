@@ -221,8 +221,8 @@ class Settings:
         if 'stiffness_shift' in data:
             sd = data['stiffness_shift']
             s.stiffness_shift = StiffnessShiftSettings(
-                structure_a             = _dict_to_structure(sd.get('structure_a', {})),
-                structure_b             = _dict_to_structure(sd.get('structure_b', {})),
+                structure_a             = dict_to_structure(sd.get('structure_a', {})),
+                structure_b             = dict_to_structure(sd.get('structure_b', {})),
                 refpos                  = sd.get('refpos',                  StiffnessShiftSettings.refpos),
                 cutoff                  = sd.get('cutoff',                  4.0),
                 min_site_dist           = sd.get('min_site_dist',           0.1),
@@ -341,7 +341,7 @@ class Settings:
 # Internal helpers
 # ---------------------------------------------------------------------------
 
-def _dict_to_structure(d) -> StructureSettings:
+def dict_to_structure(d) -> StructureSettings:
     if isinstance(d, str):
         p = Path(d)
         return StructureSettings(

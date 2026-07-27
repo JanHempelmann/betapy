@@ -253,6 +253,19 @@ def lookup(pairs: list, sp1: str, sp2: str, distance: float,
     return best_val if best_dev <= tol else None
 
 
+def annotate_lobster_columns(df_unique, lobster_pairs):
+    """Add ICOBI / ICOHP / ICOOP columns to df_unique from LOBSTER pair data, in place."""
+    available = {k for row in lobster_pairs for k in ('icobi', 'icohp', 'icoop') if k in row}
+    for col_key, col_name in [('icobi', 'ICOBI'), ('icohp', 'ICOHP'), ('icoop', 'ICOOP')]:
+        if col_key not in available:
+            continue
+        def _lob_val(row):
+            v = lookup(lobster_pairs, row['Atom 1'], row['Atom 2'],
+                       row['Distance (Angstr.)'], key=col_key)
+            return round(v, 5) if v is not None else None
+        df_unique[col_name] = [_lob_val(row) for _, row in df_unique.iterrows()]
+
+
 # ---------------------------------------------------------------------------
 # Energy-resolved CAR file parsing
 # ---------------------------------------------------------------------------

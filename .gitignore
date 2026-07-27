@@ -45,6 +45,9 @@ vasprun.xml
 *.swo
 *~
 
+# Local MCP client config — hardcodes an absolute path to this machine's dev venv
+.mcp.json
+
 # Testing
 .pytest_cache/
 .coverage

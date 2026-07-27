@@ -9,27 +9,15 @@ import timeit
 from pathlib import Path
 
 from betapy.core.settings import Settings
-from betapy.core.constants import EV_ANG2_TO_N_M, UNIT_LABEL
 from betapy.core.io import (
-    read_SPOSCAR, read_FORCE_CONSTANTS, read_refpos,
+    read_SPOSCAR, read_FORCE_CONSTANTS,
     write_unique_pfcs, write_bulk_pfcs,
     write_refsite_pfcs, write_refsite_onsite_pfcs,
 )
 from betapy.core.structure import Supercell
-from betapy.core.projection import (
-    compute_bulk_pfcs, unique_pfcs,
-    find_refsite_pairs, refsite_results_to_dataframes,
-    compare_refsite_projections,
-    match_fc_pairs_direct, stiffness_shift_from_pairs,
-    structural_disturbance, sum_intercalant_pfcs,
+from betapy.core.analysis import (
+    compute_bulk_analysis, compute_refsite_analysis, compute_stiffness_shift,
 )
-
-
-def _load_structure(sposcar_path, fc_path):
-    """Load and return (Supercell, fc_data)."""
-    supercell = Supercell(read_SPOSCAR(sposcar_path))
-    fc_data   = read_FORCE_CONSTANTS(fc_path)
-    return supercell, fc_data
 
 
 def _check_stability(directory, label=''):
@@ -48,20 +36,6 @@ def _check_stability(directory, label=''):
               f'no imaginary modes)')
     else:
         print(f'  {prefix}Warning: {format_warning(report)}')
-
-
-def _annotate_lobster(df_unique, lobster_pairs):
-    """Add ICOBI / ICOHP / ICOOP columns to df_unique from LOBSTER pair data."""
-    from betapy.core.lobster import lookup
-    available = {k for row in lobster_pairs for k in ('icobi', 'icohp', 'icoop') if k in row}
-    for col_key, col_name in [('icobi', 'ICOBI'), ('icohp', 'ICOHP'), ('icoop', 'ICOOP')]:
-        if col_key not in available:
-            continue
-        def _lob_val(row):
-            v = lookup(lobster_pairs, row['Atom 1'], row['Atom 2'],
-                       row['Distance (Angstr.)'], key=col_key)
-            return round(v, 5) if v is not None else None
-        df_unique[col_name] = [_lob_val(row) for _, row in df_unique.iterrows()]
 
 
 def run_multicenter(supercell, bulk_results, lobster_dir, args):
@@ -166,17 +140,13 @@ def run_multicenter(supercell, bulk_results, lobster_dir, args):
 
 def run_bulk_analysis(supercell, fc_data, settings, lobster_pairs=None):
     t0 = timeit.default_timer()
-    results, onsite, _ = compute_bulk_pfcs(
-        supercell,
-        fc_data['atomic_pairs'],
-        fc_data['force_matrices'],
-    )
-    df_unique = unique_pfcs(results)
+    data = compute_bulk_analysis(supercell, fc_data, lobster_pairs=lobster_pairs)
+    results, onsite, df_unique = data['results'], data['onsite'], data['df_unique']
+
     print(f'  Off-site pairs : {len(results)}')
     print(f'  On-site terms  : {len(onsite)}')
     print(f'  Unique pFCs    : {len(df_unique)}')
     if lobster_pairs:
-        _annotate_lobster(df_unique, lobster_pairs)
         cols = [c for c in ('ICOBI', 'ICOHP', 'ICOOP') if c in df_unique.columns]
         print(f'  LOBSTER cols   : {", ".join(cols)}')
     if settings.store:
@@ -190,91 +160,31 @@ def run_bulk_analysis(supercell, fc_data, settings, lobster_pairs=None):
 def run_refsite_analysis(supercell, fc_data, settings):
     rs = settings.refsite
     try:
-        refpos_data = read_refpos(rs.file)
+        data = compute_refsite_analysis(supercell, fc_data, rs, unit=settings.unit)
     except FileNotFoundError:
         print(f'  Error: REFPOS file not found at {rs.file}')
         return None, None
 
-    factor     = EV_ANG2_TO_N_M if settings.unit == 'N/m' else 1.0
-    unit_label = UNIT_LABEL.get(settings.unit, settings.unit)
+    unit_label = data['unit_label']
+    for site in data['sites']:
+        excl_note = f', excl. {site["exclude_species"][0]} pairs' if site['exclude_species'] else ''
+        print(f'  Site {site["index"]}: {site["n_offsite"]} off-site, {site["n_onsite"]} on-site'
+              f'  Σ pFC = {site["pfc_sum_converted"]:+.5f} {unit_label}{excl_note}')
 
-    all_offsite, all_onsite = [], []
-    site_offsite = []   # per-site, used for pairwise comparison below
-    for idx, frac_pos in enumerate(refpos_data['positions']):
-        exclude_sp = None
-        if rs.exclude_refsite_species:
-            dists    = [supercell.distance_to_point(k + 1, frac_pos)
-                        for k in range(supercell.n_atoms)]
-            near_idx = min(range(supercell.n_atoms), key=lambda k: dists[k])
-            # Only exclude if an atom actually sits at the site (< 1 Å).
-            # Vacant sites have no atom nearby, so nothing is excluded there.
-            if dists[near_idx] < 1.0:
-                exclude_sp = {supercell.species(near_idx + 1)}
-        offsite, onsite = find_refsite_pairs(
-            supercell,
-            fc_data['atomic_pairs'],
-            fc_data['force_matrices'],
-            frac_pos,
-            rs.cutoff,
-            exclude_species=exclude_sp,
-        )
-        all_offsite.extend(offsite)
-        all_onsite.extend(onsite)
-        site_offsite.append(offsite)
-        pfc_sum   = sum(r['mean_pfc'] for r in offsite) * factor
-        excl_note = f', excl. {next(iter(exclude_sp))} pairs' if exclude_sp else ''
-        print(f'  Site {idx}: {len(offsite)} off-site, {len(onsite)} on-site'
-              f'  Σ pFC = {pfc_sum:+.5f} {unit_label}{excl_note}')
-
-    if len(site_offsite) >= 2:
+    if data['comparisons']:
         print(f'\n  ── Intra-structure comparison {"─" * 20}')
-        positions = refpos_data['positions']
+        for c in data['comparisons']:
+            print(f'  Site {c["site_i"]} → Site {c["site_j"]}:  '
+                  f'ΔΣ pFC = {c["delta_converted"]:+.5f} {unit_label}'
+                  f'  ({c["n_matched"]} matched, {c["n_unmatched_a"]} unmatched A, '
+                  f'{c["n_unmatched_b"]} unmatched B)')
 
-        # Determine the shared exclusion set for comparison: union of species
-        # found within 1 Å of any occupied site. Applied to both sides so that
-        # only framework bonds are matched — mirrors _StiffnessWorker sp_set logic.
-        comparison_excl: set = set()
-        if rs.exclude_refsite_species:
-            for frac_pos in positions:
-                dists    = [supercell.distance_to_point(k + 1, frac_pos)
-                            for k in range(supercell.n_atoms)]
-                near_idx = min(range(supercell.n_atoms), key=lambda k: dists[k])
-                if dists[near_idx] < 1.0:
-                    comparison_excl.add(supercell.species(near_idx + 1))
-
-        for i in range(len(site_offsite)):
-            for j in range(i + 1, len(site_offsite)):
-                sub_i = [r for r in site_offsite[i]
-                         if r['species1'] not in comparison_excl
-                         and r['species2'] not in comparison_excl]
-                sub_j = [r for r in site_offsite[j]
-                         if r['species1'] not in comparison_excl
-                         and r['species2'] not in comparison_excl]
-                matched, ua, ub = match_fc_pairs_direct(
-                    sub_i, sub_j,
-                    supercell, supercell,
-                    positions[i], positions[j],
-                    tol=1.5, directional=False,
-                )
-                _, delta = stiffness_shift_from_pairs(matched)
-                print(f'  Site {i} → Site {j}:  ΔΣ pFC = {delta * factor:+.5f} {unit_label}'
-                      f'  ({len(matched)} matched, {len(ua)} unmatched A, {len(ub)} unmatched B)')
-
-    df_off, df_on = refsite_results_to_dataframes(
-        all_offsite, all_onsite, refpos_data['label']
-    )
+    df_off, df_on = data['df_offsite'], data['df_onsite']
     if settings.store:
         write_refsite_pfcs(df_off)
         write_refsite_onsite_pfcs(df_on)
         print('  Written: refsite_pFCs.csv, refsite_onsite_pFCs.csv')
     return df_off, df_on
-
-
-def _resolve_refpos(structure_settings, fallback_path):
-    """Return REFPOS path: per-structure override if set, else shared fallback."""
-    if structure_settings.refpos is not None:
-        return structure_settings.refpos
-    return fallback_path
 
 
 def run_stiffness_shift(settings):
@@ -289,127 +199,45 @@ def run_stiffness_shift(settings):
     fingerprint so it works even when A and B have different crystallographic
     origins (e.g. pnnm intercalation pairs).
     """
-    ss = settings.stiffness_shift
-
-    print('  Loading structure A ...')
-    sc_a, fc_a = _load_structure(
-        ss.structure_a.sposcar, ss.structure_a.force_constants
-    )
-    print(f'    {sc_a}  |  {len(fc_a["atomic_pairs"])} pairs')
-    _check_stability(Path(ss.structure_a.sposcar).parent, label='Structure A')
-
-    print('  Loading structure B ...')
-    sc_b, fc_b = _load_structure(
-        ss.structure_b.sposcar, ss.structure_b.force_constants
-    )
-    print(f'    {sc_b}  |  {len(fc_b["atomic_pairs"])} pairs')
-    _check_stability(Path(ss.structure_b.sposcar).parent, label='Structure B')
-
-    refpos_path_a = _resolve_refpos(ss.structure_a, ss.refpos)
-    refpos_path_b = _resolve_refpos(ss.structure_b, ss.refpos)
     try:
-        refpos_a = read_refpos(refpos_path_a)
-    except FileNotFoundError:
-        print(f'  Error: REFPOS for structure A not found at {refpos_path_a}')
-        return None
-    try:
-        refpos_b = read_refpos(refpos_path_b)
-    except FileNotFoundError:
-        print(f'  Error: REFPOS for structure B not found at {refpos_path_b}')
+        data = compute_stiffness_shift(settings)
+    except FileNotFoundError as e:
+        print(f'  Error: {e}')
         return None
 
-    # Determine intercalated species from structure B (for exclusion filter)
-    intercalated_species = set()
-    if ss.exclude_refsite_species:
-        for frac_pos in refpos_b['positions']:
-            dists    = [sc_b.distance_to_point(k + 1, frac_pos)
-                        for k in range(sc_b.n_atoms)]
-            near_idx = min(range(sc_b.n_atoms), key=lambda k: dists[k])
-            if dists[near_idx] < ss.min_site_dist:
-                intercalated_species.add(sc_b.species(near_idx + 1))
-    excl_arg = intercalated_species if intercalated_species else None
-    excl_note = f', excl. {"/".join(sorted(intercalated_species))} pairs' if excl_arg else ''
+    u = data['unit_label']
+    from betapy.core.stability import format_warning
 
-    # Species present in both structures
-    sp_set = set(sc_a.chem_symbols) & set(sc_b.chem_symbols)
+    for label, struct in (('Structure A', data['structure_a']),
+                           ('Structure B', data['structure_b'])):
+        print(f'  {label}: {struct["n_atoms"]} atoms  |  {struct["n_pairs"]} pairs')
+        report = struct['stability']
+        if report is not None and not report.is_stable:
+            print(f'  {label}: Warning: {format_warning(report)}')
 
-    # B uses a generous cutoff so equivalent pairs are found even after
-    # significant cell expansion on intercalation.
-    cutoff_b = ss.cutoff * 1.5
-
-    all_matched     = []
-    all_unmatched_a = []
-    all_unmatched_b = []
-
-    for idx, (ref_a, ref_b) in enumerate(zip(refpos_a['positions'], refpos_b['positions'])):
-        print(f'  Site {idx}: projecting A (cutoff {ss.cutoff} Å) ...')
-        res_a, _ = find_refsite_pairs(
-            sc_a, fc_a['atomic_pairs'], fc_a['force_matrices'],
-            ref_a, cutoff=ss.cutoff, min_distance=0.0,
-            exclude_species=excl_arg,
-        )
-        print(f'  Site {idx}: projecting B (cutoff {cutoff_b:.1f} Å) ...')
-        res_b, _ = find_refsite_pairs(
-            sc_b, fc_b['atomic_pairs'], fc_b['force_matrices'],
-            ref_b, cutoff=cutoff_b, min_distance=ss.min_site_dist,
-            exclude_species=excl_arg,
-        )
-
-        sub_a = [r for r in res_a if r['species1'] in sp_set and r['species2'] in sp_set]
-        sub_b = [r for r in res_b if r['species1'] in sp_set and r['species2'] in sp_set]
-        print(f'    {len(sub_a)} A pairs, {len(sub_b)} B pairs{excl_note}')
-
-        m, ua, ub = match_fc_pairs_direct(
-            sub_a, sub_b, sc_a, sc_b, ref_a, ref_b, tol=ss.match_tolerance
-        )
-        all_matched.extend(m)
-        all_unmatched_a.extend(ua)
-        all_unmatched_b.extend(ub)
-        print(f'    {len(m)} matched, {len(ua)} unmatched A, {len(ub)} unmatched B')
-
-    df, total = stiffness_shift_from_pairs(all_matched)
-    dist      = structural_disturbance(all_matched)
-
-    # Intercalant contribution: framework → intercalant bonds in B only.
-    # Use the standard cutoff (not 1.5×) and min_distance=0 so the intercalant
-    # atom sitting at the refsite is also counted as atom2.
-    intercalant_species = set(sc_b.chem_symbols) - set(sc_a.chem_symbols)
-    intercalant_total = 0.0
-    if intercalant_species:
-        for ref_b in refpos_b['positions']:
-            res_b_ic, _ = find_refsite_pairs(
-                sc_b, fc_b['atomic_pairs'], fc_b['force_matrices'],
-                ref_b, cutoff=ss.cutoff, min_distance=0.0,
-                exclude_species=None, show_progress=False,
-            )
-            ic_sum, _ = sum_intercalant_pfcs(res_b_ic, intercalant_species)
-            intercalant_total += ic_sum
-
-    factor     = EV_ANG2_TO_N_M if settings.unit == 'N/m' else 1.0
-    unit_label = UNIT_LABEL.get(settings.unit, settings.unit)
-    u          = unit_label
-
+    dist = data['disturbance']
     print(f'\n Method: fractional-fingerprint matching')
-    print(f'  Unmatched A: {len(all_unmatched_a)}   '
-          f'Unmatched B: {len(all_unmatched_b)}')
+    print(f'  Unmatched A: {data["n_unmatched_a"]}   '
+          f'Unmatched B: {data["n_unmatched_b"]}')
     print(f'\n  ── Stiffness shift (B − A) {"─" * 24}')
     print(f'  Matched pairs   : {dist["n_pairs"]}')
-    print(f'  Σ ΔpFC          : {total * factor:+.6f}  {u}')
-    print(f'  Min ΔpFC        : {dist["min_delta"] * factor:+.6f}  {u}  ({dist["min_species"]})')
+    print(f'  Σ ΔpFC          : {data["total_shift_converted"]:+.6f}  {u}')
+    print(f'  Min ΔpFC        : {dist["min_delta_converted"]:+.6f}  {u}  ({dist["min_species"]})')
     print(f'\n  ── Structural disturbance {"─" * 26}')
-    print(f'  Total |ΔpFC|    : {dist["total_abs"] * factor:.6f}  {u}  over {dist["n_pairs"]} bonds')
-    print(f'  Mean  |ΔpFC|    : {dist["mean_abs"]  * factor:.6f}  {u}')
-    if intercalant_species:
-        sp_str = '/'.join(sorted(intercalant_species))
+    print(f'  Total |ΔpFC|    : {dist["total_abs_converted"]:.6f}  {u}  over {dist["n_pairs"]} bonds')
+    print(f'  Mean  |ΔpFC|    : {dist["mean_abs_converted"]:.6f}  {u}')
+    if data['intercalant_species']:
+        sp_str = '/'.join(data['intercalant_species'])
         print(f'\n  ── Intercalant contribution ({sp_str}) {"─" * 14}')
-        print(f'  Σ pFC (B only)  : {intercalant_total * factor:+.6f}  {u}')
+        print(f'  Σ pFC (B only)  : {data["intercalant_total_converted"]:+.6f}  {u}')
 
+    df = data['df_matched']
     if settings.store:
         out = Path('stiffness_shift.csv')
         df.to_csv(out, index=False)
         print(f'  Written: {out}')
 
-    return df, total
+    return df, data['total_shift']
 
 
 def main():

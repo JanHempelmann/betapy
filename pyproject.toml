@@ -51,12 +51,14 @@ gui      = ["matplotlib", "pyqt5", "pyvista", "pyvistaqt", "spglib"]
 symmetry = ["spglib"]
 full     = ["matplotlib", "pyqt5", "pyvista", "pyvistaqt", "spglib"]
 test     = ["pytest", "matplotlib"]
+mcp      = ["mcp"]
 
 [project.scripts]
 # These become terminal commands after `pip install -e .`
 # `betapy` runs the CLI, `betapy-gui` opens the GUI directly
 betapy     = "betapy.cli:main"
 betapy-gui = "betapy._gui_entry:main"
+betapy-mcp = "betapy.mcp_server:main"
 
 [tool.setuptools.packages.find]
 # Tells setuptools to find all packages inside the betapy/ directory
